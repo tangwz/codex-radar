@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum MenuActionID: String, CaseIterable, Equatable {
+enum MenuActionID: String, CaseIterable, Hashable {
   case source
   case dashboard
   case refresh
@@ -73,35 +73,83 @@ struct MenuBarView: View {
         MenuMetric(title: "This month", value: monthTokens)
       }
 
-      Divider()
+      VStack(alignment: .leading, spacing: 2) {
+        actionControl(MenuActionID.contextAction)
 
-      Button("Open Dashboard") {
-        openWindow(id: "dashboard")
-        NSApp.activate(ignoringOtherApps: true)
+        Divider()
+          .padding(.vertical, 4)
+
+        ForEach(MenuActionID.applicationActions, id: \.self) { action in
+          actionControl(action)
+        }
       }
-
-      Button("Check Now") {
-        Task { await store.refresh() }
-      }
-      .disabled(store.isRefreshing)
-
-      SettingsLink {
-        Text("Settings…")
-      }
-
-      Link("Open Prediction Source", destination: store.forecast.sourceURL)
-
-      Divider()
-
-      Button("Quit Codex Radar") {
-        NSApplication.shared.terminate(nil)
-      }
-      .keyboardShortcut("q")
     }
     .padding(16)
     .frame(width: 300)
     .task {
       store.startMonitoring()
+    }
+  }
+
+  @ViewBuilder
+  private func actionControl(_ action: MenuActionID) -> some View {
+    switch action {
+    case .source:
+      Button {
+        NSWorkspace.shared.open(store.forecast.sourceURL)
+      } label: {
+        MenuActionRow(
+          title: "Open Prediction Source",
+          systemImage: "link",
+          showsExternalLink: true
+        )
+      }
+      .buttonStyle(.plain)
+
+    case .dashboard:
+      Button {
+        openWindow(id: "dashboard")
+        NSApp.activate(ignoringOtherApps: true)
+      } label: {
+        MenuActionRow(
+          title: "Open Dashboard",
+          systemImage: "rectangle.grid.2x2",
+          shortcut: "⌘D"
+        )
+      }
+      .buttonStyle(.plain)
+      .keyboardShortcut("d", modifiers: .command)
+
+    case .refresh:
+      Button {
+        Task { await store.refresh() }
+      } label: {
+        MenuActionRow(
+          title: "Check Now",
+          systemImage: "arrow.clockwise",
+          shortcut: "⌘R",
+          isLoading: store.isRefreshing
+        )
+      }
+      .buttonStyle(.plain)
+      .keyboardShortcut("r", modifiers: .command)
+      .disabled(store.isRefreshing)
+
+    case .settings:
+      SettingsLink {
+        MenuActionRow(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,")
+      }
+      .buttonStyle(.plain)
+      .keyboardShortcut(",", modifiers: .command)
+
+    case .quit:
+      Button {
+        NSApplication.shared.terminate(nil)
+      } label: {
+        MenuActionRow(title: "Quit", systemImage: "power", shortcut: "⌘Q")
+      }
+      .buttonStyle(.plain)
+      .keyboardShortcut("q", modifiers: .command)
     }
   }
 }
@@ -143,5 +191,47 @@ private struct MenuMetric: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(10)
     .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+  }
+}
+
+private struct MenuActionRow: View {
+  let title: LocalizedStringKey
+  let systemImage: String
+  var shortcut: String?
+  var showsExternalLink = false
+  var isLoading = false
+  @State private var isHovered = false
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: systemImage)
+        .font(.system(size: 14, weight: .medium))
+        .frame(width: 18)
+
+      Text(title)
+        .lineLimit(1)
+
+      Spacer(minLength: 12)
+
+      if isLoading {
+        ProgressView()
+          .controlSize(.small)
+      } else if showsExternalLink {
+        Image(systemName: "arrow.up.right")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.tertiary)
+      } else if let shortcut {
+        Text(shortcut)
+          .foregroundStyle(.tertiary)
+      }
+    }
+    .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+    .padding(.horizontal, 8)
+    .contentShape(Rectangle())
+    .background(
+      isHovered ? Color.primary.opacity(0.08) : .clear,
+      in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+    )
+    .onHover { isHovered = $0 }
   }
 }
