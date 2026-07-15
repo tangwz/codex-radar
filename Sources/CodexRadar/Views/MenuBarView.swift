@@ -279,12 +279,39 @@ private struct PredictionSourceChip: View {
   }
 }
 
+enum MenuBarIconConfiguration {
+  static let assetName = "MenuBarIcon"
+  static let sideLength: CGFloat = 18
+  static let contentInset: CGFloat = 0
+
+  static var image: NSImage {
+    let resourceURL = Bundle.main.url(forResource: assetName, withExtension: "png")
+      ?? Bundle.module.url(forResource: assetName, withExtension: "png")
+
+    if let image = resourceURL.flatMap(NSImage.init(contentsOf:)) {
+      return image
+    }
+
+    return NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
+      ?? NSImage(size: NSSize(width: sideLength, height: sideLength))
+  }
+}
+
 struct MenuBarLabel: View {
   let hasResetAlert: Bool
 
   var body: some View {
     ZStack(alignment: .topTrailing) {
-      Image(systemName: "scope")
+      Image(nsImage: MenuBarIconConfiguration.image)
+        .resizable()
+        .renderingMode(.original)
+        .interpolation(.high)
+        .scaledToFit()
+        .padding(MenuBarIconConfiguration.contentInset)
+        .frame(
+          width: MenuBarIconConfiguration.sideLength,
+          height: MenuBarIconConfiguration.sideLength
+        )
       if hasResetAlert {
         Circle()
           .fill(.red)
