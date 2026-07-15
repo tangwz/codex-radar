@@ -1,0 +1,23 @@
+# SwiftPM
+.build/
+.swiftpm/
+
+# Local app bundles
+dist/
+
+# Local scratch files
+tmp/
+
+# Xcode user data
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# macOS metadata
+.DS_Store
