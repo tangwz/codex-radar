@@ -38,6 +38,9 @@
 "System Default" = "跟随系统";
 "English" = "English";
 "Simplified Chinese" = "简体中文";
+"Appearance" = "外观";
+"Light" = "浅色";
+"Dark" = "深色";
 "Reset alerts" = "重置提醒";
 "Menu bar badge and notifications" = "菜单栏红点与系统通知";
 "General" = "通用";
