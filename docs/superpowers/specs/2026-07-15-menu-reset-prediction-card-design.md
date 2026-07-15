@@ -42,4 +42,3 @@ Token 统计仍紧随预测卡片。操作列表删除“打开预测来源”�
 - 测试约束菜单 action 只包含 dashboard、refresh、settings、quit。
 - SwiftPM 全量测试与 debug build 通过。
 - 人工验证中英文、Light/Dark Mode、来源点击、快捷键、刷新 loading 状态和 300pt 宽度下的布局。
-

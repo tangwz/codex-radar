@@ -154,4 +154,3 @@ git diff --check
 ```
 
 Expected: no whitespace errors and no accepted/actionable review findings.
-
