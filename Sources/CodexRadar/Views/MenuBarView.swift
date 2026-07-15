@@ -13,6 +13,11 @@ enum MenuActionID: String, CaseIterable, Hashable {
 struct MenuBarView: View {
   @ObservedObject var store: DashboardStore
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.colorScheme) private var colorScheme
+
+  private var theme: MenuBarTheme {
+    MenuBarTheme(colorScheme: colorScheme)
+  }
 
   private var todayTokens: Int {
     TokenUsageAggregator.total(store.tokenEvents, in: .day)
@@ -24,23 +29,46 @@ struct MenuBarView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      MenuResetPredictionCard(forecast: store.forecast, isRefreshing: store.isRefreshing)
+      MenuResetPredictionCard(
+        forecast: store.forecast,
+        isRefreshing: store.isRefreshing,
+        theme: theme
+      )
 
       HStack(spacing: 10) {
-        MenuMetric(title: "Today", value: todayTokens)
-        MenuMetric(title: "This month", value: monthTokens)
+        MenuMetric(title: "Today", value: todayTokens, theme: theme)
+        MenuMetric(title: "This month", value: monthTokens, theme: theme)
       }
 
       Divider()
+        .overlay(theme.isDarkRedesign ? theme.darkHairline : .clear)
 
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: theme.actionPresentation == .insetGroup ? 0 : 2) {
         ForEach(MenuActionID.applicationActions, id: \.self) { action in
           actionControl(action)
+          if theme.actionPresentation == .insetGroup, action != .quit {
+            Rectangle()
+              .fill(theme.darkHairline)
+              .frame(height: 1)
+              .padding(.leading, 36)
+          }
+        }
+      }
+      .padding(.vertical, theme.actionPresentation == .insetGroup ? 4 : 0)
+      .background {
+        if theme.actionPresentation == .insetGroup {
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(theme.insetSurface)
+            .overlay {
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(theme.darkHairline, lineWidth: 1)
+            }
         }
       }
     }
     .padding(16)
     .frame(width: 300)
+    .background(theme.isDarkRedesign ? theme.panelBackground : .clear)
     .task {
       store.startMonitoring()
     }
@@ -57,7 +85,8 @@ struct MenuBarView: View {
         MenuActionRow(
           title: "Open Dashboard",
           systemImage: "rectangle.grid.2x2",
-          shortcut: "⌘D"
+          shortcut: "⌘D",
+          theme: theme
         )
       }
       .buttonStyle(.plain)
@@ -71,7 +100,8 @@ struct MenuBarView: View {
           title: "Check Now",
           systemImage: "arrow.clockwise",
           shortcut: "⌘R",
-          isLoading: store.isRefreshing
+          isLoading: store.isRefreshing,
+          theme: theme
         )
       }
       .buttonStyle(.plain)
@@ -80,7 +110,12 @@ struct MenuBarView: View {
 
     case .settings:
       SettingsLink {
-        MenuActionRow(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,")
+        MenuActionRow(
+          title: "Settings…",
+          systemImage: "gearshape",
+          shortcut: "⌘,",
+          theme: theme
+        )
       }
       .buttonStyle(.plain)
       .keyboardShortcut(",", modifiers: .command)
@@ -89,7 +124,7 @@ struct MenuBarView: View {
       Button {
         NSApplication.shared.terminate(nil)
       } label: {
-        MenuActionRow(title: "Quit", systemImage: "power", shortcut: "⌘Q")
+        MenuActionRow(title: "Quit", systemImage: "power", shortcut: "⌘Q", theme: theme)
       }
       .buttonStyle(.plain)
       .keyboardShortcut("q", modifiers: .command)
@@ -100,16 +135,42 @@ struct MenuBarView: View {
 private struct MenuResetPredictionCard: View {
   let forecast: ResetForecast
   let isRefreshing: Bool
+  let theme: MenuBarTheme
   @Environment(\.locale) private var locale
+
+  private var primaryText: Color {
+    theme.isDarkRedesign ? theme.darkPrimaryText : Color(nsColor: .labelColor)
+  }
+
+  private var secondaryText: Color {
+    theme.isDarkRedesign ? theme.darkSecondaryText : Color(nsColor: .secondaryLabelColor)
+  }
+
+  private var cardBackground: LinearGradient {
+    let colors = theme.isDarkRedesign
+      ? [theme.cobaltStart, theme.cobaltEnd]
+      : [Color.accentColor.opacity(0.07), Color.accentColor.opacity(0.07)]
+
+    return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+  }
+
+  private var borderColor: Color {
+    if forecast.isActive {
+      return Color.red.opacity(0.5)
+    }
+
+    return theme.isDarkRedesign ? Color.white.opacity(0.2) : Color.accentColor.opacity(0.35)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 11) {
       HStack(alignment: .top, spacing: 10) {
-        RadarLogo(isActive: forecast.isActive)
+        RadarLogo(isActive: forecast.isActive, theme: theme)
 
         VStack(alignment: .leading, spacing: 3) {
           Text("Next reset forecast")
             .font(.subheadline.weight(.semibold))
+            .foregroundStyle(primaryText)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .layoutPriority(1)
@@ -124,7 +185,7 @@ private struct MenuResetPredictionCard: View {
                 .locale(locale)
             )
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(secondaryText)
           }
         }
 
@@ -135,7 +196,7 @@ private struct MenuResetPredictionCard: View {
             .controlSize(.small)
             .frame(minHeight: 22)
         } else {
-          ResetStatusBadge(isActive: forecast.isActive)
+          ResetStatusBadge(isActive: forecast.isActive, theme: theme)
         }
       }
 
@@ -150,6 +211,7 @@ private struct MenuResetPredictionCard: View {
                 .locale(locale)
             )
             .font(.system(size: 34, weight: .semibold, design: .rounded))
+            .foregroundStyle(primaryText)
             .monospacedDigit()
             .lineLimit(1)
 
@@ -163,65 +225,73 @@ private struct MenuResetPredictionCard: View {
             )
             .font(.caption2.weight(.semibold))
             .monospacedDigit()
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(theme.isDarkRedesign ? Color.white : Color.accentColor)
             .lineLimit(1)
             .padding(.horizontal, 7)
             .padding(.vertical, 5)
-            .background(Color.accentColor.opacity(0.1), in: Capsule())
+            .background(
+              theme.isDarkRedesign ? Color.white.opacity(0.14) : Color.accentColor.opacity(0.1),
+              in: Capsule()
+            )
           }
         }
       } else {
         VStack(alignment: .leading, spacing: 3) {
           Text("No active official window")
             .font(.title3.weight(.semibold))
+            .foregroundStyle(primaryText)
           Text("Waiting for the next official signal")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(secondaryText)
         }
       }
 
       Link(destination: forecast.sourceURL) {
-        PredictionSourceChip()
+        PredictionSourceChip(theme: theme)
       }
       .buttonStyle(.plain)
     }
     .padding(12)
-    .background(
-      Color.accentColor.opacity(0.07),
-      in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-    )
+    .background(cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(
-          forecast.isActive ? Color.red.opacity(0.5) : Color.accentColor.opacity(0.35),
-          lineWidth: 1
-        )
+        .strokeBorder(borderColor, lineWidth: 1)
     }
+    .shadow(
+      color: theme.isDarkRedesign ? Color.black.opacity(0.35) : .clear,
+      radius: 10,
+      y: 5
+    )
   }
 }
 
 private struct RadarLogo: View {
   let isActive: Bool
+  let theme: MenuBarTheme
+
+  private var radarColor: Color {
+    theme.isDarkRedesign ? Color(red: 0.28, green: 0.67, blue: 1.0) : Color.accentColor
+  }
 
   var body: some View {
     ZStack {
       Circle()
-        .fill(Color.accentColor.opacity(0.16))
+        .fill(radarColor.opacity(theme.isDarkRedesign ? 0.24 : 0.16))
 
       ForEach([0.38, 0.62, 0.84], id: \.self) { scale in
         Circle()
-          .stroke(Color.accentColor.opacity(0.85), lineWidth: 1.4)
+          .stroke(radarColor.opacity(0.9), lineWidth: 1.4)
           .scaleEffect(scale)
       }
 
       Capsule()
-        .fill(Color.accentColor)
+        .fill(radarColor)
         .frame(width: 25, height: 2)
         .offset(x: 8)
         .rotationEffect(.degrees(-45))
 
       Circle()
-        .fill(Color.accentColor)
+        .fill(radarColor)
         .frame(width: 7, height: 7)
     }
     .frame(width: 46, height: 46)
@@ -239,22 +309,28 @@ private struct RadarLogo: View {
 
 private struct ResetStatusBadge: View {
   let isActive: Bool
+  let theme: MenuBarTheme
 
   var body: some View {
     Text(isActive ? LocalizedStringKey("Reset incoming") : LocalizedStringKey("Monitoring"))
       .font(.caption2.weight(.semibold))
       .lineLimit(1)
-      .foregroundStyle(isActive ? Color.red : Color.accentColor)
+      .foregroundStyle(
+        isActive ? Color.red : (theme.isDarkRedesign ? Color.white : Color.accentColor)
+      )
       .padding(.horizontal, 7)
       .padding(.vertical, 4)
       .background(
-        isActive ? Color.red.opacity(0.12) : Color.accentColor.opacity(0.1),
+        isActive
+          ? Color.red.opacity(0.12)
+          : (theme.isDarkRedesign ? Color.white.opacity(0.14) : Color.accentColor.opacity(0.1)),
         in: Capsule()
       )
   }
 }
 
 private struct PredictionSourceChip: View {
+  let theme: MenuBarTheme
   @State private var isHovered = false
 
   var body: some View {
@@ -267,12 +343,16 @@ private struct PredictionSourceChip: View {
       Image(systemName: "arrow.up.right")
         .font(.caption2.weight(.semibold))
     }
-    .foregroundStyle(.secondary)
+    .foregroundStyle(
+      theme.isDarkRedesign ? theme.darkSecondaryText : Color(nsColor: .secondaryLabelColor)
+    )
     .padding(.horizontal, 8)
     .padding(.vertical, 5)
     .contentShape(Rectangle())
     .background(
-      isHovered ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05),
+      theme.isDarkRedesign
+        ? Color.white.opacity(isHovered ? 0.18 : 0.1)
+        : (isHovered ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05)),
       in: RoundedRectangle(cornerRadius: 7, style: .continuous)
     )
     .onHover { isHovered = $0 }
@@ -329,20 +409,40 @@ struct MenuBarLabel: View {
 private struct MenuMetric: View {
   let title: LocalizedStringKey
   let value: Int
+  let theme: MenuBarTheme
   @Environment(\.locale) private var locale
 
   var body: some View {
     VStack(alignment: .leading, spacing: 3) {
       Text(title)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(
+          theme.isDarkRedesign ? theme.darkSecondaryText : Color(nsColor: .secondaryLabelColor)
+        )
       Text(DisplayFormatting.tokenCount(value, locale: locale))
         .font(.title3.weight(.semibold))
+        .foregroundStyle(
+          theme.isDarkRedesign ? theme.darkPrimaryText : Color(nsColor: .labelColor)
+        )
         .monospacedDigit()
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(10)
-    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    .background {
+      if theme.isDarkRedesign {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(theme.elevatedSurface)
+      } else {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(.quaternary.opacity(0.35))
+      }
+    }
+    .overlay {
+      if theme.isDarkRedesign {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(theme.darkHairline, lineWidth: 1)
+      }
+    }
   }
 }
 
@@ -351,6 +451,7 @@ private struct MenuActionRow: View {
   let systemImage: String
   var shortcut: String?
   var isLoading = false
+  let theme: MenuBarTheme
   @State private var isHovered = false
 
   var body: some View {
@@ -368,15 +469,25 @@ private struct MenuActionRow: View {
         ProgressView()
           .controlSize(.small)
       } else if let shortcut {
-        Text(shortcut)
-          .foregroundStyle(.tertiary)
+        if theme.isDarkRedesign {
+          Text(shortcut)
+            .foregroundStyle(theme.darkTertiaryText)
+        } else {
+          Text(shortcut)
+            .foregroundStyle(.tertiary)
+        }
       }
     }
+    .foregroundStyle(
+      theme.isDarkRedesign ? theme.darkPrimaryText : Color(nsColor: .labelColor)
+    )
     .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
     .padding(.horizontal, 8)
     .contentShape(Rectangle())
     .background(
-      isHovered ? Color.primary.opacity(0.08) : .clear,
+      isHovered
+        ? (theme.isDarkRedesign ? Color.white.opacity(0.07) : Color.primary.opacity(0.08))
+        : .clear,
       in: RoundedRectangle(cornerRadius: 7, style: .continuous)
     )
     .onHover { isHovered = $0 }
