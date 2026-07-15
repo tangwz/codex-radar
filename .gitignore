@@ -7,7 +7,6 @@ dist/
 
 # Local scratch files
 tmp/
-docs/superpowers/
 
 # Xcode user data
 DerivedData/
