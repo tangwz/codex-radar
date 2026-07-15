@@ -2,20 +2,17 @@ import AppKit
 import SwiftUI
 
 enum MenuActionID: String, CaseIterable, Hashable {
-  case source
   case dashboard
   case refresh
   case settings
   case quit
 
-  static let contextAction = MenuActionID.source
-  static let applicationActions: [MenuActionID] = [.dashboard, .refresh, .settings, .quit]
+  static let applicationActions = MenuActionID.allCases
 }
 
 struct MenuBarView: View {
   @ObservedObject var store: DashboardStore
   @Environment(\.openWindow) private var openWindow
-  @Environment(\.locale) private var locale
 
   private var todayTokens: Int {
     TokenUsageAggregator.total(store.tokenEvents, in: .day)
@@ -27,58 +24,16 @@ struct MenuBarView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      HStack(spacing: 10) {
-        ZStack {
-          Circle()
-            .fill(
-              store.forecast.isActive ? Color.red.opacity(0.18) : Color.accentColor.opacity(0.14))
-          Image(systemName: store.forecast.isActive ? "bell.badge.fill" : "scope")
-            .foregroundStyle(store.forecast.isActive ? Color.red : Color.accentColor)
-        }
-        .frame(width: 34, height: 34)
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(
-            store.forecast.isActive
-              ? LocalizedStringKey("Reset incoming")
-              : LocalizedStringKey("Reset monitoring")
-          )
-          .font(.headline)
-          if let predictedAt = store.forecast.predictedAt {
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-              Text(
-                DisplayFormatting.countdown(to: predictedAt, from: context.date, locale: locale)
-              )
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .monospacedDigit()
-            }
-          } else {
-            Text("No active official window")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-        }
-
-        Spacer()
-
-        if store.isRefreshing {
-          ProgressView()
-            .controlSize(.small)
-        }
-      }
+      MenuResetPredictionCard(forecast: store.forecast, isRefreshing: store.isRefreshing)
 
       HStack(spacing: 10) {
         MenuMetric(title: "Today", value: todayTokens)
         MenuMetric(title: "This month", value: monthTokens)
       }
 
+      Divider()
+
       VStack(alignment: .leading, spacing: 2) {
-        actionControl(MenuActionID.contextAction)
-
-        Divider()
-          .padding(.vertical, 4)
-
         ForEach(MenuActionID.applicationActions, id: \.self) { action in
           actionControl(action)
         }
@@ -94,18 +49,6 @@ struct MenuBarView: View {
   @ViewBuilder
   private func actionControl(_ action: MenuActionID) -> some View {
     switch action {
-    case .source:
-      Button {
-        NSWorkspace.shared.open(store.forecast.sourceURL)
-      } label: {
-        MenuActionRow(
-          title: "Open Prediction Source",
-          systemImage: "link",
-          showsExternalLink: true
-        )
-      }
-      .buttonStyle(.plain)
-
     case .dashboard:
       Button {
         openWindow(id: "dashboard")
@@ -154,6 +97,188 @@ struct MenuBarView: View {
   }
 }
 
+private struct MenuResetPredictionCard: View {
+  let forecast: ResetForecast
+  let isRefreshing: Bool
+  @Environment(\.locale) private var locale
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 11) {
+      HStack(alignment: .top, spacing: 10) {
+        RadarLogo(isActive: forecast.isActive)
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Next reset forecast")
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .layoutPriority(1)
+
+          if let predictedAt = forecast.predictedAt {
+            Text(
+              predictedAt,
+              format: .dateTime
+                .month(.abbreviated)
+                .day()
+                .weekday(.abbreviated)
+                .locale(locale)
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          }
+        }
+
+        Spacer(minLength: 4)
+
+        if isRefreshing {
+          ProgressView()
+            .controlSize(.small)
+            .frame(minHeight: 22)
+        } else {
+          ResetStatusBadge(isActive: forecast.isActive)
+        }
+      }
+
+      if let predictedAt = forecast.predictedAt {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+          HStack(alignment: .lastTextBaseline, spacing: 8) {
+            Text(
+              predictedAt,
+              format: .dateTime
+                .hour()
+                .minute()
+                .locale(locale)
+            )
+            .font(.system(size: 34, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+
+            Spacer(minLength: 2)
+
+            Text(
+              String(
+                format: String(localized: "About %@", bundle: .main, locale: locale),
+                DisplayFormatting.countdown(to: predictedAt, from: context.date, locale: locale)
+              )
+            )
+            .font(.caption2.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(Color.accentColor)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(Color.accentColor.opacity(0.1), in: Capsule())
+          }
+        }
+      } else {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("No active official window")
+            .font(.title3.weight(.semibold))
+          Text("Waiting for the next official signal")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      Link(destination: forecast.sourceURL) {
+        PredictionSourceChip()
+      }
+      .buttonStyle(.plain)
+    }
+    .padding(12)
+    .background(
+      Color.accentColor.opacity(0.07),
+      in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .strokeBorder(
+          forecast.isActive ? Color.red.opacity(0.5) : Color.accentColor.opacity(0.35),
+          lineWidth: 1
+        )
+    }
+  }
+}
+
+private struct RadarLogo: View {
+  let isActive: Bool
+
+  var body: some View {
+    ZStack {
+      Circle()
+        .fill(Color.accentColor.opacity(0.16))
+
+      ForEach([0.38, 0.62, 0.84], id: \.self) { scale in
+        Circle()
+          .stroke(Color.accentColor.opacity(0.85), lineWidth: 1.4)
+          .scaleEffect(scale)
+      }
+
+      Capsule()
+        .fill(Color.accentColor)
+        .frame(width: 25, height: 2)
+        .offset(x: 8)
+        .rotationEffect(.degrees(-45))
+
+      Circle()
+        .fill(Color.accentColor)
+        .frame(width: 7, height: 7)
+    }
+    .frame(width: 46, height: 46)
+    .overlay(alignment: .topTrailing) {
+      if isActive {
+        Circle()
+          .fill(.red)
+          .frame(width: 8, height: 8)
+          .overlay(Circle().stroke(.background, lineWidth: 1.5))
+      }
+    }
+    .accessibilityHidden(true)
+  }
+}
+
+private struct ResetStatusBadge: View {
+  let isActive: Bool
+
+  var body: some View {
+    Text(isActive ? LocalizedStringKey("Reset incoming") : LocalizedStringKey("Monitoring"))
+      .font(.caption2.weight(.semibold))
+      .lineLimit(1)
+      .foregroundStyle(isActive ? Color.red : Color.accentColor)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 4)
+      .background(
+        isActive ? Color.red.opacity(0.12) : Color.accentColor.opacity(0.1),
+        in: Capsule()
+      )
+  }
+}
+
+private struct PredictionSourceChip: View {
+  @State private var isHovered = false
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text("X")
+        .font(.caption.weight(.bold))
+      Text("Source: Tibo on X")
+        .font(.caption)
+        .lineLimit(1)
+      Image(systemName: "arrow.up.right")
+        .font(.caption2.weight(.semibold))
+    }
+    .foregroundStyle(.secondary)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 5)
+    .contentShape(Rectangle())
+    .background(
+      isHovered ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05),
+      in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+    )
+    .onHover { isHovered = $0 }
+  }
+}
+
 struct MenuBarLabel: View {
   let hasResetAlert: Bool
 
@@ -198,7 +323,6 @@ private struct MenuActionRow: View {
   let title: LocalizedStringKey
   let systemImage: String
   var shortcut: String?
-  var showsExternalLink = false
   var isLoading = false
   @State private var isHovered = false
 
@@ -216,10 +340,6 @@ private struct MenuActionRow: View {
       if isLoading {
         ProgressView()
           .controlSize(.small)
-      } else if showsExternalLink {
-        Image(systemName: "arrow.up.right")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.tertiary)
       } else if let shortcut {
         Text(shortcut)
           .foregroundStyle(.tertiary)

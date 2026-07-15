@@ -23,13 +23,16 @@
 "Reading Codex usage" = "Reading Codex usage";
 "Reset incoming" = "Reset incoming";
 "Reset monitoring" = "Reset monitoring";
+"Next reset forecast" = "Next reset forecast";
+"Monitoring" = "Monitoring";
+"About %@" = "About %@";
+"Source: Tibo on X" = "Source: Tibo on X";
 "No active official window" = "No active official window";
 "Today" = "Today";
 "This month" = "This month";
 "Open Dashboard" = "Open Dashboard";
 "Check Now" = "Check Now";
 "Settings…" = "Settings…";
-"Open Prediction Source" = "Open Prediction Source";
 "Quit Codex Radar" = "Quit Codex Radar";
 "Language" = "Language";
 "System Default" = "System Default";

@@ -4,8 +4,8 @@ import Testing
 
 struct MenuActionLayoutTests {
   @Test
-  func keepsPredictionSourceBeforeTheApplicationActionGroup() {
-    #expect(MenuActionID.contextAction == .source)
-    #expect(MenuActionID.applicationActions == [.dashboard, .refresh, .settings, .quit])
+  func keepsOnlyApplicationActionsInTheMenuList() {
+    #expect(MenuActionID.allCases == [.dashboard, .refresh, .settings, .quit])
+    #expect(MenuActionID.applicationActions == MenuActionID.allCases)
   }
 }

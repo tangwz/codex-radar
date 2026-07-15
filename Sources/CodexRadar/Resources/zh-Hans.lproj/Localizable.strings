@@ -23,13 +23,16 @@
 "Reading Codex usage" = "正在读取 Codex 用量";
 "Reset incoming" = "即将重置";
 "Reset monitoring" = "重置监控";
+"Next reset forecast" = "下次重置预测";
+"Monitoring" = "监控中";
+"About %@" = "约 %@ 后";
+"Source: Tibo on X" = "来源：Tibo 的 X 帖子";
 "No active official window" = "暂无活跃的官方窗口";
 "Today" = "今天";
 "This month" = "本月";
 "Open Dashboard" = "打开仪表盘";
 "Check Now" = "立即检查";
 "Settings…" = "设置…";
-"Open Prediction Source" = "打开预测来源";
 "Quit Codex Radar" = "退出 Codex Radar";
 "Language" = "语言";
 "System Default" = "跟随系统";
