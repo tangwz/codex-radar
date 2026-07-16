@@ -4,8 +4,9 @@
 
 ## 功能
 
-- 从公开 reset alert RSS 读取最新官方窗口，并直接展示原始 X 来源。
-- reset window 激活时显示菜单栏红点，并发送一次 macOS 通知。
+- 每分钟读取公开的 `/v1/current`，展示 Tibo 的 reset 状态、时间和原始 X 证据。
+- 仅在数据非 stale 且 reset 状态为 announced 时显示菜单栏红点。
+- 首次进入 announced、announced timing 变化和首次进入 completed 时，各发送一次 macOS 通知。
 - 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`。
 - 按日、月、年聚合 input、output、cached input 和 total token。
 - 参考 CodexBar 的累计快照、interleaved counter 与稳定 session identity 处理；统计为本地日志推算值，不依赖 CodexBar 运行时。

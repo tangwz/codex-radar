@@ -1,31 +1,82 @@
 import Foundation
 
-enum ResetForecastServiceError: LocalizedError {
+enum ResetForecastServiceError: LocalizedError, Equatable {
   case invalidResponse
+  case notInitialized
 
   var errorDescription: String? {
-    "The reset feed returned an invalid response."
+    switch self {
+    case .invalidResponse:
+      "The reset service returned an invalid response."
+    case .notInitialized:
+      "Reset status is not available yet."
+    }
   }
 }
 
-struct ResetForecastService: Sendable {
-  let feedURL: URL
+struct HTTPDataLoader: Sendable {
+  let load: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
-  init(feedURL: URL = URL(string: "https://codexradar.com/feed.xml")!) {
-    self.feedURL = feedURL
+  static let live = HTTPDataLoader { request in
+    try await URLSession.shared.data(for: request)
+  }
+}
+
+enum ResetForecastFetchResult: Equatable, Sendable {
+  case updated(ResetForecast, etag: String?)
+  case notModified
+}
+
+struct ResetForecastService: Sendable {
+  let currentURL: URL
+  let loader: HTTPDataLoader
+
+  init(
+    currentURL: URL = URL(string: "https://codexradar.com/v1/current")!,
+    loader: HTTPDataLoader = .live
+  ) {
+    self.currentURL = currentURL
+    self.loader = loader
   }
 
-  func fetch(now: Date = .now) async throws -> ResetForecast {
-    var request = URLRequest(url: feedURL)
+  func fetch(etag: String?) async throws -> ResetForecastFetchResult {
+    var request = URLRequest(url: currentURL)
     request.timeoutInterval = 15
-    request.cachePolicy = .reloadRevalidatingCacheData
-    let (data, response) = try await URLSession.shared.data(for: request)
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    if let etag {
+      request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+    }
 
-    guard let response = response as? HTTPURLResponse,
-      (200..<300).contains(response.statusCode)
-    else {
+    let (data, response) = try await loader.load(request)
+    guard let http = response as? HTTPURLResponse else {
       throw ResetForecastServiceError.invalidResponse
     }
-    return try ResetForecastRSSParser().parse(data: data, now: now)
+
+    if http.statusCode == 304 {
+      return .notModified
+    }
+    if http.statusCode == 503,
+      let error = try? JSONDecoder().decode(CurrentErrorEnvelope.self, from: data),
+      error.error.code == "not_initialized"
+    {
+      throw ResetForecastServiceError.notInitialized
+    }
+    guard (200..<300).contains(http.statusCode) else {
+      throw ResetForecastServiceError.invalidResponse
+    }
+
+    return .updated(
+      try ResetForecast.decoder.decode(ResetForecast.self, from: data),
+      etag: http.value(forHTTPHeaderField: "ETag")
+    )
   }
+
+}
+
+private struct CurrentErrorEnvelope: Decodable {
+  struct APIError: Decodable {
+    let code: String
+  }
+
+  let error: APIError
 }

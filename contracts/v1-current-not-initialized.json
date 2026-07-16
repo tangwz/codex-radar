@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "not_initialized",
+    "message": "Reset status is not available yet."
+  }
+}
