@@ -54,7 +54,9 @@ struct CodexRadarApp: App {
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     } label: {
-      MenuBarLabel(hasResetAlert: store.forecast.isActive)
+      MenuBarLabel(
+        hasResetAlert: ResetForecastPresentation(forecast: store.forecast).hasResetAlert
+      )
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     }

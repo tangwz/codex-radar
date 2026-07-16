@@ -138,6 +138,10 @@ private struct MenuResetPredictionCard: View {
   let theme: MenuBarTheme
   @Environment(\.locale) private var locale
 
+  private var presentation: ResetForecastPresentation {
+    ResetForecastPresentation(forecast: forecast)
+  }
+
   private var primaryText: Color {
     theme.isDarkRedesign ? theme.darkPrimaryText : Color(nsColor: .labelColor)
   }
@@ -155,8 +159,14 @@ private struct MenuResetPredictionCard: View {
   }
 
   private var borderColor: Color {
-    if forecast.isActive {
+    if presentation.stale {
+      return Color.orange.opacity(0.55)
+    }
+    if presentation.status == .announced {
       return Color.red.opacity(0.5)
+    }
+    if presentation.status == .completed {
+      return Color.green.opacity(0.5)
     }
 
     return theme.isDarkRedesign ? Color.white.opacity(0.2) : Color.accentColor.opacity(0.35)
@@ -165,7 +175,7 @@ private struct MenuResetPredictionCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 11) {
       HStack(alignment: .top, spacing: 10) {
-        RadarLogo(isActive: forecast.isActive, theme: theme)
+        RadarLogo(hasAlert: presentation.hasResetAlert, theme: theme)
 
         VStack(alignment: .leading, spacing: 3) {
           Text("Next reset forecast")
@@ -175,9 +185,9 @@ private struct MenuResetPredictionCard: View {
             .minimumScaleFactor(0.82)
             .layoutPriority(1)
 
-          if let predictedAt = forecast.predictedAt {
+          if case .exact(let at) = presentation.timeDisplay {
             Text(
-              predictedAt,
+              at,
               format: .dateTime
                 .month(.abbreviated)
                 .day()
@@ -196,60 +206,18 @@ private struct MenuResetPredictionCard: View {
             .controlSize(.small)
             .frame(minHeight: 22)
         } else {
-          ResetStatusBadge(isActive: forecast.isActive, theme: theme)
+          ResetStatusBadge(presentation: presentation, theme: theme)
         }
       }
 
-      if let predictedAt = forecast.predictedAt {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-          HStack(alignment: .lastTextBaseline, spacing: 8) {
-            Text(
-              predictedAt,
-              format: .dateTime
-                .hour()
-                .minute()
-                .locale(locale)
-            )
-            .font(.system(size: 34, weight: .semibold, design: .rounded))
-            .foregroundStyle(primaryText)
-            .monospacedDigit()
-            .lineLimit(1)
+      timeContent
 
-            Spacer(minLength: 2)
-
-            Text(
-              String(
-                format: String(localized: "About %@", bundle: .main, locale: locale),
-                DisplayFormatting.countdown(to: predictedAt, from: context.date, locale: locale)
-              )
-            )
-            .font(.caption2.weight(.semibold))
-            .monospacedDigit()
-            .foregroundStyle(theme.isDarkRedesign ? Color.white : Color.accentColor)
-            .lineLimit(1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 5)
-            .background(
-              theme.isDarkRedesign ? Color.white.opacity(0.14) : Color.accentColor.opacity(0.1),
-              in: Capsule()
-            )
-          }
+      if let sourceURL = presentation.sourceURL {
+        Link(destination: sourceURL) {
+          PredictionSourceChip(theme: theme)
         }
-      } else {
-        VStack(alignment: .leading, spacing: 3) {
-          Text("No active official window")
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(primaryText)
-          Text("Waiting for the next official signal")
-            .font(.caption)
-            .foregroundStyle(secondaryText)
-        }
+        .buttonStyle(.plain)
       }
-
-      Link(destination: forecast.sourceURL) {
-        PredictionSourceChip(theme: theme)
-      }
-      .buttonStyle(.plain)
     }
     .padding(12)
     .background(cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -263,10 +231,98 @@ private struct MenuResetPredictionCard: View {
       y: 5
     )
   }
+
+  @ViewBuilder
+  private var timeContent: some View {
+    switch presentation.timeDisplay {
+    case .exact(let at):
+      TimelineView(.periodic(from: .now, by: 60)) { context in
+        HStack(alignment: .lastTextBaseline, spacing: 8) {
+          Text(at, format: .dateTime.hour().minute().locale(locale))
+            .font(.system(size: 34, weight: .semibold, design: .rounded))
+            .foregroundStyle(primaryText)
+            .monospacedDigit()
+            .lineLimit(1)
+
+          Spacer(minLength: 2)
+
+          Text(
+            String(
+              format: String(localized: "In %@", bundle: .main, locale: locale),
+              DisplayFormatting.countdown(to: at, from: context.date, locale: locale)
+            )
+          )
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+          .foregroundStyle(theme.isDarkRedesign ? Color.white : Color.accentColor)
+          .lineLimit(1)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 5)
+          .background(
+            theme.isDarkRedesign ? Color.white.opacity(0.14) : Color.accentColor.opacity(0.1),
+            in: Capsule()
+          )
+        }
+      }
+    case .estimated(let from, let to):
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Estimated reset window")
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(primaryText)
+        Text(
+          String(
+            format: String(localized: "Between %@ and %@", bundle: .main, locale: locale),
+            DisplayFormatting.absoluteDate(from, locale: locale),
+            DisplayFormatting.absoluteDate(to, locale: locale)
+          )
+        )
+        .font(.caption)
+        .foregroundStyle(secondaryText)
+      }
+    case .imminent:
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Reset expected soon")
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(primaryText)
+        Text("No precise reset time is available")
+          .font(.caption)
+          .foregroundStyle(secondaryText)
+      }
+    case .none:
+      VStack(alignment: .leading, spacing: 3) {
+        Text(LocalizedStringKey(emptyStateTitleKey))
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(primaryText)
+        Text(LocalizedStringKey(emptyStateDetailKey))
+          .font(.caption)
+          .foregroundStyle(secondaryText)
+      }
+    }
+  }
+
+  private var emptyStateTitleKey: String {
+    if presentation.stale { return "Source unavailable" }
+    return switch presentation.status {
+    case .monitoring: "No reset signal"
+    case .candidate: "Possible reset signal"
+    case .announced: "Reset announced"
+    case .completed: "Ready to use"
+    }
+  }
+
+  private var emptyStateDetailKey: String {
+    if presentation.stale { return "Showing the last verified reset state" }
+    return switch presentation.status {
+    case .monitoring: "Waiting for Tibo's next reset signal"
+    case .candidate: "Watching for a confirmed reset announcement"
+    case .announced: "A reset is expected soon"
+    case .completed: "The announced reset has completed"
+    }
+  }
 }
 
 private struct RadarLogo: View {
-  let isActive: Bool
+  let hasAlert: Bool
   let theme: MenuBarTheme
 
   private var radarColor: Color {
@@ -296,7 +352,7 @@ private struct RadarLogo: View {
     }
     .frame(width: 46, height: 46)
     .overlay(alignment: .topTrailing) {
-      if isActive {
+      if hasAlert {
         Circle()
           .fill(.red)
           .frame(width: 8, height: 8)
@@ -308,22 +364,38 @@ private struct RadarLogo: View {
 }
 
 private struct ResetStatusBadge: View {
-  let isActive: Bool
+  let presentation: ResetForecastPresentation
   let theme: MenuBarTheme
 
+  private var titleKey: String {
+    if presentation.stale { return "Source unavailable" }
+    return switch presentation.status {
+    case .monitoring: "Monitoring"
+    case .candidate: "Watching"
+    case .announced: "Reset announced"
+    case .completed: "Reset completed"
+    }
+  }
+
+  private var color: Color {
+    if presentation.stale { return .orange }
+    return switch presentation.status {
+    case .monitoring: theme.isDarkRedesign ? .white : .accentColor
+    case .candidate: .yellow
+    case .announced: .red
+    case .completed: .green
+    }
+  }
+
   var body: some View {
-    Text(isActive ? LocalizedStringKey("Reset incoming") : LocalizedStringKey("Monitoring"))
+    Text(LocalizedStringKey(titleKey))
       .font(.caption2.weight(.semibold))
       .lineLimit(1)
-      .foregroundStyle(
-        isActive ? Color.red : (theme.isDarkRedesign ? Color.white : Color.accentColor)
-      )
+      .foregroundStyle(color)
       .padding(.horizontal, 7)
       .padding(.vertical, 4)
       .background(
-        isActive
-          ? Color.red.opacity(0.12)
-          : (theme.isDarkRedesign ? Color.white.opacity(0.14) : Color.accentColor.opacity(0.1)),
+        color.opacity(theme.isDarkRedesign ? 0.14 : 0.1),
         in: Capsule()
       )
   }
