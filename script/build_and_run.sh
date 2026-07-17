@@ -5,6 +5,9 @@ MODE="${1:-run}"
 APP_NAME="CodexRadar"
 BUNDLE_ID="com.terence.codex-radar"
 MIN_SYSTEM_VERSION="14.0"
+MARKETING_VERSION="0.1.0"
+BUILD_NUMBER="1"
+COPYRIGHT="© 2026 Terence Tang. All rights reserved."
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -57,6 +60,12 @@ cat >"$INFO_PLIST" <<PLIST
   <string>Codex Radar</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$MARKETING_VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$BUILD_NUMBER</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>$COPYRIGHT</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
