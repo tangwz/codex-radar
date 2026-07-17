@@ -3,6 +3,12 @@ import SwiftUI
 
 struct ApplicationIcon: View {
   let size: CGFloat
+  let fallbackSystemImage: String
+
+  init(size: CGFloat, fallbackSystemImage: String = "scope") {
+    self.size = size
+    self.fallbackSystemImage = fallbackSystemImage
+  }
 
   var body: some View {
     Group {
@@ -11,7 +17,7 @@ struct ApplicationIcon: View {
           .resizable()
           .scaledToFit()
       } else {
-        Image(systemName: "scope")
+        Image(systemName: fallbackSystemImage)
           .resizable()
           .scaledToFit()
           .padding(size * 0.18)

@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct AboutView: View {
@@ -55,23 +54,24 @@ private struct AboutLinkRow: View {
   @State private var isHovered = false
 
   var body: some View {
-    Button {
-      NSWorkspace.shared.open(link.url)
-    } label: {
+    Link(destination: link.url) {
       HStack(spacing: 10) {
         Image(systemName: link.systemImage)
           .frame(width: 18)
           .foregroundStyle(.secondary)
+          .accessibilityHidden(true)
         Text(LocalizedStringKey(link.titleKey))
           .foregroundStyle(.primary)
         Spacer()
         Image(systemName: "arrow.up.right")
           .font(.caption)
           .foregroundStyle(isHovered ? Color.accentColor : Color.secondary)
+          .accessibilityHidden(true)
       }
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .accessibilityLabel(Text(LocalizedStringKey(link.titleKey)))
     .onHover { isHovered = $0 }
   }
 }

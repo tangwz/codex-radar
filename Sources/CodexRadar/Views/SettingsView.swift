@@ -70,7 +70,7 @@ private struct SettingsSidebarView: View {
       ForEach(SettingsPane.allCases, id: \.self) { pane in
         HStack(spacing: 9) {
           if pane == .about {
-            ApplicationIcon(size: 22)
+            ApplicationIcon(size: 22, fallbackSystemImage: SettingsPane.about.systemImage)
           } else {
             Image(systemName: pane.systemImage)
               .frame(width: 22)
