@@ -436,17 +436,16 @@ enum MenuBarIconConfiguration {
   static let sideLength: CGFloat = 18
   static let contentInset: CGFloat = 0
 
-  static var image: NSImage {
+  static let image: NSImage = {
     let resourceURL = Bundle.main.url(forResource: assetName, withExtension: "png")
       ?? Bundle.module.url(forResource: assetName, withExtension: "png")
 
-    if let image = resourceURL.flatMap(NSImage.init(contentsOf:)) {
-      return image
-    }
-
-    return NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
+    let image = resourceURL.flatMap(NSImage.init(contentsOf:))
+      ?? NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
       ?? NSImage(size: NSSize(width: sideLength, height: sideLength))
-  }
+    image.size = NSSize(width: sideLength, height: sideLength)
+    return image
+  }()
 }
 
 struct MenuBarLabel: View {
