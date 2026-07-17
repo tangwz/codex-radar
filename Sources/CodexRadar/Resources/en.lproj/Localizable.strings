@@ -49,10 +49,6 @@
 "Source: Tibo on X" = "Source: Tibo on X";
 "Today" = "Today";
 "This month" = "This month";
-"Open Dashboard" = "Open Dashboard";
-"Check Now" = "Check Now";
-"Settings…" = "Settings…";
-"Quit Codex Radar" = "Quit Codex Radar";
 "Language" = "Language";
 "System Default" = "System Default";
 "English" = "English";
@@ -78,3 +74,13 @@
 "Reset monitoring is temporarily unavailable." = "Reset monitoring is temporarily unavailable.";
 "Token usage: %@" = "Token usage: %@";
 "Quit" = "Quit";
+"Dashboard" = "Dashboard";
+"Settings" = "Settings";
+"About" = "About";
+"Version %@" = "Version %@";
+"Links" = "Links";
+"GitHub" = "GitHub";
+"Website" = "Website";
+"X" = "X";
+"Bilibili" = "Bilibili";
+"Track Codex reset signals and local token usage." = "Track Codex reset signals and local token usage.";
