@@ -75,6 +75,47 @@ struct DashboardStoreForecastTests {
 
   @MainActor
   @Test
+  func replacesAndClearsForecastIssueAcrossLanguageChanges() async {
+    let defaults = UserDefaults.standard
+    let previousLanguage = defaults.object(forKey: AppLanguage.defaultsKey)
+    defer {
+      if let previousLanguage {
+        defaults.set(previousLanguage, forKey: AppLanguage.defaultsKey)
+      } else {
+        defaults.removeObject(forKey: AppLanguage.defaultsKey)
+      }
+    }
+
+    let fetcher = ForecastResultQueue([
+      .failure(ResetForecastServiceError.invalidResponse),
+      .failure(ResetForecastServiceError.invalidResponse),
+      .success(.notModified),
+    ])
+    let formatter = MutableForecastIssueFormatter(
+      template: "English forecast issue: %@"
+    )
+    let store = makeStore(
+      fetch: { try await fetcher.fetch(etag: $0) },
+      formatForecastIssue: { formatter.format(message: $0) }
+    )
+
+    defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.defaultsKey)
+    await store.refreshForecast()
+    let englishIssue = store.issues.first
+    #expect(store.issues.count == 1)
+
+    defaults.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.defaultsKey)
+    formatter.template = "Chinese forecast issue: %@"
+    await store.refreshForecast()
+    #expect(store.issues.count == 1)
+    #expect(store.issues.first != englishIssue)
+
+    await store.refreshForecast()
+    #expect(store.issues.isEmpty)
+  }
+
+  @MainActor
+  @Test
   func repeatedStartMonitoringCreatesOnlyOneLoop() async {
     let fetcher = ForecastResultQueue([.success(.notModified)])
     let store = makeStore(fetch: { try await fetcher.fetch(etag: $0) })
@@ -296,6 +337,9 @@ private func makeStore(
   fetch: @escaping @Sendable (String?) async throws -> ResetForecastFetchResult,
   prepare: @escaping @MainActor @Sendable () async -> Void = {},
   observe: @escaping @MainActor @Sendable (ResetForecast) async -> Void = { _ in },
+  formatForecastIssue: @escaping @MainActor @Sendable (String?) -> String = {
+    String(format: AppLocalization.string("Reset forecast: %@"), $0 ?? "")
+  },
   sleep: @escaping @Sendable (Duration) async throws -> Void = {
     try await Task.sleep(for: $0)
   }
@@ -305,10 +349,24 @@ private func makeStore(
     fetchForecast: fetch,
     prepareNotifications: prepare,
     observeForecast: observe,
+    formatForecastIssue: formatForecastIssue,
     pollingSchedule: ResetPollingSchedule(jitter: { 0 }),
     sleep: sleep,
     observesWakeEvents: false
   )
+}
+
+@MainActor
+private final class MutableForecastIssueFormatter {
+  var template: String
+
+  init(template: String) {
+    self.template = template
+  }
+
+  func format(message: String?) -> String {
+    String(format: template, message ?? "")
+  }
 }
 
 private func storeForecast(signalID: String?) -> ResetForecast {
