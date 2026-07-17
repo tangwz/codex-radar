@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 Dashboard、Settings 和 About 页面整合进一个固定侧边栏 Settings 窗口，并让菜单入口定向打开 Settings 或 About 页面。
+**Goal:** 将 Dashboard、Settings 和 About 页面整合进一个固定侧边栏 Settings 窗口，并让菜单入口定向打开对应页面。
 
 **Architecture:** 使用 `SettingsPane` 与内存态 `SettingsSelection` 驱动固定宽度 `List(.sidebar)` + `HStack` 详情布局。现有单例 `DashboardStore` 同时服务菜单和 Settings 中的 Dashboard；About 页面通过纯数据模型读取 Bundle 版本并提供经过测试的外链。
 
@@ -20,6 +20,7 @@
 - About 版本从 `CFBundleShortVersionString` 和 `CFBundleVersion` 读取；首版为 `0.1.0 (1)`。
 - About 只包含 GitHub、Website、X、Bilibili，不包含电子邮件、自动更新、构建日期或 Git commit。
 - 版权固定为 `© 2026 Terence Tang. All rights reserved.`。
+- Settings 保留语言与外观选择和 reset 提醒行为说明，不新增通知开关。
 - 不改变 Dashboard 数据源、token 扫描、reset 预测、通知或刷新语义。
 - 所有代码、标识符、注释和提交信息使用 English。
 
@@ -276,7 +277,7 @@ struct AppMetadata: Equatable, Sendable {
 }
 
 struct AboutLink: Identifiable, Equatable, Sendable {
-  enum ID: String, Sendable {
+  enum ID: String, Hashable, Sendable {
     case github
     case website
     case x
