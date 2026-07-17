@@ -35,7 +35,7 @@
 - Modify `script/build_and_run.sh`: 写入版本、构建号与版权 plist 字段。
 - Create `Tests/CodexRadarTests/SettingsNavigationTests.swift`: 页面顺序、默认选择和显式选择测试。
 - Create `Tests/CodexRadarTests/AppMetadataTests.swift`: 版本降级和外链配置测试。
-- Create `Tests/CodexRadarTests/SettingsViewSmokeTests.swift`: Settings/About 视图构造测试。
+- Create `Tests/CodexRadarTests/SettingsLayoutTests.swift`: Settings 固定布局尺寸测试。
 - Modify `Tests/CodexRadarTests/MenuActionLayoutTests.swift`: 新菜单顺序回归测试。
 
 ---
@@ -385,36 +385,29 @@ git commit -m "feat: add about metadata and app version"
 - Modify: `Sources/CodexRadar/App/CodexRadarApp.swift:24-28,65-69`
 - Modify: `Sources/CodexRadar/Resources/en.lproj/Localizable.strings`
 - Modify: `Sources/CodexRadar/Resources/zh-Hans.lproj/Localizable.strings`
-- Test: `Tests/CodexRadarTests/SettingsViewSmokeTests.swift`
+- Test: `Tests/CodexRadarTests/SettingsLayoutTests.swift`
 
 **Interfaces:**
 - Consumes: `SettingsPane`, `SettingsSelection`, `AppMetadata`, `AboutLink.all`, and the existing `ContentView(store:)`.
-- Produces: `SettingsView.init(store:selection:)`, `AboutView.init(metadata:)`, and `ApplicationIcon.init(size:)`.
+- Produces: `SettingsLayout` constants, `SettingsView.init(store:selection:)`, `AboutView.init(metadata:)`, and `ApplicationIcon.init(size:)`.
 
-- [ ] **Step 1: Write the failing view construction test**
+- [ ] **Step 1: Write the failing layout contract test**
 
-Create `Tests/CodexRadarTests/SettingsViewSmokeTests.swift`:
+Create `Tests/CodexRadarTests/SettingsLayoutTests.swift`:
 
 ```swift
 import Testing
 
 @testable import CodexRadar
 
-@MainActor
-struct SettingsViewSmokeTests {
+struct SettingsLayoutTests {
   @Test
-  func constructsTheUnifiedSettingsAndAboutViews() {
-    let store = DashboardStore()
-    let selection = SettingsSelection()
-    let metadata = AppMetadata(
-      infoDictionary: [
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "1",
-      ]
-    )
-
-    _ = SettingsView(store: store, selection: selection)
-    _ = AboutView(metadata: metadata)
+  func usesTheApprovedFixedDimensions() {
+    #expect(SettingsLayout.sidebarWidth == 220)
+    #expect(SettingsLayout.windowDefaultWidth == 1000)
+    #expect(SettingsLayout.windowDefaultHeight == 720)
+    #expect(SettingsLayout.windowMinWidth == 980)
+    #expect(SettingsLayout.windowMinHeight == 620)
   }
 }
 ```
@@ -424,10 +417,10 @@ struct SettingsViewSmokeTests {
 Run:
 
 ```bash
-swift test --filter SettingsViewSmokeTests
+swift test --filter SettingsLayoutTests
 ```
 
-Expected: compilation fails because `SettingsView` lacks the required initializer and `AboutView` does not exist.
+Expected: compilation fails because `SettingsLayout` does not exist.
 
 - [ ] **Step 3: Add the reusable application icon**
 
@@ -554,6 +547,14 @@ Replace `Sources/CodexRadar/Views/SettingsView.swift` with:
 import AppKit
 import SwiftUI
 
+enum SettingsLayout {
+  static let sidebarWidth: CGFloat = 220
+  static let windowDefaultWidth: CGFloat = 1000
+  static let windowDefaultHeight: CGFloat = 720
+  static let windowMinWidth: CGFloat = 980
+  static let windowMinHeight: CGFloat = 620
+}
+
 struct SettingsView: View {
   @ObservedObject var store: DashboardStore
   @ObservedObject var selection: SettingsSelection
@@ -561,7 +562,7 @@ struct SettingsView: View {
   var body: some View {
     HStack(spacing: 0) {
       SettingsSidebarView(selection: $selection.pane)
-        .frame(width: 220)
+        .frame(width: SettingsLayout.sidebarWidth)
         .background {
           SettingsSidebarMaterial()
             .ignoresSafeArea()
@@ -574,11 +575,11 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     .frame(
-      minWidth: 980,
-      idealWidth: 1000,
+      minWidth: SettingsLayout.windowMinWidth,
+      idealWidth: SettingsLayout.windowDefaultWidth,
       maxWidth: .infinity,
-      minHeight: 620,
-      idealHeight: 720,
+      minHeight: SettingsLayout.windowMinHeight,
+      idealHeight: SettingsLayout.windowDefaultHeight,
       maxHeight: .infinity
     )
   }
@@ -735,16 +736,17 @@ Keep the independent Dashboard window and menu action unchanged until Task 4. Th
 Run:
 
 ```bash
-swift test --filter SettingsViewSmokeTests
+swift test --filter SettingsLayoutTests
 swift test
+swift build
 ```
 
-Expected: the smoke test compiles and passes, then the full suite passes.
+Expected: the layout contract test passes, the full suite passes, and the application target compiles with the new required `SettingsView` initializer.
 
 - [ ] **Step 9: Commit the unified Settings UI**
 
 ```bash
-git add Sources/CodexRadar/Views/ApplicationIcon.swift Sources/CodexRadar/Views/AboutView.swift Sources/CodexRadar/Views/SettingsView.swift Sources/CodexRadar/App/CodexRadarApp.swift Sources/CodexRadar/Resources/en.lproj/Localizable.strings Sources/CodexRadar/Resources/zh-Hans.lproj/Localizable.strings Tests/CodexRadarTests/SettingsViewSmokeTests.swift
+git add Sources/CodexRadar/Views/ApplicationIcon.swift Sources/CodexRadar/Views/AboutView.swift Sources/CodexRadar/Views/SettingsView.swift Sources/CodexRadar/App/CodexRadarApp.swift Sources/CodexRadar/Resources/en.lproj/Localizable.strings Sources/CodexRadar/Resources/zh-Hans.lproj/Localizable.strings Tests/CodexRadarTests/SettingsLayoutTests.swift
 git commit -m "feat: add settings sidebar and about page"
 ```
 
