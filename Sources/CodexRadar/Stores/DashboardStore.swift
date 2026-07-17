@@ -331,6 +331,7 @@ final class DashboardStore: ObservableObject {
       case .notModified:
         consecutiveForecastFailures = 0
         removeForecastIssue()
+        await observeForecast(forecast)
       }
     } catch {
       guard generation == forecastGeneration, !Task.isCancelled else { return }
