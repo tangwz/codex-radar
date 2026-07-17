@@ -62,12 +62,41 @@ struct ResetNotificationPresentation: Equatable {
 
 @MainActor
 final class ResetNotificationService {
-  private let center = UNUserNotificationCenter.current()
-  private let defaults = UserDefaults.standard
+  typealias DeliverNotification = @MainActor (ResetForecast, String) async -> Bool
+
+  private let center: UNUserNotificationCenter?
+  private let defaults: UserDefaults
+  private let deliverNotification: DeliverNotification
   private let hasBaselineKey = "hasResetSignalBaseline"
   private let lastSignalIDKey = "lastObservedResetSignalID"
 
+  init(
+    center: UNUserNotificationCenter = .current(),
+    defaults: UserDefaults = .standard,
+    deliverNotification: DeliverNotification? = nil
+  ) {
+    self.center = center
+    self.defaults = defaults
+    self.deliverNotification = deliverNotification ?? { forecast, signalID in
+      await Self.sendNotification(
+        for: forecast,
+        signalID: signalID,
+        center: center
+      )
+    }
+  }
+
+  init(
+    defaults: UserDefaults,
+    deliverNotification: @escaping DeliverNotification
+  ) {
+    center = nil
+    self.defaults = defaults
+    self.deliverNotification = deliverNotification
+  }
+
   func prepare() async {
+    guard let center else { return }
     _ = try? await center.requestAuthorization(options: [.alert, .sound])
   }
 
@@ -84,8 +113,8 @@ final class ResetNotificationService {
     case .ignore:
       return
     case .notify(let signalID):
+      guard await deliverNotification(forecast, signalID) else { return }
       persistBaseline(signalID)
-      await sendNotification(for: forecast, signalID: signalID)
     }
   }
 
@@ -98,13 +127,19 @@ final class ResetNotificationService {
     }
   }
 
-  private func sendNotification(for forecast: ResetForecast, signalID: String) async {
-    guard let presentation = ResetNotificationPresentation(forecast: forecast) else { return }
+  private static func sendNotification(
+    for forecast: ResetForecast,
+    signalID: String,
+    center: UNUserNotificationCenter
+  ) async -> Bool {
+    guard let presentation = ResetNotificationPresentation(forecast: forecast) else {
+      return false
+    }
     let settings = await center.notificationSettings()
     guard settings.authorizationStatus == .authorized
       || settings.authorizationStatus == .provisional
     else {
-      return
+      return false
     }
 
     let content = UNMutableNotificationContent()
@@ -138,6 +173,11 @@ final class ResetNotificationService {
       content: content,
       trigger: nil
     )
-    try? await center.add(request)
+    do {
+      try await center.add(request)
+      return true
+    } catch {
+      return false
+    }
   }
 }

@@ -25,7 +25,7 @@ struct DashboardStoreForecastTests {
 
   @MainActor
   @Test
-  func treatsNotModifiedAsSuccessWithoutChangingOrObservingForecast() async {
+  func treatsNotModifiedAsSuccessAndReobservesCurrentForecast() async {
     let forecast = storeForecast(signalID: "signal-1")
     let fetcher = ForecastResultQueue([
       .success(.updated(forecast, etag: #""revision-1""#)),
@@ -43,7 +43,7 @@ struct DashboardStoreForecastTests {
     #expect(store.forecast == forecast)
     #expect(store.forecastETag == #""revision-1""#)
     #expect(store.consecutiveForecastFailures == 0)
-    #expect(await notifications.forecasts == [forecast])
+    #expect(await notifications.forecasts == [forecast, forecast])
     #expect(store.issues.isEmpty)
   }
 

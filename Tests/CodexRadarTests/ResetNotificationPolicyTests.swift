@@ -4,6 +4,33 @@ import Testing
 @testable import CodexRadar
 
 struct ResetNotificationPolicyTests {
+  @MainActor
+  @Test
+  func retriesUnconsumedSignalUntilDeliverySucceeds() async throws {
+    let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    var deliveryResults = [false, true]
+    var deliveredSignalIDs: [String] = []
+    let service = ResetNotificationService(
+      defaults: defaults,
+      deliverNotification: { _, signalID in
+        deliveredSignalIDs.append(signalID)
+        return deliveryResults.removeFirst()
+      }
+    )
+
+    await service.observe(makeForecast(status: .monitoring))
+    let forecast = makeForecast(status: .announced, signalID: "signal-2")
+
+    await service.observe(forecast)
+    await service.observe(forecast)
+    await service.observe(forecast)
+
+    #expect(deliveredSignalIDs == ["signal-2", "signal-2"])
+  }
+
   @Test
   func firstSignalEstablishesBaselineWithoutNotification() {
     let decision = ResetNotificationPolicy.decision(
