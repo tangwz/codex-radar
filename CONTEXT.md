@@ -17,7 +17,7 @@ _Avoid_: Preferences Window, Dashboard Window
 _Avoid_: Home, Overview
 
 **Settings**:
-管理语言、外观和 reset 提醒偏好的页面。
+管理语言与外观，并说明 reset 提醒行为的页面。
 _Avoid_: General, General Settings
 
 **About**:

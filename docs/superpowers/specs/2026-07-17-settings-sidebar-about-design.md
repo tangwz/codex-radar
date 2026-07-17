@@ -70,7 +70,7 @@ Codex Radar 采用相同的固定侧边栏方向，但不复制 CodexBar 的通�
 详情区根据 `SettingsSelection` 切换：
 
 - `dashboard`：复用现有 `ContentView`，保留刷新按钮、图表、加载状态和错误提示。
-- `settings`：保留现有语言、外观和重置提醒设置，改为适应详情区宽度的分组 Form，不再固定整个窗口为 `440 × 220pt`。
+- `settings`：保留现有语言与外观选择，以及 reset 提醒行为说明；改为适应详情区宽度的分组 Form，不新增通知开关，也不再固定整个窗口为 `440 × 220pt`。
 - `about`：显示新的 About 页面。
 
 ## About 页面
