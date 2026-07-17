@@ -39,6 +39,7 @@ final class DashboardStore: ObservableObject {
   private let fetchForecast: @Sendable (String?) async throws -> ResetForecastFetchResult
   private let prepareNotifications: @MainActor @Sendable () async -> Void
   private let observeForecast: @MainActor @Sendable (ResetForecast) async -> Void
+  private let formatForecastIssue: @MainActor @Sendable (String?) -> String
   private let pollingSchedule: ResetPollingSchedule
   private let sleep: @Sendable (Duration) async throws -> Void
   private let observesWakeEvents: Bool
@@ -56,6 +57,7 @@ final class DashboardStore: ObservableObject {
   private var refreshActivityCount = 0
   private var forecastGeneration: UInt64 = 0
   private var activeFetchGeneration: UInt64?
+  private var forecastIssue: String?
 
   init(
     sessionScanner: CodexSessionScanner = CodexSessionScanner(),
@@ -66,6 +68,12 @@ final class DashboardStore: ObservableObject {
     fetchForecast = { try await forecastService.fetch(etag: $0) }
     prepareNotifications = { await notificationService.prepare() }
     observeForecast = { await notificationService.observe($0) }
+    formatForecastIssue = { message in
+      String(
+        format: AppLocalization.string("Reset forecast: %@"),
+        message ?? ""
+      )
+    }
     pollingSchedule = ResetPollingSchedule { Int.random(in: -10...10) }
     sleep = { try await Task.sleep(for: $0) }
     observesWakeEvents = true
@@ -76,6 +84,7 @@ final class DashboardStore: ObservableObject {
     fetchForecast: @escaping @Sendable (String?) async throws -> ResetForecastFetchResult,
     prepareNotifications: @escaping @MainActor @Sendable () async -> Void,
     observeForecast: @escaping @MainActor @Sendable (ResetForecast) async -> Void,
+    formatForecastIssue: @escaping @MainActor @Sendable (String?) -> String,
     pollingSchedule: ResetPollingSchedule,
     sleep: @escaping @Sendable (Duration) async throws -> Void,
     observesWakeEvents: Bool
@@ -84,6 +93,7 @@ final class DashboardStore: ObservableObject {
     self.fetchForecast = fetchForecast
     self.prepareNotifications = prepareNotifications
     self.observeForecast = observeForecast
+    self.formatForecastIssue = formatForecastIssue
     self.pollingSchedule = pollingSchedule
     self.sleep = sleep
     self.observesWakeEvents = observesWakeEvents
@@ -154,7 +164,7 @@ final class DashboardStore: ObservableObject {
     guard generation == forecastGeneration else { return }
     guard !isRefreshing else { return }
     beginRefreshActivity()
-    issues.removeAll { !$0.hasPrefix(forecastIssuePrefix) }
+    issues = forecastIssue.map { [$0] } ?? []
     defer {
       if generation == forecastGeneration {
         endRefreshActivity()
@@ -312,11 +322,6 @@ final class DashboardStore: ObservableObject {
     }
   }
 
-  private var forecastIssuePrefix: String {
-    AppLocalization.string("Reset forecast: %@")
-      .replacingOccurrences(of: "%@", with: "")
-  }
-
   private func loadForecast(generation: UInt64) async {
     do {
       let result = try await fetchForecast(forecastETag)
@@ -359,7 +364,9 @@ final class DashboardStore: ObservableObject {
   }
 
   private func removeForecastIssue() {
-    issues.removeAll { $0.hasPrefix(forecastIssuePrefix) }
+    guard let forecastIssue else { return }
+    issues.removeAll { $0 == forecastIssue }
+    self.forecastIssue = nil
   }
 
   private func setForecastIssue(error: Error) {
@@ -367,11 +374,8 @@ final class DashboardStore: ObservableObject {
     let message = error as? ResetForecastServiceError == .notInitialized
       ? AppLocalization.string("Reset monitoring is starting up.")
       : AppLocalization.string("Reset monitoring is temporarily unavailable.")
-    issues.append(
-      String(
-        format: AppLocalization.string("Reset forecast: %@"),
-        message
-      )
-    )
+    let issue = formatForecastIssue(message)
+    forecastIssue = issue
+    issues.append(issue)
   }
 }
