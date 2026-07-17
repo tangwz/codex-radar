@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 Dashboard、通用设置和 About 页面整合进一个固定侧边栏 Settings 窗口，并让菜单入口定向打开通用或 About 页面。
+**Goal:** 将 Dashboard、Settings 和 About 页面整合进一个固定侧边栏 Settings 窗口，并让菜单入口定向打开 Settings 或 About 页面。
 
 **Architecture:** 使用 `SettingsPane` 与内存态 `SettingsSelection` 驱动固定宽度 `List(.sidebar)` + `HStack` 详情布局。现有单例 `DashboardStore` 同时服务菜单和 Settings 中的 Dashboard；About 页面通过纯数据模型读取 Bundle 版本并提供经过测试的外链。
 
@@ -12,9 +12,11 @@
 
 - 最低系统版本保持 macOS 14，不新增 Swift package 依赖。
 - 侧边栏固定为 `220pt`；窗口默认 `1000 × 720pt`，最小 `980 × 620pt`。
-- Settings 页面固定按 `dashboard`、`general`、`about` 排列，选择状态不持久化。
-- 菜单操作固定按 `refresh`、`settings`、`about`、`quit` 排列；删除 Dashboard 操作与 Command-D。
-- “设置…”与 Command-, 强制选择 `general`；“关于 Codex Radar”强制选择 `about`。
+- 窗口标题必须随当前页面和应用语言显示 `Dashboard`、`Settings` 或 `About`。
+- Settings 页面固定按 `dashboard`、`settings`、`about` 排列，选择状态不持久化。
+- 菜单操作固定按 `refresh`、`dashboard`、`settings`、`about`、`quit` 排列。
+- 菜单显示文案固定为 `Refresh`、`Dashboard`、`Settings`、`About`、`Quit`，简体中文对应为 `刷新`、`仪表盘`、`设置`、`关于`、`退出`，不使用动作专属长标题或省略号。
+- Dashboard 与 Command-D 强制选择 `dashboard`；“Settings”与 Command-, 强制选择 `settings`；“About”强制选择 `about`。
 - About 版本从 `CFBundleShortVersionString` 和 `CFBundleVersion` 读取；首版为 `0.1.0 (1)`。
 - About 只包含 GitHub、Website、X、Bilibili，不包含电子邮件、自动更新、构建日期或 Git commit。
 - 版权固定为 `© 2026 Terence Tang. All rights reserved.`。
@@ -27,8 +29,8 @@
 - Create `Sources/CodexRadar/Support/AppMetadata.swift`: Bundle 版本格式化和 About 外链配置。
 - Create `Sources/CodexRadar/Views/ApplicationIcon.swift`: About hero 与侧边栏复用的应用图标及占位视图。
 - Create `Sources/CodexRadar/Views/AboutView.swift`: 分组 Form、hero、外链行和版权页脚。
-- Modify `Sources/CodexRadar/Views/SettingsView.swift`: 固定侧边栏、详情路由和通用设置页。
-- Modify `Sources/CodexRadar/Views/MenuBarView.swift`: 删除 Dashboard action，新增定向 Settings/About action。
+- Modify `Sources/CodexRadar/Views/SettingsView.swift`: 固定侧边栏、详情路由和 Settings 页面。
+- Modify `Sources/CodexRadar/Views/MenuBarView.swift`: 将 Dashboard action 改为统一窗口路由，并新增定向 Settings/About action。
 - Modify `Sources/CodexRadar/App/CodexRadarApp.swift`: 删除独立 Dashboard scene，注入共享 store 与 selection。
 - Modify `Sources/CodexRadar/Resources/en.lproj/Localizable.strings`: About 与导航英文资源。
 - Modify `Sources/CodexRadar/Resources/zh-Hans.lproj/Localizable.strings`: About 与导航简体中文资源。
@@ -63,14 +65,14 @@ import Testing
 struct SettingsNavigationTests {
   @Test
   func keepsTheSettingsPaneOrderStable() {
-    #expect(SettingsPane.allCases == [.dashboard, .general, .about])
+    #expect(SettingsPane.allCases == [.dashboard, .settings, .about])
   }
 
   @Test
-  func startsOnGeneralAndSupportsExplicitRouting() {
+  func startsOnSettingsAndSupportsExplicitRouting() {
     let selection = SettingsSelection()
 
-    #expect(selection.pane == .general)
+    #expect(selection.pane == .settings)
 
     selection.show(.about)
     #expect(selection.pane == .about)
@@ -83,8 +85,8 @@ struct SettingsNavigationTests {
   func providesStablePresentationMetadata() {
     #expect(SettingsPane.dashboard.titleKey == "Dashboard")
     #expect(SettingsPane.dashboard.systemImage == "chart.xyaxis.line")
-    #expect(SettingsPane.general.titleKey == "General")
-    #expect(SettingsPane.general.systemImage == "gearshape.fill")
+    #expect(SettingsPane.settings.titleKey == "Settings")
+    #expect(SettingsPane.settings.systemImage == "gearshape.fill")
     #expect(SettingsPane.about.titleKey == "About")
     #expect(SettingsPane.about.systemImage == "info.circle.fill")
   }
@@ -110,13 +112,13 @@ import Combine
 
 enum SettingsPane: String, CaseIterable, Hashable {
   case dashboard
-  case general
+  case settings
   case about
 
   var titleKey: String {
     switch self {
     case .dashboard: "Dashboard"
-    case .general: "General"
+    case .settings: "Settings"
     case .about: "About"
     }
   }
@@ -124,7 +126,7 @@ enum SettingsPane: String, CaseIterable, Hashable {
   var systemImage: String {
     switch self {
     case .dashboard: "chart.xyaxis.line"
-    case .general: "gearshape.fill"
+    case .settings: "gearshape.fill"
     case .about: "info.circle.fill"
     }
   }
@@ -134,7 +136,7 @@ enum SettingsPane: String, CaseIterable, Hashable {
 final class SettingsSelection: ObservableObject {
   @Published var pane: SettingsPane
 
-  init(pane: SettingsPane = .general) {
+  init(pane: SettingsPane = .settings) {
     self.pane = pane
   }
 
@@ -389,7 +391,7 @@ git commit -m "feat: add about metadata and app version"
 
 **Interfaces:**
 - Consumes: `SettingsPane`, `SettingsSelection`, `AppMetadata`, `AboutLink.all`, and the existing `ContentView(store:)`.
-- Produces: `SettingsLayout` constants, `SettingsView.init(store:selection:)`, `AboutView.init(metadata:)`, and `ApplicationIcon.init(size:)`.
+- Produces: `SettingsLayout` constants, `SettingsView.init(store:selection:)`, dynamic localized window titles, `AboutView.init(metadata:)`, and `ApplicationIcon.init(size:)`.
 
 - [ ] **Step 1: Write the failing layout contract test**
 
@@ -582,6 +584,10 @@ struct SettingsView: View {
       idealHeight: SettingsLayout.windowDefaultHeight,
       maxHeight: .infinity
     )
+    .background {
+      SettingsWindowTitleBridge(title: AppLocalization.string(selection.pane.titleKey))
+        .allowsHitTesting(false)
+    }
   }
 
   @ViewBuilder
@@ -589,8 +595,8 @@ struct SettingsView: View {
     switch selection.pane {
     case .dashboard:
       ContentView(store: store)
-    case .general:
-      GeneralSettingsView()
+    case .settings:
+      SettingsPageView()
     case .about:
       AboutView()
     }
@@ -633,7 +639,7 @@ private struct SettingsSidebarView: View {
   }
 }
 
-private struct GeneralSettingsView: View {
+private struct SettingsPageView: View {
   @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
   @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
 
@@ -677,6 +683,37 @@ private struct SettingsSidebarMaterial: NSViewRepresentable {
     view.state = .followsWindowActiveState
   }
 }
+
+private struct SettingsWindowTitleBridge: NSViewRepresentable {
+  let title: String
+
+  func makeNSView(context: Context) -> SettingsWindowTitleView {
+    let view = SettingsWindowTitleView()
+    view.title = title
+    return view
+  }
+
+  func updateNSView(_ nsView: SettingsWindowTitleView, context: Context) {
+    nsView.title = title
+  }
+}
+
+private final class SettingsWindowTitleView: NSView {
+  var title = "" {
+    didSet {
+      applyTitle()
+    }
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    applyTitle()
+  }
+
+  private func applyTitle() {
+    window?.title = title
+  }
+}
 ```
 
 - [ ] **Step 6: Add the exact localization entries**
@@ -685,8 +722,8 @@ Append these entries to the English resource:
 
 ```text
 "Dashboard" = "Dashboard";
+"Settings" = "Settings";
 "About" = "About";
-"About Codex Radar" = "About Codex Radar";
 "Version %@" = "Version %@";
 "Links" = "Links";
 "GitHub" = "GitHub";
@@ -701,8 +738,8 @@ Append these entries to the English resource:
 | Key | Simplified Chinese value |
 | --- | --- |
 | Dashboard | 仪表盘 |
+| Settings | 设置 |
 | About | 关于 |
-| About Codex Radar | 关于 Codex Radar |
 | Version %@ | 版本 %@ |
 | Links | 链接 |
 | GitHub | GitHub |
@@ -710,6 +747,8 @@ Append these entries to the English resource:
 | X | X |
 | Bilibili | Bilibili |
 | Track Codex reset signals and local token usage. | 追踪 Codex 重置信号和本地 token 用量。 |
+
+Remove the now-unused action-specific localization keys `Open Dashboard`, `Check Now`, `Settings…`, and `Quit Codex Radar` from both resources. The menu reuses `Refresh`, `Dashboard`, `Settings`, `About`, and `Quit`.
 
 - [ ] **Step 7: Inject the shared store and selection into the Settings scene**
 
@@ -761,7 +800,7 @@ git commit -m "feat: add settings sidebar and about page"
 
 **Interfaces:**
 - Consumes: `SettingsSelection.show(_:)`, SwiftUI `openSettings`, `SettingsView.init(store:selection:)`, and the existing shared `DashboardStore`.
-- Produces: menu order `[.refresh, .settings, .about, .quit]`, direct General/About routing, and one Settings scene containing all pages.
+- Produces: menu order `[.refresh, .dashboard, .settings, .about, .quit]`, direct Dashboard/Settings/About routing, and one Settings scene containing all pages.
 
 - [ ] **Step 1: Update the menu-order test first**
 
@@ -770,7 +809,7 @@ Replace the first test in `Tests/CodexRadarTests/MenuActionLayoutTests.swift` wi
 ```swift
 @Test
 func keepsOnlyApplicationActionsInTheMenuList() {
-  #expect(MenuActionID.allCases == [.refresh, .settings, .about, .quit])
+  #expect(MenuActionID.allCases == [.refresh, .dashboard, .settings, .about, .quit])
   #expect(MenuActionID.applicationActions == MenuActionID.allCases)
 }
 ```
@@ -783,7 +822,7 @@ Run:
 swift test --filter MenuActionLayoutTests.keepsOnlyApplicationActionsInTheMenuList
 ```
 
-Expected: compilation fails because `MenuActionID.about` does not exist, or the expectation fails while `dashboard` remains present.
+Expected: compilation fails because `MenuActionID.about` does not exist and the action order differs.
 
 - [ ] **Step 3: Change the menu action model and dependencies**
 
@@ -795,6 +834,7 @@ import SwiftUI
 
 enum MenuActionID: String, CaseIterable, Hashable {
   case refresh
+  case dashboard
   case settings
   case about
   case quit
@@ -824,7 +864,7 @@ private func actionControl(_ action: MenuActionID) -> some View {
       Task { await store.refresh() }
     } label: {
       MenuActionRow(
-        title: "Check Now",
+        title: "Refresh",
         systemImage: "arrow.clockwise",
         shortcut: "⌘R",
         isLoading: store.isRefreshing,
@@ -835,12 +875,26 @@ private func actionControl(_ action: MenuActionID) -> some View {
     .keyboardShortcut("r", modifiers: .command)
     .disabled(store.isRefreshing)
 
-  case .settings:
+  case .dashboard:
     Button {
-      showSettings(.general)
+      showSettings(.dashboard)
     } label: {
       MenuActionRow(
-        title: "Settings…",
+        title: "Dashboard",
+        systemImage: "rectangle.grid.2x2",
+        shortcut: "⌘D",
+        theme: theme
+      )
+    }
+    .buttonStyle(.plain)
+    .keyboardShortcut("d", modifiers: .command)
+
+  case .settings:
+    Button {
+      showSettings(.settings)
+    } label: {
+      MenuActionRow(
+        title: "Settings",
         systemImage: "gearshape",
         shortcut: "⌘,",
         theme: theme
@@ -854,7 +908,7 @@ private func actionControl(_ action: MenuActionID) -> some View {
       showSettings(.about)
     } label: {
       MenuActionRow(
-        title: "About Codex Radar",
+        title: "About",
         systemImage: "info.circle",
         theme: theme
       )
@@ -970,15 +1024,17 @@ Expected: verification succeeds; output includes `CFBundleShortVersionString = 0
 
 Check all of the following in the packaged app:
 
-1. The menu action order is Refresh, Settings, About Codex Radar, Quit, with no Dashboard action.
-2. Command-, and Settings open one Settings window on General every time.
-3. About Codex Radar opens the same Settings window on About every time.
-4. The sidebar order is Dashboard, General, About; selecting Dashboard shows the existing forecast and token views.
-5. The Settings window opens at `1000 × 720pt`, does not shrink below `980 × 620pt`, and does not clip Dashboard content.
-6. About shows the application icon, `Version 0.1.0 (1)`, the approved tagline, four links, and copyright.
-7. Each link opens the approved URL in the default browser.
-8. English, Simplified Chinese, Light Mode, and Dark Mode render correctly.
-9. Relaunching the app does not restore a persisted page; menu entry routing remains authoritative.
+1. The menu action order is Refresh, Dashboard, Settings, About, Quit.
+2. Dashboard and Command-D open one Settings window on Dashboard every time.
+3. Command-, and Settings open the same Settings window on Settings every time.
+4. About opens the same Settings window on About every time.
+5. The sidebar order is Dashboard, Settings, About; selecting Dashboard shows the existing forecast and token views.
+6. The window title follows Dashboard, Settings, and About, including after an app-language change.
+7. The Settings window opens at `1000 × 720pt`, does not shrink below `980 × 620pt`, and does not clip Dashboard content.
+8. About shows the application icon, `Version 0.1.0 (1)`, the approved tagline, four links, and copyright.
+9. Each link opens the approved URL in the default browser.
+10. English, Simplified Chinese, Light Mode, and Dark Mode render correctly.
+11. Relaunching the app does not restore a persisted page; menu entry routing remains authoritative.
 
 - [ ] **Step 9: Commit menu and scene integration**
 
