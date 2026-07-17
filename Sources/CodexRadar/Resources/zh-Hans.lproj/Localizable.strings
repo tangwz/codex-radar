@@ -49,10 +49,6 @@
 "Source: Tibo on X" = "来源：Tibo 的 X 帖子";
 "Today" = "今天";
 "This month" = "本月";
-"Open Dashboard" = "打开仪表盘";
-"Check Now" = "立即检查";
-"Settings…" = "设置…";
-"Quit Codex Radar" = "退出 Codex Radar";
 "Language" = "语言";
 "System Default" = "跟随系统";
 "English" = "English";
@@ -78,3 +74,13 @@
 "Reset monitoring is temporarily unavailable." = "重置监控暂时不可用。";
 "Token usage: %@" = "Token 用量：%@";
 "Quit" = "退出";
+"Dashboard" = "仪表盘";
+"Settings" = "设置";
+"About" = "关于";
+"Version %@" = "版本 %@";
+"Links" = "链接";
+"GitHub" = "GitHub";
+"Website" = "网站";
+"X" = "X";
+"Bilibili" = "Bilibili";
+"Track Codex reset signals and local token usage." = "追踪 Codex 重置信号和本地 token 用量。";

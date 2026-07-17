@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 struct CodexRadarApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var store = DashboardStore()
+  @StateObject private var settingsSelection = SettingsSelection()
   @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
   @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
 
@@ -63,7 +64,7 @@ struct CodexRadarApp: App {
     .menuBarExtraStyle(.window)
 
     Settings {
-      SettingsView()
+      SettingsView(store: store, selection: settingsSelection)
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     }
