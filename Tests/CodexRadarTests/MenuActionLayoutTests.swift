@@ -6,7 +6,7 @@ import Testing
 struct MenuActionLayoutTests {
   @Test
   func keepsOnlyApplicationActionsInTheMenuList() {
-    #expect(MenuActionID.allCases == [.dashboard, .refresh, .settings, .quit])
+    #expect(MenuActionID.allCases == [.refresh, .dashboard, .settings, .about, .quit])
     #expect(MenuActionID.applicationActions == MenuActionID.allCases)
   }
 

@@ -6,10 +6,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
     UNUserNotificationCenter.current().delegate = self
-
-    DispatchQueue.main.async {
-      NSApp.windows.first { $0.title == "Codex Radar" }?.orderOut(nil)
-    }
   }
 
   func userNotificationCenter(
@@ -36,22 +32,9 @@ struct CodexRadarApp: App {
     AppAppearance.resolve(appearance).colorScheme
   }
 
-  @ViewBuilder
-  private var dashboardContent: some View {
-    ContentView(store: store)
-      .environment(\.locale, selectedLocale)
-      .preferredColorScheme(preferredColorScheme)
-  }
-
   var body: some Scene {
-    Window("Codex Radar", id: "dashboard") {
-      dashboardContent
-    }
-    .defaultSize(width: 880, height: 760)
-    .windowResizability(.contentMinSize)
-
     MenuBarExtra {
-      MenuBarView(store: store)
+      MenuBarView(store: store, settingsSelection: settingsSelection)
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     } label: {
@@ -68,5 +51,7 @@ struct CodexRadarApp: App {
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     }
+    .defaultSize(width: 1000, height: 720)
+    .windowResizability(.contentMinSize)
   }
 }

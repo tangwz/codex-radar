@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 
 enum MenuActionID: String, CaseIterable, Hashable {
-  case dashboard
   case refresh
+  case dashboard
   case settings
+  case about
   case quit
 
   static let applicationActions = MenuActionID.allCases
@@ -12,7 +13,8 @@ enum MenuActionID: String, CaseIterable, Hashable {
 
 struct MenuBarView: View {
   @ObservedObject var store: DashboardStore
-  @Environment(\.openWindow) private var openWindow
+  @ObservedObject var settingsSelection: SettingsSelection
+  @Environment(\.openSettings) private var openSettings
   @Environment(\.colorScheme) private var colorScheme
 
   private var theme: MenuBarTheme {
@@ -77,27 +79,12 @@ struct MenuBarView: View {
   @ViewBuilder
   private func actionControl(_ action: MenuActionID) -> some View {
     switch action {
-    case .dashboard:
-      Button {
-        openWindow(id: "dashboard")
-        NSApp.activate(ignoringOtherApps: true)
-      } label: {
-        MenuActionRow(
-          title: "Open Dashboard",
-          systemImage: "rectangle.grid.2x2",
-          shortcut: "⌘D",
-          theme: theme
-        )
-      }
-      .buttonStyle(.plain)
-      .keyboardShortcut("d", modifiers: .command)
-
     case .refresh:
       Button {
         Task { await store.refresh() }
       } label: {
         MenuActionRow(
-          title: "Check Now",
+          title: "Refresh",
           systemImage: "arrow.clockwise",
           shortcut: "⌘R",
           isLoading: store.isRefreshing,
@@ -108,10 +95,26 @@ struct MenuBarView: View {
       .keyboardShortcut("r", modifiers: .command)
       .disabled(store.isRefreshing)
 
-    case .settings:
-      SettingsLink {
+    case .dashboard:
+      Button {
+        showSettings(.dashboard)
+      } label: {
         MenuActionRow(
-          title: "Settings…",
+          title: "Dashboard",
+          systemImage: "rectangle.grid.2x2",
+          shortcut: "⌘D",
+          theme: theme
+        )
+      }
+      .buttonStyle(.plain)
+      .keyboardShortcut("d", modifiers: .command)
+
+    case .settings:
+      Button {
+        showSettings(.settings)
+      } label: {
+        MenuActionRow(
+          title: "Settings",
           systemImage: "gearshape",
           shortcut: "⌘,",
           theme: theme
@@ -119,6 +122,18 @@ struct MenuBarView: View {
       }
       .buttonStyle(.plain)
       .keyboardShortcut(",", modifiers: .command)
+
+    case .about:
+      Button {
+        showSettings(.about)
+      } label: {
+        MenuActionRow(
+          title: "About",
+          systemImage: "info.circle",
+          theme: theme
+        )
+      }
+      .buttonStyle(.plain)
 
     case .quit:
       Button {
@@ -129,6 +144,12 @@ struct MenuBarView: View {
       .buttonStyle(.plain)
       .keyboardShortcut("q", modifiers: .command)
     }
+  }
+
+  private func showSettings(_ pane: SettingsPane) {
+    settingsSelection.show(pane)
+    openSettings()
+    NSApp.activate(ignoringOtherApps: true)
   }
 }
 
