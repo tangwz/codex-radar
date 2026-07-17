@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 
 @testable import CodexRadar
@@ -21,5 +21,21 @@ struct MenuActionLayoutTests {
         withExtension: "png"
       ) != nil
     )
+  }
+
+  @Test
+  func providesMenuBarIconAtConfiguredLogicalSize() {
+    #expect(
+      MenuBarIconConfiguration.image.size
+        == NSSize(
+          width: MenuBarIconConfiguration.sideLength,
+          height: MenuBarIconConfiguration.sideLength
+        )
+    )
+  }
+
+  @Test
+  func reusesTheMenuBarIconImageInstance() {
+    #expect(MenuBarIconConfiguration.image === MenuBarIconConfiguration.image)
   }
 }
