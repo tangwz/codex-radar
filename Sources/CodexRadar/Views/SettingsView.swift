@@ -12,6 +12,11 @@ enum SettingsLayout {
 struct SettingsView: View {
   @ObservedObject var store: DashboardStore
   @ObservedObject var selection: SettingsSelection
+  @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
+
+  private var selectedLanguage: AppLanguage {
+    AppLanguage(rawValue: language) ?? .system
+  }
 
   var body: some View {
     HStack(spacing: 0) {
@@ -37,7 +42,9 @@ struct SettingsView: View {
       maxHeight: .infinity
     )
     .background {
-      SettingsWindowTitleBridge(title: AppLocalization.string(selection.pane.titleKey))
+      SettingsWindowTitleBridge(
+        title: AppLocalization.string(selection.pane.titleKey, language: selectedLanguage)
+      )
         .allowsHitTesting(false)
     }
   }
