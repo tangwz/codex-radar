@@ -158,7 +158,7 @@ cat > "$INFO_PLIST" <<PLIST
     <string>zh-Hans</string>
   </array>
   <key>CFBundleName</key>
-  <string>Codex Radar</string>
+  <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

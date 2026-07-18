@@ -459,8 +459,6 @@ enum MenuBarIconConfiguration {
 
   static let image: NSImage = {
     let resourceURL = Bundle.main.url(forResource: assetName, withExtension: "png")
-      ?? Bundle.module.url(forResource: assetName, withExtension: "png")
-
     let image = resourceURL.flatMap(NSImage.init(contentsOf:))
       ?? NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
       ?? NSImage(size: NSSize(width: sideLength, height: sideLength))
