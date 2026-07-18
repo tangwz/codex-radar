@@ -67,6 +67,10 @@ def validate_contract(ci, release)
     shell_lines(ci_helpers.fetch("run")).include?("./script/tests/remote_tag_test.sh"),
     "CI must test remote tag provenance"
   )
+  assert(
+    shell_lines(ci_helpers.fetch("run")).include?("./script/tests/swift_concurrency_compatibility_test.sh"),
+    "CI must test Xcode 16 concurrency compatibility"
+  )
 
   release_triggers = triggers(release)
   assert(

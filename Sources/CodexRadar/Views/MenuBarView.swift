@@ -457,6 +457,7 @@ enum MenuBarIconConfiguration {
   static let sideLength: CGFloat = 18
   static let contentInset: CGFloat = 0
 
+  @MainActor
   static let image: NSImage = {
     let resourceURL = Bundle.main.url(forResource: assetName, withExtension: "png")
     let image = resourceURL.flatMap(NSImage.init(contentsOf:))
