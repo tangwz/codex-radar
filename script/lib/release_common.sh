@@ -85,6 +85,112 @@ validate_release_tag() {
     }
 }
 
+validate_commit_sha() {
+  local commit_sha="$1"
+  [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || {
+      codex_radar_die "Invalid commit SHA: $commit_sha"
+      return 1
+    }
+}
+
+assert_remote_tag_commit() (
+  set -euo pipefail
+
+  if [[ $# -lt 3 || $# -gt 4 ]]; then
+    codex_radar_die \
+      "Usage: assert_remote_tag_commit REPOSITORY TAG EXPECTED_COMMIT [REMOTE]"
+    return 1
+  fi
+
+  local repository="$1"
+  local tag="$2"
+  local expected_commit="$3"
+  local remote="${4:-origin}"
+  local resolved_expected=""
+  local resolved_remote_tag=""
+  local verification_ref="refs/codex-radar/remote-tag-validation/$$-${RANDOM}-${RANDOM}"
+
+  if ! validate_release_tag "$tag"; then
+    return 1
+  fi
+  if ! validate_commit_sha "$expected_commit"; then
+    return 1
+  fi
+  [[ "$remote" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ \
+    && "$remote" != *..* \
+    && "$remote" != *//* ]] \
+    || {
+      codex_radar_die "Invalid Git remote: $remote"
+      return 1
+    }
+  if ! git -C "$repository" rev-parse --git-dir >/dev/null 2>&1; then
+    codex_radar_die "Invalid Git repository: $repository"
+    return 1
+  fi
+  if ! git -C "$repository" remote get-url "$remote" >/dev/null 2>&1; then
+    codex_radar_die "Unknown Git remote: $remote"
+    return 1
+  fi
+
+  if ! resolved_expected="$(
+    git -C "$repository" rev-parse --verify "${expected_commit}^{commit}" 2>/dev/null
+  )"; then
+    codex_radar_die "Expected release commit is not available: $expected_commit"
+    return 1
+  fi
+  [[ "$resolved_expected" == "$expected_commit" ]] \
+    || {
+      codex_radar_die "Expected release SHA is not a commit: $expected_commit"
+      return 1
+    }
+
+  if git -C "$repository" show-ref --verify --quiet "$verification_ref"; then
+    codex_radar_die "Remote tag verification ref already exists"
+    return 1
+  fi
+
+  cleanup_remote_tag_ref() {
+    local status="$?"
+    local cleanup_status=0
+    trap - EXIT HUP INT TERM
+    set +e
+    git -C "$repository" update-ref -d "$verification_ref" >/dev/null 2>&1
+    cleanup_status="$?"
+    if [[ "$status" -ne 0 ]]; then
+      exit "$status"
+    fi
+    exit "$cleanup_status"
+  }
+  trap cleanup_remote_tag_ref EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if ! git -C "$repository" fetch \
+    --quiet \
+    --no-tags \
+    --force \
+    "$remote" \
+    "refs/tags/${tag}:${verification_ref}"; then
+    codex_radar_die "Unable to fetch remote tag: $tag"
+    return 1
+  fi
+
+  if ! resolved_remote_tag="$(
+    git -C "$repository" rev-parse --verify "${verification_ref}^{commit}" 2>/dev/null
+  )"; then
+    codex_radar_die "Remote tag does not resolve to a commit: $tag"
+    return 1
+  fi
+  [[ "$resolved_remote_tag" == "$expected_commit" ]] \
+    || {
+      codex_radar_die \
+        "Remote tag $tag resolves to $resolved_remote_tag, expected $expected_commit"
+      return 1
+    }
+)
+
 assert_commit_on_main() {
   local repository="$1"
   local commit="$2"
