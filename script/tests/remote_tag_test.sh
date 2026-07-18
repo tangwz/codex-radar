@@ -26,6 +26,12 @@ assert_no_verification_refs() {
     || codex_radar_die "Remote tag verification ref was not cleaned up"
 }
 
+assert_stale_local_tag_unchanged() {
+  [[ "$(git -C "$CLIENT_DIR" rev-parse --verify \
+    "refs/tags/v$MARKETING_VERSION")" == "$FIRST_COMMIT" ]] \
+    || codex_radar_die "Local stale tag was overwritten by remote verification"
+}
+
 git init -q --bare "$REMOTE_DIR"
 git init -q "$SOURCE_DIR"
 git -C "$SOURCE_DIR" config user.name "Remote Tag Test"
@@ -87,12 +93,14 @@ expect_failure \
   "$FIRST_COMMIT" \
   origin
 assert_no_verification_refs
+assert_stale_local_tag_unchanged
 assert_remote_tag_commit \
   "$CLIENT_DIR" \
   "v$MARKETING_VERSION" \
   "$SECOND_COMMIT" \
   origin
 assert_no_verification_refs
+assert_stale_local_tag_unchanged
 
 git -C "$SOURCE_DIR" push -q origin ":refs/tags/v$MARKETING_VERSION"
 expect_failure \
@@ -103,6 +111,7 @@ expect_failure \
   "$SECOND_COMMIT" \
   origin
 assert_no_verification_refs
+assert_stale_local_tag_unchanged
 
 export MARKETING_VERSION="1.2.5"
 BLOB_SHA="$(printf 'blob\n' | git -C "$SOURCE_DIR" hash-object -w --stdin)"
