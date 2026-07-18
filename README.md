@@ -38,7 +38,7 @@ swift test
 当前采用两阶段策略：
 
 - 在 `main` 上手动运行 GitHub Actions 的 `Release`，属于 package-only/preflight：它构建、签名、验证并保留七天 Artifact，但不会创建 GitHub Release。
-- 手动选择 `adhoc` 时，Artifact 是 ad-hoc 签名且未公证的预检产物。手动选择 `developer-id` 时，会真实执行 Developer ID 签名并向 Apple 提交公证、等待并 stapling；它仍然只生成 Artifact，不创建 GitHub Release。
+- 手动 ad-hoc preflight 必须选择 `signing_mode=adhoc` 和 `release_channel=prerelease`；`adhoc + stable` 会 fail closed。Artifact 是 ad-hoc 签名且未公证的预检产物。手动选择 `developer-id` 时，会真实执行 Developer ID 签名并向 Apple 提交公证、等待并 stapling；它仍然只生成 Artifact，不创建 GitHub Release。
 - 推送位于 `main` 历史中的 `v*` tag 时，工作流固定创建 ad-hoc 签名、未公证的 GitHub Pre-release。它不会根据已有 secrets 自动切换为 Developer ID 或 stable 发布。
 - 在 Apple Developer Program 凭据和受保护的 `release` Environment 完整配置之前，Developer ID 分发保持禁用。未来只有通过可审阅的显式配置切换到 `developer-id` 后，才能发布 stable Developer ID 版本。
 
@@ -64,7 +64,7 @@ SIGNING_MODE=adhoc RELEASE_PRERELEASE=true \
   ./script/package_release.sh dist/release
 ```
 
-产物目录必须且只应包含对应版本的 ZIP 与 checksum：`CodexRadar-v<MARKETING_VERSION>-macos-universal.zip` 和同名 `.zip.sha256`。发布或下载 Artifact 后，在这两个文件所在目录验证 checksum：
+当前版本的发布资产为 ZIP `CodexRadar-v<MARKETING_VERSION>-macos-universal.zip` 及同名 `.zip.sha256`。打包脚本不会清理输出目录中的旧版本资产，建议使用空输出目录，或在验证时只选择当前版本的这两个文件。发布或下载 Artifact 后，在这两个文件所在目录验证 checksum：
 
 ```bash
 /usr/bin/shasum -a 256 --check CodexRadar-v0.1.0-macos-universal.zip.sha256
@@ -79,7 +79,7 @@ git push origin v0.1.0
 
 发布脚本不会自动覆盖已经公开的 tag 或 GitHub Release。构建、测试、签名或验证失败时不会创建 Release；资产上传失败时会保留 Draft，避免暴露不完整产物。只可对同一 tag 的 Draft 安全重跑，重跑会重新上传同名资产；一旦 Release 已公开，脚本会拒绝覆盖，必须停止并按新的版本/tag 或经人工审核的修复流程处理。
 
-Developer ID 手动 preflight 前，仓库管理员必须在 GitHub 预先创建 `release` Environment，并将 deployment branches/tags 限制为 `main` 和 `v*`，配置 required reviewer、开启 prevent self-review，并禁止 administrator bypass。还必须配置以下五项 secrets：
+Developer ID 手动 preflight 前，仓库管理员必须在 GitHub 预先创建 `release` Environment。在 deployment branches/tags 中分别添加 deployment Branch rule `main` 与 Tag rule `v*`，配置 required reviewer、开启 prevent self-review，并取消勾选 `Allow administrators to bypass configured protection rules`。还必须配置以下五项 secrets：
 
 - `MACOS_CERTIFICATE_P12`
 - `MACOS_CERTIFICATE_PASSWORD`
