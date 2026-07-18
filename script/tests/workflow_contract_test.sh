@@ -63,6 +63,10 @@ def validate_contract(ci, release)
     shell_lines(ci_helpers.fetch("run")).include?("./script/tests/workflow_contract_test.sh"),
     "CI must gate changes on the release workflow contract"
   )
+  assert(
+    shell_lines(ci_helpers.fetch("run")).include?("./script/tests/remote_tag_test.sh"),
+    "CI must test remote tag provenance"
+  )
 
   release_triggers = triggers(release)
   assert(
@@ -167,17 +171,19 @@ def validate_contract(ci, release)
   guard_lines = shell_lines(guard.fetch("run"))
   fetch_line = "git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main"
   tag_guard_line = './script/validate_release.sh "$RELEASE_TAG" "$RELEASE_SHA" refs/remotes/origin/main'
+  remote_tag_guard_line = './script/validate_remote_tag.sh "$RELEASE_TAG" "$RELEASE_SHA" origin'
   manual_guard_line = './script/validate_release.sh "" "$RELEASE_SHA" refs/remotes/origin/main'
   assert(guard_lines.count(fetch_line) == 1, "Every trigger must fetch origin/main once")
   assert(guard_lines.count(tag_guard_line) == 1, "Tag metadata must validate tag, version, and main ancestry")
+  assert(guard_lines.count(remote_tag_guard_line) == 1, "Tag metadata must validate the remote tag commit")
   assert(guard_lines.count(manual_guard_line) == 1, "Manual preflight commit must be on main")
   assert(guard_lines.index(fetch_line) < guard_lines.index(tag_guard_line), "Main fetch must precede tag validation")
   assert(guard_lines.index(fetch_line) < guard_lines.index(manual_guard_line), "Main fetch must precede manual validation")
   push_guard_index = guard_lines.index("push)")
   manual_guard_index = guard_lines.index("workflow_dispatch)")
   assert(
-    guard_lines[push_guard_index, 3] == ["push)", tag_guard_line, ";;"],
-    "Tag validation must remain inside the push branch"
+    guard_lines[push_guard_index, 4] == ["push)", tag_guard_line, remote_tag_guard_line, ";;"],
+    "Tag metadata and remote provenance validation must remain inside the push branch"
   )
   assert(
     guard_lines[manual_guard_index, 3] == ["workflow_dispatch)", manual_guard_line, ";;"],
@@ -226,6 +232,11 @@ def validate_contract(ci, release)
     ],
     "Release validation steps must remain centralized"
   )
+  validation_helpers = step(validation, "Test release helpers")
+  assert(
+    shell_lines(validation_helpers.fetch("run")).include?("./script/tests/remote_tag_test.sh"),
+    "Release validation must test remote tag provenance"
+  )
 
   metadata_checkout = metadata.fetch("steps").first
   assert(
@@ -235,15 +246,43 @@ def validate_contract(ci, release)
     },
     "Metadata checkout must retain its read-only token for the explicit main fetch"
   )
-  [validation, package_adhoc, package_developer_id, publish].each do |job|
+  [package_adhoc, publish].each do |job|
+    checkout = job.fetch("steps").first
+    assert(
+      checkout.fetch("with") == {"persist-credentials" => true},
+      "Tag revalidation jobs must retain credentials for remote fetch"
+    )
+  end
+  [validation, package_developer_id].each do |job|
     checkout = job.fetch("steps").first
     assert(
       checkout.fetch("with") == {"persist-credentials" => false},
-      "Only metadata may persist checkout credentials"
+      "Jobs without remote revalidation must not persist checkout credentials"
     )
   end
 
+  package_recheck = step(package_adhoc, "Revalidate remote tag before packaging")
+  assert(package_recheck.fetch("if") == "github.event_name == 'push'", "Manual packaging must skip tag revalidation")
+  assert(
+    package_recheck.fetch("env") == {
+      "RELEASE_SHA" => "${{ github.sha }}",
+      "RELEASE_TAG" => "${{ github.ref_name }}"
+    },
+    "Package tag context must enter shell through env"
+  )
+  assert(
+    shell_lines(package_recheck.fetch("run")) == [
+      "set -euo pipefail",
+      './script/validate_remote_tag.sh "$RELEASE_TAG" "$RELEASE_SHA" origin'
+    ],
+    "Tag provenance must be revalidated immediately before packaging"
+  )
   adhoc_step = step(package_adhoc, "Package ad-hoc Universal 2 artifact")
+  assert(
+    step_index(package_adhoc, "Revalidate remote tag before packaging") <
+      step_index(package_adhoc, "Package ad-hoc Universal 2 artifact"),
+    "Remote tag revalidation must precede packaging"
+  )
   assert(
     adhoc_step.fetch("env") == {
       "RELEASE_PRERELEASE" => "true",
@@ -328,15 +367,23 @@ def validate_contract(ci, release)
     publish_step.fetch("env") == {
       "GH_TOKEN" => "${{ github.token }}",
       "RELEASE_PRERELEASE" => "${{ needs.metadata.outputs.release_prerelease }}",
+      "RELEASE_SHA" => "${{ github.sha }}",
       "RELEASE_TAG" => "${{ github.ref_name }}",
       "RELEASE_VERSION" => "${{ needs.metadata.outputs.version }}",
       "SIGNING_MODE" => "adhoc"
     },
     "Publish env must be fixed to the validated tag ad-hoc path"
   )
+  publish_lines = shell_lines(publish_step.fetch("run"))
+  publish_recheck_line = './script/validate_remote_tag.sh "$RELEASE_TAG" "$RELEASE_SHA" origin'
+  publish_call_line = "./script/publish_release.sh \\"
   assert(
-    shell_lines(publish_step.fetch("run")).include?("./script/publish_release.sh \\"),
-    "Publishing must use publish_release.sh"
+    publish_lines.count(publish_recheck_line) == 1,
+    "Publish must revalidate remote tag provenance"
+  )
+  assert(
+    publish_lines.index(publish_call_line) == publish_lines.index(publish_recheck_line) + 1,
+    "Remote tag revalidation must be adjacent to publish_release.sh"
   )
 
   expected_actions = {
@@ -413,6 +460,23 @@ expect_mutation_failure("cleanup restore removed", ci, release) do |_mutated_ci,
   original_run = developer_step.fetch("run")
   developer_step["run"] = original_run.sub("    restore_keychain_search_list\n", "")
   raise "Cleanup mutation did not apply" if developer_step.fetch("run") == original_run
+end
+
+expect_mutation_failure("package tag recheck removed", ci, release) do |_mutated_ci, mutated_release|
+  package_job = mutated_release.fetch("jobs").fetch("package_adhoc")
+  package_job.fetch("steps").reject! do |candidate|
+    candidate["name"] == "Revalidate remote tag before packaging"
+  end
+end
+
+expect_mutation_failure("publish tag recheck removed", ci, release) do |_mutated_ci, mutated_release|
+  publish_step = step(mutated_release.fetch("jobs").fetch("publish"), "Publish GitHub release")
+  original_run = publish_step.fetch("run")
+  publish_step["run"] = original_run.sub(
+    "./script/validate_remote_tag.sh \"$RELEASE_TAG\" \"$RELEASE_SHA\" origin\n",
+    ""
+  )
+  raise "Publish tag mutation did not apply" if publish_step.fetch("run") == original_run
 end
 RUBY
 

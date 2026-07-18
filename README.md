@@ -79,6 +79,8 @@ git push origin v0.1.0
 
 发布脚本不会自动覆盖已经公开的 tag 或 GitHub Release。构建、测试、签名或验证失败时不会创建 Release；资产上传失败时会保留 Draft，避免暴露不完整产物。只可对同一 tag 的 Draft 安全重跑，重跑会重新上传同名资产；一旦 Release 已公开，脚本会拒绝覆盖，必须停止并按新的版本/tag 或经人工审核的修复流程处理。
 
+推送第一个发布 tag 前，仓库管理员还必须启用一个针对 `v*` 的 active tag ruleset，至少禁止 tag update 和 delete，并严格限制或取消管理员/其他 bypass。workflow 会在 metadata、ad-hoc 打包前和发布调用前分别从远端重新读取并核对 tag commit，但这些检查与后续操作无法组成原子事务；tag ruleset 是关闭最后一次检查后的瞬时竞态、tag 移动/删除以及管理员重跑风险所需的外部边界。仓库内检查不能替代该 ruleset，也不应声称可以完全消除竞态。
+
 Developer ID 手动 preflight 前，仓库管理员必须在 GitHub 预先创建 `release` Environment。在 deployment branches/tags 中分别添加 deployment Branch rule `main` 与 Tag rule `v*`，配置 required reviewer、开启 prevent self-review，并取消勾选 `Allow administrators to bypass configured protection rules`。还必须配置以下五项 secrets：
 
 - `MACOS_CERTIFICATE_P12`

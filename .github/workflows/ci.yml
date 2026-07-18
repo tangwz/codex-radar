@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           ./script/tests/release_common_test.sh
           ./script/validate_release.sh
+          ./script/tests/remote_tag_test.sh
           ./script/tests/package_release_test.sh
           ./script/tests/publish_release_test.sh
           ./script/tests/workflow_contract_test.sh
