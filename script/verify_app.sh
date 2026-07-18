@@ -30,6 +30,8 @@ plist_value() {
   || codex_radar_die "Unexpected build number"
 [[ "$(plist_value CFBundleIdentifier)" == "$BUNDLE_ID" ]] \
   || codex_radar_die "Unexpected bundle identifier"
+[[ "$(plist_value CFBundleName)" == "$APP_NAME" ]] \
+  || codex_radar_die "Unexpected bundle name"
 [[ "$(plist_value LSMinimumSystemVersion)" == "$MIN_SYSTEM_VERSION" ]] \
   || codex_radar_die "Unexpected minimum system version"
 
