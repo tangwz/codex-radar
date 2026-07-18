@@ -58,7 +58,13 @@ end
 def validate_contract(ci, release)
   ci_triggers = triggers(ci)
   assert(ci_triggers.dig("push", "branches") == ["main"], "CI must run on main pushes")
-  ci_helpers = step(ci.fetch("jobs").fetch("test"), "Test release helpers")
+  ci_job = ci.fetch("jobs").fetch("test")
+  strict_concurrency = step(ci_job, "Build with strict concurrency")
+  assert(
+    strict_concurrency.fetch("run") == "swift build -c release -Xswiftc -strict-concurrency=complete",
+    "CI must compile the release build with strict concurrency"
+  )
+  ci_helpers = step(ci_job, "Test release helpers")
   assert(
     shell_lines(ci_helpers.fetch("run")).include?("./script/tests/workflow_contract_test.sh"),
     "CI must gate changes on the release workflow contract"
@@ -67,11 +73,6 @@ def validate_contract(ci, release)
     shell_lines(ci_helpers.fetch("run")).include?("./script/tests/remote_tag_test.sh"),
     "CI must test remote tag provenance"
   )
-  assert(
-    shell_lines(ci_helpers.fetch("run")).include?("./script/tests/swift_concurrency_compatibility_test.sh"),
-    "CI must test Xcode 16 concurrency compatibility"
-  )
-
   release_triggers = triggers(release)
   assert(
     release_triggers.keys.sort == ["push", "workflow_dispatch"],

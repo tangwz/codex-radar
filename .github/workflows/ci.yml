@@ -27,13 +27,15 @@ jobs:
             bash -n "$script_file"
           done
 
+      - name: Build with strict concurrency
+        run: swift build -c release -Xswiftc -strict-concurrency=complete
+
       - name: Test release helpers
         shell: bash
         run: |
           set -euo pipefail
           ./script/tests/release_common_test.sh
           ./script/validate_release.sh
-          ./script/tests/swift_concurrency_compatibility_test.sh
           ./script/tests/remote_tag_test.sh
           ./script/tests/package_release_test.sh
           ./script/tests/publish_release_test.sh
