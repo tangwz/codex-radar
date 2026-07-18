@@ -35,6 +35,7 @@ jobs:
           ./script/validate_release.sh
           ./script/tests/package_release_test.sh
           ./script/tests/publish_release_test.sh
+          ./script/tests/workflow_contract_test.sh
 
       - name: Swift tests
         run: swift test

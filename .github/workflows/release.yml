@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       signing_mode:
-        description: Signing mode for the dry-run artifact
+        description: Signing mode for the manual package-only preflight
         required: true
         type: choice
         options:
@@ -14,7 +14,7 @@ on:
           - developer-id
         default: adhoc
       release_channel:
-        description: Release channel to validate during the dry run
+        description: Channel constraint for the manual package-only preflight
         required: true
         type: choice
         options:
@@ -44,9 +44,9 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Validate release metadata
+      - name: Validate release metadata and main ancestry
         id: metadata
         shell: bash
         env:
@@ -56,17 +56,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           case "$EVENT_NAME" in
             push)
-              git fetch --no-tags origin \
-                +refs/heads/main:refs/remotes/origin/main
-              ./script/validate_release.sh \
-                "$RELEASE_TAG" \
-                "$RELEASE_SHA" \
-                refs/remotes/origin/main
+              ./script/validate_release.sh "$RELEASE_TAG" "$RELEASE_SHA" refs/remotes/origin/main
               ;;
             workflow_dispatch)
-              ./script/validate_release.sh
+              ./script/validate_release.sh "" "$RELEASE_SHA" refs/remotes/origin/main
               ;;
             *)
               echo "Unsupported release event: $EVENT_NAME" >&2
@@ -80,7 +76,7 @@ jobs:
           printf 'artifact_name=codex-radar-v%s-macos-universal\n' \
             "$MARKETING_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Select release mode
+      - name: Select tag release or manual preflight mode
         id: mode
         shell: bash
         env:
@@ -132,11 +128,10 @@ jobs:
           printf 'release_prerelease=%s\n' \
             "$release_prerelease" >> "$GITHUB_OUTPUT"
 
-  package:
+  validate:
     needs: metadata
     runs-on: macos-15
-    timeout-minutes: 60
-    environment: release
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -148,9 +143,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r -d '' script_file; do
+          find script -type f -name '*.sh' -print0 | while IFS= read -r -d '' script_file; do
             bash -n "$script_file"
-          done < <(find script -type f -name '*.sh' -print0)
+          done
 
       - name: Test release helpers
         shell: bash
@@ -163,18 +158,53 @@ jobs:
       - name: Swift tests
         run: swift test
 
-      - name: Package ad-hoc Universal 2 release
-        if: needs.metadata.outputs.signing_mode == 'adhoc'
+  package_adhoc:
+    name: Ad-hoc package-only artifact
+    needs: [metadata, validate]
+    if: ${{ needs.metadata.result == 'success' && needs.validate.result == 'success' && needs.metadata.outputs.signing_mode == 'adhoc' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Package ad-hoc Universal 2 artifact
         shell: bash
         env:
-          RELEASE_PRERELEASE: ${{ needs.metadata.outputs.release_prerelease }}
-          SIGNING_MODE: ${{ needs.metadata.outputs.signing_mode }}
+          RELEASE_PRERELEASE: "true"
+          SIGNING_MODE: adhoc
         run: |
           set -euo pipefail
           ./script/package_release.sh dist/release
 
-      - name: Package Developer ID Universal 2 release
-        if: needs.metadata.outputs.signing_mode == 'developer-id'
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}
+          path: |
+            dist/release/*.zip
+            dist/release/*.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+  package_developer_id:
+    name: Developer ID package-only preflight (signs and notarizes)
+    needs: [metadata, validate]
+    if: ${{ needs.metadata.result == 'success' && needs.validate.result == 'success' && needs.metadata.outputs.signing_mode == 'developer-id' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Sign, notarize, and package Developer ID preflight
         shell: bash
         env:
           APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
@@ -183,7 +213,7 @@ jobs:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           RELEASE_PRERELEASE: ${{ needs.metadata.outputs.release_prerelease }}
-          SIGNING_MODE: ${{ needs.metadata.outputs.signing_mode }}
+          SIGNING_MODE: developer-id
         run: |
           set -euo pipefail
           umask 077
@@ -199,21 +229,35 @@ jobs:
           original_keychains_path="$RUNNER_TEMP/codex-radar-original-keychains"
           keychain_password="$(openssl rand -hex 32)"
           keychain_created="false"
+          keychain_search_list_captured="false"
           KEYCHAIN_SEARCH_LIST=()
 
           load_keychain_search_list() {
             local list_path="$1"
             local keychain=""
-            KEYCHAIN_SEARCH_LIST=()
+            local load_status=0
+            local -a parsed_keychains=()
+
             while IFS= read -r keychain || [[ -n "$keychain" ]]; do
               keychain="${keychain#"${keychain%%[![:space:]]*}"}"
               keychain="${keychain%"${keychain##*[![:space:]]}"}"
               keychain="${keychain#\"}"
               keychain="${keychain%\"}"
               if [[ -n "$keychain" ]]; then
-                KEYCHAIN_SEARCH_LIST+=("$keychain")
+                parsed_keychains+=("$keychain")
               fi
             done < "$list_path"
+            load_status="$?"
+            if [[ "$load_status" -ne 0 ]]; then
+              return "$load_status"
+            fi
+
+            KEYCHAIN_SEARCH_LIST=()
+            if [[ "${#parsed_keychains[@]}" -gt 0 ]]; then
+              for keychain in "${parsed_keychains[@]}"; do
+                KEYCHAIN_SEARCH_LIST+=("$keychain")
+              done
+            fi
           }
 
           restore_keychain_search_list() {
@@ -238,22 +282,36 @@ jobs:
             local status="$?"
             local cleanup_status=0
             trap - EXIT INT TERM
+            set +e
 
-            if [[ -f "$original_keychains_path" ]]; then
+            if [[ "$keychain_search_list_captured" == "true" ]]; then
               load_keychain_search_list "$original_keychains_path"
-              restore_keychain_search_list || cleanup_status="$?"
+              record_cleanup_status "$?"
+              restore_keychain_search_list
+              record_cleanup_status "$?"
             fi
             if [[ "$keychain_created" == "true" ]]; then
-              security delete-keychain "$keychain_path" || cleanup_status="$?"
+              security delete-keychain "$keychain_path"
+              record_cleanup_status "$?"
             fi
             rm -f "$certificate_path" "$keychain_path" \
-              "$original_keychains_path" || cleanup_status="$?"
+              "$original_keychains_path"
+            record_cleanup_status "$?"
 
             if [[ "$status" -ne 0 ]]; then
               exit "$status"
             fi
             exit "$cleanup_status"
           }
+
+          record_cleanup_status() {
+            local command_status="$1"
+            if [[ "$command_status" -ne 0 && "$cleanup_status" -eq 0 ]]; then
+              cleanup_status="$command_status"
+            fi
+            return 0
+          }
+
           trap cleanup EXIT
           trap 'exit 130' INT
           trap 'exit 143' TERM
@@ -261,6 +319,7 @@ jobs:
           security list-keychains -d user > "$original_keychains_path"
           chmod 600 "$original_keychains_path"
           load_keychain_search_list "$original_keychains_path"
+          keychain_search_list_captured="true"
 
           printf '%s' "$MACOS_CERTIFICATE_P12" \
             | /usr/bin/base64 -D > "$certificate_path"
@@ -302,8 +361,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [metadata, package]
-    if: github.event_name == 'push'
+    needs: [metadata, package_adhoc]
+    if: ${{ always() && github.event_name == 'push' && needs.metadata.result == 'success' && needs.package_adhoc.result == 'success' && needs.metadata.outputs.signing_mode == 'adhoc' }}
     runs-on: macos-15
     timeout-minutes: 10
     permissions:
@@ -326,7 +385,7 @@ jobs:
           RELEASE_PRERELEASE: ${{ needs.metadata.outputs.release_prerelease }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-          SIGNING_MODE: ${{ needs.metadata.outputs.signing_mode }}
+          SIGNING_MODE: adhoc
         run: |
           set -euo pipefail
           ./script/publish_release.sh \
