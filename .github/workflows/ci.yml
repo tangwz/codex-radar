@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script_file; do
+            bash -n "$script_file"
+          done < <(find script -type f -name '*.sh' -print0)
+
+      - name: Test release helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./script/tests/release_common_test.sh
+          ./script/validate_release.sh
+          ./script/tests/publish_release_test.sh
+
+      - name: Swift tests
+        run: swift test
+
+      - name: Package host application
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./script/tests/package_app_test.sh
