@@ -18,6 +18,7 @@ struct MenuActionLayoutTests {
   }
 
   @Test
+  @MainActor
   func providesMenuBarIconAtConfiguredLogicalSize() {
     #expect(
       MenuBarIconConfiguration.image.size
@@ -29,6 +30,7 @@ struct MenuActionLayoutTests {
   }
 
   @Test
+  @MainActor
   func reusesTheMenuBarIconImageInstance() {
     #expect(MenuBarIconConfiguration.image === MenuBarIconConfiguration.image)
   }
