@@ -23,9 +23,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r -d '' script_file; do
+          find script -type f -name '*.sh' -print0 | while IFS= read -r -d '' script_file; do
             bash -n "$script_file"
-          done < <(find script -type f -name '*.sh' -print0)
+          done
 
       - name: Test release helpers
         shell: bash
@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           ./script/tests/release_common_test.sh
           ./script/validate_release.sh
+          ./script/tests/package_release_test.sh
           ./script/tests/publish_release_test.sh
 
       - name: Swift tests
