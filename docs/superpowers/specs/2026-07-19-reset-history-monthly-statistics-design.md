@@ -13,11 +13,11 @@
 - `codex-radar-backend` 的权威事件模型、状态机写入语义、`/v1/current` 扩展和 `/v1/history` 查询契约。
 - 当前 macOS 客户端的模型、服务、状态管理、菜单栏和 Dashboard 展示行为。
 
-后端具体代码映射与迁移步骤需要在 `codex-radar-backend` 仓库中结合真实存储和状态机实现进一步细化，但不得改变本文确认的产品与协议语义。
+后端具体代码映射与迁移步骤由 `codex-radar-backend` 的同名后端规格定义。本文已经同步纳入后续 backend grilling 中确认的证据时间、bounded batch、回填和 ETag 修订；两份规格必须采用同一协议语义。
 
 ## 权威事件模型
 
-服务端永久保存 `reset_history` 事件。每条记录代表服务端首次确认一次重置进入 `completed`：
+服务端永久保存 `reset_history` 事件。每条记录代表服务端接受一个新的完成信号并首次提交 `completed` transition：
 
 ```text
 id
@@ -30,14 +30,18 @@ created_at
 
 - `id` 是公开历史资源自身的稳定标识，不复用通知协议中的 `signal_id`。
 - `source_signal_id` 对应状态首次进入 `completed` 时产生的信号 ID，并设置唯一约束。
-- `reset_at` 是服务端首次确认 `completed` 的 UTC 时间，写入后不可修改。
+- `reset_at` 是本次归约选定完成证据帖的 UTC 发布时间，是实际完成时间的可验证代理，写入后不可修改。
 - `created_at` 是历史记录的持久化时间，用于审计，不参与用户统计。
 - `reset_at` 建立支持最新记录和时间区间聚合的索引。
 - 历史永久保留，不进行定时清理。
 
 状态机提交首次 `completed` 与插入历史记录必须位于同一原子边界。事务重试、重复抓取和进程恢复均不得产生第二条记录；`source_signal_id` 唯一约束是最终幂等防线。重复写入冲突应按已成功记录处理，而不是把状态机转为失败。
 
-后续证据、帖子、预测时间或相同语义状态更新不得修改已经写入的 `reset_at`。
+一次 bounded batch 最多形成一条历史：只有一条 completed 证据时选择该帖；有多条时选择 `(created_at DESC, id DESC)` 的第一条。该规则同时适用于全新 Bootstrap、Collector 离线恢复和 X API 抓取，不在批内重建多个 lifecycle。后续证据、帖子、预测时间或相同语义状态更新不得修改已经写入的 `reset_at`。
+
+V1 的 API 计数单位是服务端接受的 completed signal，不是经过独立验证的现实 reset identity。两个不同 signal 可能重复描述同一次现实重置并分别计数；一次 bounded batch 跨越多个现实重置时也可能只记录最新完成证据。这两项是已确认的 V1 限制。
+
+这里的永久保留是应用级 retention：服务端不更新或删除已提交 row，也不提供 correction/tombstone。本阶段不承诺独立归档、备份或应用管理的副本。
 
 ## `/v1/current` 扩展
 
@@ -54,7 +58,7 @@ created_at
 
 - `last_reset_at` 读取 `reset_history` 中最新事件的 `reset_at`，不能维护容易漂移的第二份状态。
 - 没有历史事件时明确返回 `null`，不能省略字段。
-- 响应 `ETag` 必须覆盖 `last_reset_at`；新历史写入后，即使其他 forecast 字段未变化，`ETag` 也必须改变。
+- 响应 `ETag` 必须覆盖 `last_reset_at`；新增事件成为最新历史并改变该字段时，`ETag` 必须改变。补入不影响 `last_reset_at` 的更早历史时，current 表示和 ETag 都不改变。
 - 新字段是向后兼容扩展：旧客户端可以忽略，新客户端按可空字段解码。
 - 客户端仍按现有频率轮询 `/v1/current`，菜单栏不为最近重置时间增加独立请求。
 
@@ -133,13 +137,13 @@ GET /v1/history?time_zone=Asia%2FShanghai&year=2026
 
 一次新重置的核心路径如下：
 
-1. 监控状态机确认新的 reset 首次进入 `completed`。
+1. 监控状态机接受新的 completed signal；一次 bounded batch 最多选择一个 canonical history candidate。
 2. 服务端生成或取得该 completed transition 的 `source_signal_id`。
-3. 在同一原子边界内提交状态迁移并插入 `reset_history`。
-4. `/v1/current` 的 `last_reset_at` 和 `ETag` 随权威事件表变化。
+3. 在同一原子边界内提交状态迁移，并用所选证据帖时间插入 `reset_history`。
+4. 新事件成为最新历史时，`/v1/current.last_reset_at` 和 ETag 随之变化。
 5. 后续 `/v1/history` 查询从权威表计算本周、本月、所选年份十二个月与最近五条。
 
-上线时如果已有 `completed` 状态，只在能可靠确定首次完成时间时执行一次显式回填。无法可靠确定时不使用预测时间、帖子发布时间或部署时间伪造历史。历史表为空是允许且可正确展示的初始状态。
+上线时如果已有 `completed` 状态，只在权威记录能够重建原始归约输入，并按在线单证据/多证据规则证明 canonical history candidate 时执行一次显式回填。只有 bounded snapshot evidence 或最终 `source_url` 时不足以回填；不得使用任意保留帖子、预测时间、snapshot `expires_at`、部署时间或恢复时间替代。历史表为空是允许且可正确展示的初始状态。
 
 ## macOS 客户端架构
 
@@ -169,6 +173,7 @@ GET /v1/history?time_zone=Asia%2FShanghai&year=2026
 - Dashboard 总刷新时，与 forecast 和 token usage 并发刷新。
 - 用户切换年份时，只重新请求 history，不刷新 forecast 或 token usage。
 - Dashboard 保持活动时，如果 `/v1/current.last_reset_at` 变为更新的值，合并触发一次 history 重载，以更新本周、本月、月份图和最近五条。
+- 补入更早历史不会改变 `/v1/current.last_reset_at` 或 ETag，因此不触发实时重载；该数据在 Dashboard 下次激活、总刷新或其他实际 history 请求时出现。
 - Dashboard 不活动时取消未完成的 history 请求，不因 `/v1/current` 更新发起 history 请求。
 - `/v1/history` 不进行每分钟轮询。
 
@@ -211,9 +216,11 @@ Dashboard 使用单列阅读流，顺序固定为：
 
 ### 服务端
 
-- 首次进入 `completed` 精确写入一条历史事件。
+- 单一 completed 证据精确写入一条历史；同一 bounded batch 有多条 completed 证据时最多写入一条并选择最新证据帖。
 - 重复抓取、事务重试和进程恢复不产生重复事件。
-- `/v1/current.last_reset_at` 与最新历史事件一致，且新事件改变 `ETag`。
+- 每个 completed `source_signal_id` 最多一条历史；不同 signal 不承诺自动关联到同一现实 reset。
+- `/v1/current.last_reset_at` 与最新历史事件一致；新增最新事件改变 ETag，补入更早事件不改变 current ETag。
+- 回填与在线写入使用同一 canonical evidence selection rule；无法重建原始批次时不回填。
 - `recent` 最多五条，并按稳定倒序返回。
 - 所选年份始终返回十二个月，包括零次数月份。
 - 覆盖周一边界、月末、年末、闰年和夏令时切换。
