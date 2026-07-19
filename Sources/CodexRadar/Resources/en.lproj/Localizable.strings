@@ -11,6 +11,9 @@
 "Between %@ and %@" = "Between %@ and %@";
 "Reset expected soon" = "Reset expected soon";
 "No precise reset time is available" = "No precise reset time is available";
+"Fetching reset time" = "Fetching reset time";
+"No reset history" = "No reset history";
+"Reset time unavailable" = "Reset time unavailable";
 "Source unavailable" = "Source unavailable";
 "No reset signal" = "No reset signal";
 "Possible reset signal" = "Possible reset signal";

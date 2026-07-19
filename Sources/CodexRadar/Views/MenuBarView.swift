@@ -172,7 +172,8 @@ private struct MenuResetPredictionCard: View {
   }
 
   private var cardBackground: LinearGradient {
-    let colors = theme.isDarkRedesign
+    let colors =
+      theme.isDarkRedesign
       ? [theme.cobaltStart, theme.cobaltEnd]
       : [Color.accentColor.opacity(0.07), Color.accentColor.opacity(0.07)]
 
@@ -232,6 +233,8 @@ private struct MenuResetPredictionCard: View {
       }
 
       timeContent
+
+      recentResetContent
 
       if let sourceURL = presentation.sourceURL {
         Link(destination: sourceURL) {
@@ -310,15 +313,28 @@ private struct MenuResetPredictionCard: View {
           .foregroundStyle(secondaryText)
       }
     case .none:
-      VStack(alignment: .leading, spacing: 3) {
-        Text(LocalizedStringKey(emptyStateTitleKey))
-          .font(.title3.weight(.semibold))
-          .foregroundStyle(primaryText)
-        Text(LocalizedStringKey(emptyStateDetailKey))
-          .font(.caption)
-          .foregroundStyle(secondaryText)
+      Text(LocalizedStringKey(emptyStateTitleKey))
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(primaryText)
+    }
+  }
+
+  @ViewBuilder
+  private var recentResetContent: some View {
+    Group {
+      switch presentation.lastResetDisplay {
+      case .resetAt(let value):
+        Text(DisplayFormatting.absoluteDate(value, locale: locale))
+      case .none:
+        Text("No reset history")
+      case .unavailable where isRefreshing:
+        Text("Fetching reset time")
+      case .unavailable:
+        Text("Reset time unavailable")
       }
     }
+    .font(.caption.weight(.medium))
+    .foregroundStyle(secondaryText)
   }
 
   private var emptyStateTitleKey: String {
@@ -331,15 +347,6 @@ private struct MenuResetPredictionCard: View {
     }
   }
 
-  private var emptyStateDetailKey: String {
-    if presentation.stale { return "Showing the last verified reset state" }
-    return switch presentation.status {
-    case .monitoring: "Waiting for Tibo's next reset signal"
-    case .candidate: "Watching for a confirmed reset announcement"
-    case .announced: "A reset is expected soon"
-    case .completed: "The announced reset has completed"
-    }
-  }
 }
 
 private struct RadarLogo: View {
@@ -459,8 +466,12 @@ enum MenuBarIconConfiguration {
 
   @MainActor
   static let image: NSImage = {
-    let resourceURL = Bundle.main.url(forResource: assetName, withExtension: "png")
-    let image = resourceURL.flatMap(NSImage.init(contentsOf:))
+    let resourceURL =
+      Bundle.main.url(forResource: assetName, withExtension: "png")
+      ?? Bundle.module.url(forResource: assetName, withExtension: "png")
+
+    let image =
+      resourceURL.flatMap(NSImage.init(contentsOf:))
       ?? NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
       ?? NSImage(size: NSSize(width: sideLength, height: sideLength))
     image.size = NSSize(width: sideLength, height: sideLength)

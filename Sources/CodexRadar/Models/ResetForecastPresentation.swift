@@ -8,10 +8,17 @@ struct ResetForecastPresentation: Equatable {
     case imminent
   }
 
+  enum LastResetDisplay: Equatable {
+    case unavailable
+    case none
+    case resetAt(Date)
+  }
+
   let status: ResetStatus
   let action: RecommendedAction
   let stale: Bool
   let timeDisplay: TimeDisplay
+  let lastResetDisplay: LastResetDisplay
   let sourceURL: URL?
 
   init(forecast: ResetForecast) {
@@ -19,6 +26,12 @@ struct ResetForecastPresentation: Equatable {
     action = forecast.stale ? .unknown : forecast.recommendedAction
     stale = forecast.stale
     sourceURL = forecast.sourceURL
+    lastResetDisplay =
+      switch forecast.lastReset {
+      case .unavailable: .unavailable
+      case .none: .none
+      case .resetAt(let value): .resetAt(value)
+      }
 
     guard !forecast.stale, forecast.status == .announced else {
       timeDisplay = .none

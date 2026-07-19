@@ -11,6 +11,9 @@
 "Between %@ and %@" = "%@ 至 %@";
 "Reset expected soon" = "快重置了";
 "No precise reset time is available" = "暂无精确倒计时";
+"Fetching reset time" = "正在获取重置时间";
+"No reset history" = "暂无重置记录";
+"Reset time unavailable" = "重置时间暂不可用";
 "Source unavailable" = "来源不可用";
 "No reset signal" = "暂无重置信号";
 "Possible reset signal" = "可能有重置信号";

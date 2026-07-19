@@ -96,6 +96,21 @@ struct ResetForecastPresentationTests {
   }
 
   @Test
+  func mapsRecentResetIndependentlyFromForecastStaleness() {
+    let resetAt = Date(timeIntervalSince1970: 1_753_002_094)
+    let presentation = ResetForecastPresentation(
+      forecast: presentationForecast(
+        status: .announced,
+        action: .wait,
+        stale: true,
+        lastReset: .resetAt(resetAt)
+      )
+    )
+
+    #expect(presentation.lastResetDisplay == .resetAt(resetAt))
+  }
+
+  @Test
   func missingSourceURLRemainsAbsent() {
     let presentation = ResetForecastPresentation(
       forecast: presentationForecast(status: .monitoring, action: .none)
@@ -110,7 +125,8 @@ private func presentationForecast(
   action: RecommendedAction,
   stale: Bool = false,
   timing: ResetTiming? = nil,
-  sourceURL: URL? = nil
+  sourceURL: URL? = nil,
+  lastReset: LastResetAvailability = .unavailable
 ) -> ResetForecast {
   ResetForecast(
     schemaVersion: "1.0",
@@ -122,6 +138,7 @@ private func presentationForecast(
     signalID: nil,
     timing: timing,
     sourceURL: sourceURL,
-    posts: []
+    posts: [],
+    lastReset: lastReset
   )
 }

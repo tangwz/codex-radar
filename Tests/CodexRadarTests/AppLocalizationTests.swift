@@ -100,4 +100,12 @@ struct AppLocalizationTests {
   private func localized(_ key: String, language: AppLanguage) -> String {
     AppLocalization.string(key, language: language, bundle: .module)
   }
+
+  @Test
+  func localizesNoResetHistoryForSimplifiedChinese() {
+    #expect(
+      AppLocalization.string("No reset history", language: .simplifiedChinese, bundle: .module)
+        == "暂无重置记录"
+    )
+  }
 }
