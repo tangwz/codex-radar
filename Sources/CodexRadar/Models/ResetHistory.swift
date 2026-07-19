@@ -66,13 +66,25 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       throw invalidValue(
         forKey: .timeZone, in: container, description: "Expected a valid time zone.")
     }
+    let (followingYear, yearOverflow) = year.addingReportingOverflow(1)
+    guard !yearOverflow else {
+      throw invalidValue(
+        forKey: .year,
+        in: container,
+        description: "Expected a year with a representable following year."
+      )
+    }
     try validate(interval: current.week, forKey: .current, in: container)
     try validate(interval: current.month, forKey: .current, in: container)
     for month in months {
       try validate(interval: month, forKey: .months, in: container)
     }
 
-    let expectedMonths = (1...12).map { String(format: "%04d-%02d", year, $0) }
+    let expectedYearIdentifier = yearIdentifier(for: year)
+    let expectedMonths = (1...12).map { month in
+      let monthIdentifier = month < 10 ? "0\(month)" : String(month)
+      return "\(expectedYearIdentifier)-\(monthIdentifier)"
+    }
     guard months.map(\.month) == expectedMonths else {
       throw invalidValue(
         forKey: .months,
@@ -82,6 +94,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     }
     try validateMonthBoundaries(
       timeZone: decodedTimeZone,
+      followingYear: followingYear,
       forKey: .months,
       in: container
     )
@@ -98,8 +111,20 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     }
   }
 
+  private func yearIdentifier(for year: Int) -> String {
+    let value = String(year)
+    guard value.count < 4 else { return value }
+
+    let padding = String(repeating: "0", count: 4 - value.count)
+    if value.first == "-" {
+      return "-\(padding)\(value.dropFirst())"
+    }
+    return "\(padding)\(value)"
+  }
+
   private func validateMonthBoundaries(
     timeZone: TimeZone,
+    followingYear: Int,
     forKey key: CodingKeys,
     in container: KeyedDecodingContainer<CodingKeys>
   ) throws {
@@ -108,7 +133,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
 
     for (index, month) in months.enumerated() {
       let monthNumber = index + 1
-      let nextYear = monthNumber == 12 ? year + 1 : year
+      let nextYear = monthNumber == 12 ? followingYear : year
       let nextMonth = monthNumber == 12 ? 1 : monthNumber + 1
       guard
         let expectedFrom = naturalMonthBoundary(

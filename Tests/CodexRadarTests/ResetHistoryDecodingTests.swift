@@ -80,6 +80,37 @@ struct ResetHistoryDecodingTests {
     }
   }
 
+  @Test
+  func rejectsMaximumYearWithoutOverflowing() {
+    let months = (1...12).map { month in
+      let legacyIdentifier = String(format: "%04d-%02d", Int.max, month)
+      return resetHistoryMonthSummaryJSON(
+        year: 1,
+        month: month,
+        timeZoneIdentifier: "UTC",
+        identifier: legacyIdentifier
+      )
+    }.joined(separator: ",")
+
+    #expect(throws: DecodingError.self) {
+      try APIJSONCoding.makeDecoder().decode(
+        ResetHistory.self,
+        from: Data(historyJSON(year: Int.max, timeZone: "UTC", months: months).utf8)
+      )
+    }
+  }
+
+  @Test
+  func decodesFourDigitMonthIdentifiersForLowYears() throws {
+    let history = try APIJSONCoding.makeDecoder().decode(
+      ResetHistory.self,
+      from: Data(historyJSON(year: 1, timeZone: "UTC").utf8)
+    )
+
+    #expect(history.year == 1)
+    #expect(history.months.first?.month == "0001-01")
+  }
+
   @Test(arguments: [
     historyJSON(timeZone: "Invalid/Zone"),
     historyJSON(weekCount: -1),
@@ -95,6 +126,7 @@ struct ResetHistoryDecodingTests {
 }
 
 private func historyJSON(
+  year: Int = 2026,
   monthCount: Int = 12,
   recentCount: Int = 2,
   timeZone: String = "Asia/Shanghai",
@@ -106,7 +138,7 @@ private func historyJSON(
   let resolvedMonths =
     months
     ?? resetHistoryMonthSummariesJSON(
-      year: 2026,
+      year: year,
       timeZoneIdentifier: boundaryTimeZone,
       monthCount: monthCount
     )
@@ -122,7 +154,7 @@ private func historyJSON(
       "schema_version":"1.0",
       "generated_at":"2026-07-19T09:00:00Z",
       "time_zone":"\(timeZone)",
-      "year":2026,
+      "year":\(year),
       "available_years":[2026,2025],
       "current":{
         "week":{"from":"2026-07-13T16:00:00Z","to":"2026-07-20T16:00:00Z","count":\(weekCount)},
