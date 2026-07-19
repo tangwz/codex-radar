@@ -89,6 +89,23 @@ struct ResetForecastDecodingTests {
     #expect(forecast.recommendedAction == .useNow)
   }
 
+  @Test
+  func distinguishesMissingNullAndKnownLastReset() throws {
+    let missing = try decode(response())
+    let none = try decode(response(lastResetField: #", "last_reset_at": null"#))
+    let known = try decode(
+      response(lastResetField: #", "last_reset_at": "2026-07-19T08:21:34Z""#)
+    )
+
+    #expect(missing.lastReset == .unavailable)
+    #expect(none.lastReset == .none)
+    guard case .resetAt(let resetAt) = known.lastReset else {
+      Issue.record("Expected a known reset timestamp.")
+      return
+    }
+    #expect(known.lastResetAt == resetAt)
+  }
+
   @Test(arguments: [
     response(status: "surprise"),
     response(action: "later"),
@@ -103,8 +120,10 @@ struct ResetForecastDecodingTests {
   @Test(arguments: [
     response(monitoredAt: "not-a-date"),
     response(timing: #"{"kind":"exact","at":"not-a-date"}"#),
-    response(timing: #"{"kind":"exact","at":"2026-07-16T02:00:00Z","from":"2026-07-16T01:00:00Z"}"#),
-    response(timing: #"{"kind":"estimated","from":"2026-07-16T03:00:00Z","to":"2026-07-16T02:00:00Z"}"#),
+    response(
+      timing: #"{"kind":"exact","at":"2026-07-16T02:00:00Z","from":"2026-07-16T01:00:00Z"}"#),
+    response(
+      timing: #"{"kind":"estimated","from":"2026-07-16T03:00:00Z","to":"2026-07-16T02:00:00Z"}"#),
     response(timing: #"{"kind":"imminent","at":"2026-07-16T02:00:00Z"}"#),
   ])
   func rejectsInvalidDatesAndTimingShapes(_ json: String) {
@@ -143,19 +162,20 @@ private func response(
   status: String = "announced",
   action: String = "wait",
   timing: String? = nil,
-  posts: String = "[]"
+  posts: String = "[]",
+  lastResetField: String = ""
 ) -> String {
   let timingField = timing.map { ",\"timing\":\($0)" } ?? ""
   return """
-  {
-    "schema_version":"1.0",
-    "monitored_at":"\(monitoredAt)",
-    "stale":false,
-    "status":"\(status)",
-    "recommended_action":"\(action)",
-    "message":"Status"
-    \(timingField),
-    "posts":\(posts)
-  }
-  """
+    {
+      "schema_version":"1.0",
+      "monitored_at":"\(monitoredAt)",
+      "stale":false,
+      "status":"\(status)",
+      "recommended_action":"\(action)",
+      "message":"Status"
+      \(timingField),
+      "posts":\(posts)\(lastResetField)
+    }
+    """
 }

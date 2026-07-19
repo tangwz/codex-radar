@@ -41,14 +41,15 @@ struct ResetTiming: Codable, Equatable, Sendable {
     from = try container.decodeIfPresent(Date.self, forKey: .from)
     to = try container.decodeIfPresent(Date.self, forKey: .to)
 
-    let isValid = switch kind {
-    case .exact:
-      at != nil && from == nil && to == nil
-    case .estimated:
-      at == nil && from != nil && to != nil && from! <= to!
-    case .imminent:
-      at == nil && from == nil && to == nil
-    }
+    let isValid =
+      switch kind {
+      case .exact:
+        at != nil && from == nil && to == nil
+      case .estimated:
+        at == nil && from != nil && to != nil && from! <= to!
+      case .imminent:
+        at == nil && from == nil && to == nil
+      }
 
     guard isValid else {
       throw DecodingError.dataCorruptedError(
@@ -95,7 +96,13 @@ struct ResetSourcePost: Codable, Equatable, Sendable {
   }
 }
 
-struct ResetForecast: Codable, Equatable, Sendable {
+enum LastResetAvailability: Equatable, Sendable {
+  case unavailable
+  case none
+  case resetAt(Date)
+}
+
+struct ResetForecast: Decodable, Equatable, Sendable {
   let schemaVersion: String
   let monitoredAt: Date
   let stale: Bool
@@ -106,23 +113,10 @@ struct ResetForecast: Codable, Equatable, Sendable {
   let timing: ResetTiming?
   let sourceURL: URL?
   let posts: [ResetSourcePost]
+  let lastReset: LastResetAvailability
 
   static var decoder: JSONDecoder {
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .custom { decoder in
-      let container = try decoder.singleValueContainer()
-      let value = try container.decode(String.self)
-      guard let date = ISO8601DateFormatter.withFractionalSeconds.date(from: value)
-        ?? ISO8601DateFormatter.withoutFractionalSeconds.date(from: value)
-      else {
-        throw DecodingError.dataCorruptedError(
-          in: container,
-          debugDescription: "Expected an ISO-8601 timestamp."
-        )
-      }
-      return date
-    }
-    return decoder
+    APIJSONCoding.makeDecoder()
   }
 
   static let placeholder = ResetForecast(
@@ -135,7 +129,8 @@ struct ResetForecast: Codable, Equatable, Sendable {
     signalID: nil,
     timing: nil,
     sourceURL: nil,
-    posts: []
+    posts: [],
+    lastReset: .unavailable
   )
 
   init(
@@ -148,7 +143,8 @@ struct ResetForecast: Codable, Equatable, Sendable {
     signalID: String?,
     timing: ResetTiming?,
     sourceURL: URL?,
-    posts: [ResetSourcePost]
+    posts: [ResetSourcePost],
+    lastReset: LastResetAvailability = .unavailable
   ) {
     self.schemaVersion = schemaVersion
     self.monitoredAt = monitoredAt
@@ -160,6 +156,7 @@ struct ResetForecast: Codable, Equatable, Sendable {
     self.timing = timing
     self.sourceURL = sourceURL
     self.posts = posts
+    self.lastReset = lastReset
   }
 
   init(from decoder: Decoder) throws {
@@ -174,6 +171,15 @@ struct ResetForecast: Codable, Equatable, Sendable {
     timing = try container.decodeIfPresent(ResetTiming.self, forKey: .timing)
     sourceURL = try container.decodeIfPresent(URL.self, forKey: .sourceURL)
     posts = try container.decode([ResetSourcePost].self, forKey: .posts)
+    if container.contains(.lastResetAt) {
+      if let value = try container.decodeIfPresent(Date.self, forKey: .lastResetAt) {
+        lastReset = .resetAt(value)
+      } else {
+        lastReset = .none
+      }
+    } else {
+      lastReset = .unavailable
+    }
 
     guard posts.count <= 5 else {
       throw DecodingError.dataCorruptedError(
@@ -195,20 +201,11 @@ struct ResetForecast: Codable, Equatable, Sendable {
     case timing
     case sourceURL = "source_url"
     case posts
+    case lastResetAt = "last_reset_at"
   }
 
-}
-
-private extension ISO8601DateFormatter {
-  static var withFractionalSeconds: ISO8601DateFormatter {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter
-  }
-
-  static var withoutFractionalSeconds: ISO8601DateFormatter {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime]
-    return formatter
+  var lastResetAt: Date? {
+    guard case .resetAt(let value) = lastReset else { return nil }
+    return value
   }
 }
