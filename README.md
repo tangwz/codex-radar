@@ -5,6 +5,8 @@
 ## 功能
 
 - 每分钟读取公开的 `/v1/current`，展示 Tibo 的 reset 状态、时间和原始 X 证据。
+- 从 `/v1/current` 展示服务端确认的最近一次重置时间；旧协议缺字段、明确无历史与暂时不可用使用不同状态。
+- Dashboard 打开时读取 `/v1/history`，按用户时区展示本周、本月、所选年份十二个月统计和最近五次重置。
 - 仅在数据非 stale 且 reset 状态为 announced 时显示菜单栏红点。
 - 首次进入 announced、announced timing 变化和首次进入 completed 时，各发送一次 macOS 通知。
 - 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`。
