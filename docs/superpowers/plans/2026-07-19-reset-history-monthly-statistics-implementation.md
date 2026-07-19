@@ -594,6 +594,7 @@ final class ResetHistoryStore: ObservableObject {
   private var isDashboardActive = false
   private var lastObservedResetAt: Date?
   private var activeQuery: Query?
+  private var needsTrailingReload = false
   private var loadTask: Task<Void, Never>?
   private var generation: UInt64 = 0
 
@@ -626,6 +627,7 @@ func dashboardDidDisappear() {
   loadTask?.cancel()
   loadTask = nil
   activeQuery = nil
+  needsTrailingReload = false
   pendingYear = nil
   isLoading = false
 }
@@ -659,7 +661,10 @@ private static func currentYear(in timeZone: TimeZone) -> Int {
 ~~~swift
 private func request(year: Int, timeZone: TimeZone) {
   let query = Query(timeZoneIdentifier: timeZone.identifier, year: year)
-  guard activeQuery != query else { return }
+  if activeQuery == query {
+    needsTrailingReload = true
+    return
+  }
 
   generation &+= 1
   let requestGeneration = generation
@@ -688,7 +693,7 @@ private func request(year: Int, timeZone: TimeZone) {
 }
 ~~~
 
-finish must clear activeQuery, pendingYear, isLoading and loadTask only when the passed query still matches. An identical in-flight query is coalesced; a different query supersedes it.
+finish must clear activeQuery, pendingYear, isLoading and loadTask only when the passed query still matches. If needsTrailingReload is true and the Dashboard remains active, clear that flag and immediately request the same query once more; multiple identical triggers collapse into this single trailing reload. A different query cancels and supersedes the current query and clears the obsolete trailing flag. Add a test where lastResetAt changes during the initial request, complete that request with an old snapshot, and assert exactly one second request starts and commits the new snapshot.
 
 - [ ] **Step 5: Format, verify, and commit**
 
@@ -890,7 +895,7 @@ In ContentView, place ResetHistoryView between ResetForecastCard and TokenUsageV
 }
 ~~~
 
-The toolbar refresh starts store.refresh() and historyStore.refresh(timeZone:) together. Disable it while either store is loading. Keep the existing token overlay tied only to DashboardStore.
+The toolbar refresh starts store.refresh() and historyStore.refresh(timeZone:) together. Disable it only while DashboardStore is refreshing; ResetHistoryStore coalesces an overlapping refresh and keeps its loading state local. Keep the existing token overlay tied only to DashboardStore.
 
 Use this action so the forecast/token refresh remains awaited while history starts independently through its own store task:
 
@@ -901,7 +906,7 @@ Button {
 } label: {
   Label("Refresh", systemImage: "arrow.clockwise")
 }
-.disabled(store.isRefreshing || historyStore.isLoading)
+.disabled(store.isRefreshing)
 ~~~
 
 - [ ] **Step 7: Format, verify focused suites, build, and commit**
