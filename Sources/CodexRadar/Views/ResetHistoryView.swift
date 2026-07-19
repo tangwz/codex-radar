@@ -9,9 +9,7 @@ struct ResetHistoryView: View {
   var body: some View {
     Group {
       if let history = store.history {
-        historyContent(
-          ResetHistoryPresentation(history: history, locale: locale, timeZone: timeZone)
-        )
+        historyContent(ResetHistoryPresentation(history: history, locale: locale))
       } else if store.issue != nil && !store.isLoading {
         unavailableContent
       } else {

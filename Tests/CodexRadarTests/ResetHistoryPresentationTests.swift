@@ -8,8 +8,7 @@ struct ResetHistoryPresentationTests {
   func mapsStatisticsAndRecentRows() throws {
     let presentation = ResetHistoryPresentation(
       history: try presentationHistory(year: 2026, recentCount: 5),
-      locale: Locale(identifier: "en_US"),
-      timeZone: TimeZone(identifier: "Asia/Shanghai")!
+      locale: Locale(identifier: "en_US")
     )
 
     #expect(presentation.year == 2026)
@@ -22,21 +21,47 @@ struct ResetHistoryPresentationTests {
     #expect(presentation.recent.first?.dateTime == "Jul 19, 2026 at 4:21\u{202F}AM")
     #expect(presentation.availableYears == [2026, 2025])
   }
+
+  @Test
+  func formatsCommittedSnapshotInItsResponseTimeZone() throws {
+    let liveRequestTimeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let history = try presentationHistory(
+      year: 2026,
+      recentCount: 1,
+      januaryFrom: "2025-12-31T16:00:00Z",
+      recentAt: "2025-12-31T16:30:00Z"
+    )
+    let presentation = ResetHistoryPresentation(
+      history: history,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(liveRequestTimeZone.identifier != history.timeZone)
+    #expect(presentation.months.first?.label == "Jan")
+    #expect(presentation.recent.first?.dateTime == "Jan 1, 2026 at 12:30\u{202F}AM")
+  }
 }
 
-private func presentationHistory(year: Int, recentCount: Int) throws -> ResetHistory {
+private func presentationHistory(
+  year: Int,
+  recentCount: Int,
+  januaryFrom: String? = nil,
+  recentAt: String = "2026-07-18T20:21:34Z"
+) throws -> ResetHistory {
   let months = (1...12).map { month in
     let identifier = String(format: "%04d-%02d", year, month)
     let nextMonth = month == 12 ? 1 : month + 1
     let nextYear = month == 12 ? year + 1 : year
+    let from =
+      month == 1 ? januaryFrom ?? "\(identifier)-01T00:00:00Z" : "\(identifier)-01T00:00:00Z"
     let to = String(format: "%04d-%02d-01T00:00:00Z", nextYear, nextMonth)
     return """
-      {"month":"\(identifier)","from":"\(identifier)-01T00:00:00Z","to":"\(to)","count":\(month)}
+      {"month":"\(identifier)","from":"\(from)","to":"\(to)","count":\(month)}
       """
   }.joined(separator: ",")
   let recent = (1...recentCount).map { index in
     """
-    {"id":"reset-\(index)","reset_at":"2026-07-18T20:21:34Z"}
+    {"id":"reset-\(index)","reset_at":"\(recentAt)"}
     """
   }.joined(separator: ",")
   let json = """

@@ -19,7 +19,9 @@ struct ResetHistoryPresentation {
   let months: [Month]
   let recent: [Recent]
 
-  init(history: ResetHistory, locale: Locale, timeZone: TimeZone) {
+  init(history: ResetHistory, locale: Locale) {
+    let timeZone = TimeZone(identifier: history.timeZone)!
+
     year = history.year
     availableYears = history.availableYears
     weekCount = history.current.week.count
