@@ -76,6 +76,11 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     }
     try validate(interval: current.week, forKey: .current, in: container)
     try validate(interval: current.month, forKey: .current, in: container)
+    try validateCurrentBoundaries(
+      timeZone: decodedTimeZone,
+      forKey: .current,
+      in: container
+    )
     for month in months {
       try validate(interval: month, forKey: .months, in: container)
     }
@@ -108,6 +113,19 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     guard Set(recent.map(\.id)).count == recent.count else {
       throw invalidValue(
         forKey: .recent, in: container, description: "Recent reset event IDs must be unique.")
+    }
+    let orderedRecent = recent.sorted { lhs, rhs in
+      if lhs.resetAt != rhs.resetAt {
+        return lhs.resetAt > rhs.resetAt
+      }
+      return lhs.id > rhs.id
+    }
+    guard recent == orderedRecent else {
+      throw invalidValue(
+        forKey: .recent,
+        in: container,
+        description: "Recent reset events must use stable descending order."
+      )
     }
   }
 
@@ -158,6 +176,33 @@ struct ResetHistory: Decodable, Equatable, Sendable {
             "Month intervals must match their natural boundaries in the response time zone."
         )
       }
+    }
+  }
+
+  private func validateCurrentBoundaries(
+    timeZone: TimeZone,
+    forKey key: CodingKeys,
+    in container: KeyedDecodingContainer<CodingKeys>
+  ) throws {
+    var weekCalendar = Calendar(identifier: .iso8601)
+    weekCalendar.timeZone = timeZone
+    var monthCalendar = Calendar(identifier: .gregorian)
+    monthCalendar.timeZone = timeZone
+
+    guard
+      let expectedWeek = weekCalendar.dateInterval(of: .weekOfYear, for: generatedAt),
+      let expectedMonth = monthCalendar.dateInterval(of: .month, for: generatedAt),
+      current.week.from == expectedWeek.start,
+      current.week.to == expectedWeek.end,
+      current.month.from == expectedMonth.start,
+      current.month.to == expectedMonth.end
+    else {
+      throw invalidValue(
+        forKey: key,
+        in: container,
+        description:
+          "Current intervals must match generated_at in the response time zone."
+      )
     }
   }
 

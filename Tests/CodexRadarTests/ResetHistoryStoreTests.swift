@@ -56,6 +56,35 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func manualRefreshPreservesTheInFlightSelectedYear() async {
+    let fetcher = ControlledHistoryFetcher()
+    let store = makeHistoryStore(fetcher: fetcher)
+    let zone = TimeZone(identifier: "Asia/Shanghai")!
+
+    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
+    await waitForCallCount(1, fetcher: fetcher)
+    await fetcher.completeNext(
+      with: .success(history(year: 2026, availableYears: [2026, 2025])))
+    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+
+    store.selectYear(2025, timeZone: zone)
+    await waitForCallCount(2, fetcher: fetcher)
+    store.refresh(timeZone: zone)
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    let requestYears = await fetcher.requests.map(\.year)
+    #expect(requestYears == [2026, 2025])
+    #expect(store.pendingYear == 2025)
+
+    await fetcher.completeNext(
+      with: .success(history(year: 2025, availableYears: [2026, 2025])))
+    await waitUntil { store.history?.year == 2025 && !store.isLoading }
+  }
+
+  @MainActor
+  @Test
   func failedYearSelectionKeepsCommittedData() async {
     let fetcher = ControlledHistoryFetcher()
     let store = makeHistoryStore(fetcher: fetcher)
@@ -397,6 +426,10 @@ private func history(
   let months = resetHistoryMonthSummariesJSON(year: year, timeZoneIdentifier: timeZone)
   let years = availableYears.map(String.init).joined(separator: ",")
   let generatedAtValue = ISO8601DateFormatter().string(from: generatedAt)
+  let current = resetHistoryCurrentIntervals(
+    generatedAt: generatedAt,
+    timeZoneIdentifier: timeZone
+  )
   let json = """
     {
       "schema_version":"1.0",
@@ -405,8 +438,8 @@ private func history(
       "year":\(year),
       "available_years":[\(years)],
       "current":{
-        "week":{"from":"\(year)-07-13T16:00:00Z","to":"\(year)-07-20T16:00:00Z","count":2},
-        "month":{"from":"\(year)-06-30T16:00:00Z","to":"\(year)-07-31T16:00:00Z","count":6}
+        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":6}
       },
       "months":[\(months)],
       "recent":[]

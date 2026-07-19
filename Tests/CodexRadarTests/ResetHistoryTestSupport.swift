@@ -1,5 +1,32 @@
 import Foundation
 
+struct ResetHistoryCurrentIntervals {
+  let weekFrom: String
+  let weekTo: String
+  let monthFrom: String
+  let monthTo: String
+}
+
+func resetHistoryCurrentIntervals(
+  generatedAt: Date,
+  timeZoneIdentifier: String
+) -> ResetHistoryCurrentIntervals {
+  let timeZone = TimeZone(identifier: timeZoneIdentifier)!
+  var weekCalendar = Calendar(identifier: .iso8601)
+  weekCalendar.timeZone = timeZone
+  var monthCalendar = Calendar(identifier: .gregorian)
+  monthCalendar.timeZone = timeZone
+  let week = weekCalendar.dateInterval(of: .weekOfYear, for: generatedAt)!
+  let month = monthCalendar.dateInterval(of: .month, for: generatedAt)!
+  let formatter = ISO8601DateFormatter()
+  return ResetHistoryCurrentIntervals(
+    weekFrom: formatter.string(from: week.start),
+    weekTo: formatter.string(from: week.end),
+    monthFrom: formatter.string(from: month.start),
+    monthTo: formatter.string(from: month.end)
+  )
+}
+
 func resetHistoryMonthInterval(
   year: Int,
   month: Int,

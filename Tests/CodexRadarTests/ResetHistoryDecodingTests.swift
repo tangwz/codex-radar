@@ -112,6 +112,41 @@ struct ResetHistoryDecodingTests {
   }
 
   @Test(arguments: [
+    historyJSON(
+      weekFrom: "2026-07-13T16:00:00Z",
+      weekTo: "2026-07-20T16:00:00Z"
+    ),
+    historyJSON(
+      monthFrom: "2026-06-29T16:00:00Z",
+      monthTo: "2026-07-30T16:00:00Z"
+    ),
+  ])
+  func rejectsCurrentIntervalsOutsideGeneratedAtNaturalBuckets(_ json: String) {
+    #expect(throws: DecodingError.self) {
+      try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
+    }
+  }
+
+  @Test(arguments: [
+    """
+    {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"},
+    {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"}
+    """,
+    """
+    {"id":"reset-1","reset_at":"2026-07-19T09:21:34Z"},
+    {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"}
+    """,
+  ])
+  func rejectsRecentEventsOutsideStableDescendingOrder(_ recent: String) {
+    #expect(throws: DecodingError.self) {
+      try APIJSONCoding.makeDecoder().decode(
+        ResetHistory.self,
+        from: Data(historyJSON(recent: recent).utf8)
+      )
+    }
+  }
+
+  @Test(arguments: [
     historyJSON(timeZone: "Invalid/Zone"),
     historyJSON(weekCount: -1),
     historyJSON(months: invalidIntervalMonths()),
@@ -131,10 +166,19 @@ private func historyJSON(
   recentCount: Int = 2,
   timeZone: String = "Asia/Shanghai",
   weekCount: Int = 2,
+  weekFrom: String? = nil,
+  weekTo: String? = nil,
+  monthFrom: String? = nil,
+  monthTo: String? = nil,
   months: String? = nil,
   recent: String? = nil
 ) -> String {
   let boundaryTimeZone = TimeZone(identifier: timeZone) == nil ? "UTC" : timeZone
+  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+  let current = resetHistoryCurrentIntervals(
+    generatedAt: generatedAt,
+    timeZoneIdentifier: boundaryTimeZone
+  )
   let resolvedMonths =
     months
     ?? resetHistoryMonthSummariesJSON(
@@ -144,7 +188,7 @@ private func historyJSON(
     )
   let resolvedRecent =
     recent
-    ?? (1...recentCount).map { index in
+    ?? (1...recentCount).reversed().map { index in
       """
       {"id":"reset-\(index)","reset_at":"2026-07-19T08:21:34Z"}
       """
@@ -157,8 +201,8 @@ private func historyJSON(
       "year":\(year),
       "available_years":[2026,2025],
       "current":{
-        "week":{"from":"2026-07-13T16:00:00Z","to":"2026-07-20T16:00:00Z","count":\(weekCount)},
-        "month":{"from":"2026-06-30T16:00:00Z","to":"2026-07-31T16:00:00Z","count":6}
+        "week":{"from":"\(weekFrom ?? current.weekFrom)","to":"\(weekTo ?? current.weekTo)","count":\(weekCount)},
+        "month":{"from":"\(monthFrom ?? current.monthFrom)","to":"\(monthTo ?? current.monthTo)","count":6}
       },
       "months":[\(resolvedMonths)],
       "recent":[\(resolvedRecent)]

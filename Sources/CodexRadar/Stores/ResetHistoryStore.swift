@@ -70,7 +70,10 @@ final class ResetHistoryStore: ObservableObject {
 
   func refresh(timeZone: TimeZone) {
     guard isDashboardActive else { return }
-    request(year: history?.year ?? Self.currentYear(in: timeZone), timeZone: timeZone)
+    request(
+      year: activeQuery?.year ?? history?.year ?? Self.currentYear(in: timeZone),
+      timeZone: timeZone
+    )
   }
 
   func selectYear(_ year: Int, timeZone: TimeZone) {

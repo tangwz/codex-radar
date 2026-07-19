@@ -353,7 +353,7 @@ private func historyJSON(monthCount: Int = 12, recentCount: Int = 2) -> String {
     "year":2026,
     "available_years":[2026,2025],
     "current":{
-      "week":{"from":"2026-07-13T16:00:00Z","to":"2026-07-20T16:00:00Z","count":2},
+      "week":{"from":"2026-07-12T16:00:00Z","to":"2026-07-19T16:00:00Z","count":2},
       "month":{"from":"2026-06-30T16:00:00Z","to":"2026-07-31T16:00:00Z","count":6}
     },
     "months":[\(months)],

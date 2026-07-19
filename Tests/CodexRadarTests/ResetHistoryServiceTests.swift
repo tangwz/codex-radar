@@ -117,6 +117,11 @@ private func historyResponse(status: Int, url: URL) -> HTTPURLResponse {
 
 private func historyServiceJSON(timeZone: String = "Asia/Shanghai", year: Int = 2026) -> String {
   let months = resetHistoryMonthSummariesJSON(year: year, timeZoneIdentifier: timeZone)
+  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+  let current = resetHistoryCurrentIntervals(
+    generatedAt: generatedAt,
+    timeZoneIdentifier: timeZone
+  )
   return """
     {
       "schema_version":"1.0",
@@ -125,8 +130,8 @@ private func historyServiceJSON(timeZone: String = "Asia/Shanghai", year: Int = 
       "year":\(year),
       "available_years":[\(year)],
       "current":{
-        "week":{"from":"\(year)-07-13T16:00:00Z","to":"\(year)-07-20T16:00:00Z","count":2},
-        "month":{"from":"\(year)-06-30T16:00:00Z","to":"\(year)-07-31T16:00:00Z","count":6}
+        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":6}
       },
       "months":[\(months)],
       "recent":[]

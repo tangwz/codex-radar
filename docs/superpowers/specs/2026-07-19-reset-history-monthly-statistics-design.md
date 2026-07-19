@@ -77,8 +77,8 @@ GET /v1/history?time_zone=Asia%2FShanghai&year=2026
   "available_years": [2026, 2025],
   "current": {
     "week": {
-      "from": "2026-07-13T16:00:00Z",
-      "to": "2026-07-20T16:00:00Z",
+      "from": "2026-07-12T16:00:00Z",
+      "to": "2026-07-19T16:00:00Z",
       "count": 2
     },
     "month": {

@@ -77,12 +77,17 @@ private func presentationHistory(
     )
   }.joined(separator: ",")
   let years = availableYears.map(String.init).joined(separator: ",")
-  let recent = (0..<recentCount).map { offset in
+  let recent = (0..<recentCount).reversed().map { offset in
     let index = offset + 1
     return """
       {"id":"reset-\(index)","reset_at":"\(recentAt)"}
       """
   }.joined(separator: ",")
+  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+  let current = resetHistoryCurrentIntervals(
+    generatedAt: generatedAt,
+    timeZoneIdentifier: "Asia/Shanghai"
+  )
   let json = """
     {
       "schema_version":"1.0",
@@ -91,8 +96,8 @@ private func presentationHistory(
       "year":\(year),
       "available_years":[\(years)],
       "current":{
-        "week":{"from":"2026-07-13T16:00:00Z","to":"2026-07-20T16:00:00Z","count":2},
-        "month":{"from":"2026-06-30T16:00:00Z","to":"2026-07-31T16:00:00Z","count":6}
+        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":6}
       },
       "months":[\(months)],
       "recent":[\(recent)]
