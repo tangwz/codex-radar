@@ -108,4 +108,27 @@ struct AppLocalizationTests {
         == "暂无重置记录"
     )
   }
+
+  @Test
+  func localizesResetStatisticsLabelsForBothLanguages() {
+    let translations = [
+      ("Reset statistics", "重置统计"),
+      ("This week", "本周"),
+      ("Monthly resets", "每月重置次数"),
+      ("Recent resets", "最近重置"),
+      ("Latest 5", "最近 5 条"),
+      ("Loading reset statistics", "正在加载重置统计"),
+      ("Reset history unavailable", "重置历史暂不可用"),
+      ("Retry", "重试"),
+      ("Reset history is temporarily unavailable.", "重置历史暂时不可用。"),
+    ]
+
+    for (key, simplifiedChinese) in translations {
+      #expect(AppLocalization.string(key, language: .english, bundle: .module) == key)
+      #expect(
+        AppLocalization.string(key, language: .simplifiedChinese, bundle: .module)
+          == simplifiedChinese
+      )
+    }
+  }
 }

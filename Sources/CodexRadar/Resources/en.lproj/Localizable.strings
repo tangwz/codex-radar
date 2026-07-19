@@ -52,6 +52,15 @@
 "Source: Tibo on X" = "Source: Tibo on X";
 "Today" = "Today";
 "This month" = "This month";
+"Reset statistics" = "Reset statistics";
+"This week" = "This week";
+"Monthly resets" = "Monthly resets";
+"Recent resets" = "Recent resets";
+"Latest 5" = "Latest 5";
+"Loading reset statistics" = "Loading reset statistics";
+"Reset history unavailable" = "Reset history unavailable";
+"Retry" = "Retry";
+"Reset history is temporarily unavailable." = "Reset history is temporarily unavailable.";
 "Language" = "Language";
 "System Default" = "System Default";
 "English" = "English";

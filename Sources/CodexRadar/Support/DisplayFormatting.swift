@@ -5,8 +5,14 @@ enum DisplayFormatting {
     value.formatted(.number.notation(.compactName).locale(locale))
   }
 
-  static func absoluteDate(_ date: Date, locale: Locale = .current) -> String {
-    date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale))
+  static func absoluteDate(
+    _ date: Date,
+    locale: Locale = .current,
+    timeZone: TimeZone = .autoupdatingCurrent
+  ) -> String {
+    date.formatted(
+      Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale, timeZone: timeZone)
+    )
   }
 
   static func bucketDate(

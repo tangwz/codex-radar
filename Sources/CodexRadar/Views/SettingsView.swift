@@ -11,6 +11,7 @@ enum SettingsLayout {
 
 struct SettingsView: View {
   @ObservedObject var store: DashboardStore
+  @ObservedObject var historyStore: ResetHistoryStore
   @ObservedObject var selection: SettingsSelection
   @ObservedObject var updaterSettings: UpdaterSettingsModel
   @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
@@ -46,7 +47,7 @@ struct SettingsView: View {
       SettingsWindowTitleBridge(
         title: AppLocalization.string(selection.pane.titleKey, language: selectedLanguage)
       )
-        .allowsHitTesting(false)
+      .allowsHitTesting(false)
     }
   }
 
@@ -54,7 +55,7 @@ struct SettingsView: View {
   private var detailView: some View {
     switch selection.pane {
     case .dashboard:
-      ContentView(store: store)
+      ContentView(store: store, historyStore: historyStore)
     case .settings:
       SettingsPageView()
     case .about:

@@ -2,11 +2,14 @@ import SwiftUI
 
 struct ContentView: View {
   @ObservedObject var store: DashboardStore
+  @ObservedObject var historyStore: ResetHistoryStore
+  @Environment(\.timeZone) private var timeZone
 
   var body: some View {
     ScrollView {
       VStack(spacing: 18) {
         ResetForecastCard(forecast: store.forecast)
+        ResetHistoryView(store: historyStore, timeZone: timeZone)
         TokenUsageView(events: store.tokenEvents)
 
         if !store.issues.isEmpty {
@@ -26,6 +29,7 @@ struct ContentView: View {
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button {
+          historyStore.refresh(timeZone: timeZone)
           Task { await store.refresh() }
         } label: {
           Label("Refresh", systemImage: "arrow.clockwise")
@@ -41,8 +45,21 @@ struct ContentView: View {
           .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
       }
     }
-    .task {
+    .onAppear {
       store.startMonitoring()
+      historyStore.dashboardDidAppear(
+        timeZone: timeZone,
+        lastResetAt: store.forecast.lastResetAt
+      )
+    }
+    .onDisappear {
+      historyStore.dashboardDidDisappear()
+    }
+    .onChange(of: timeZone.identifier) {
+      historyStore.refresh(timeZone: timeZone)
+    }
+    .onChange(of: store.forecast.lastResetAt) {
+      historyStore.lastResetDidChange(store.forecast.lastResetAt, timeZone: timeZone)
     }
   }
 }

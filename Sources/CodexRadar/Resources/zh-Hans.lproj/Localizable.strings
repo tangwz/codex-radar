@@ -52,6 +52,15 @@
 "Source: Tibo on X" = "来源：Tibo 的 X 帖子";
 "Today" = "今天";
 "This month" = "本月";
+"Reset statistics" = "重置统计";
+"This week" = "本周";
+"Monthly resets" = "每月重置次数";
+"Recent resets" = "最近重置";
+"Latest 5" = "最近 5 条";
+"Loading reset statistics" = "正在加载重置统计";
+"Reset history unavailable" = "重置历史暂不可用";
+"Retry" = "重试";
+"Reset history is temporarily unavailable." = "重置历史暂时不可用。";
 "Language" = "语言";
 "System Default" = "跟随系统";
 "English" = "English";
