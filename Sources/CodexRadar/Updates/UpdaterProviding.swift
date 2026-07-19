@@ -100,6 +100,6 @@ enum UpdaterFactory {
       return DisabledUpdaterController()
     }
 
-    return DisabledUpdaterController(unavailableReasonKey: "Updates are not initialized.")
+    return SparkleUpdaterController()
   }
 }
