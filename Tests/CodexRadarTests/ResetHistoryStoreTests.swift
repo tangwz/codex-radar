@@ -394,12 +394,7 @@ private func history(
   availableYears: [Int] = [2026, 2025],
   generatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
 ) -> ResetHistory {
-  let months = (1...12).map { month in
-    let identifier = String(format: "%04d-%02d", year, month)
-    return """
-      {"month":"\(identifier)","from":"\(year)-01-01T00:00:00Z","to":"\(year)-02-01T00:00:00Z","count":\(month)}
-      """
-  }.joined(separator: ",")
+  let months = resetHistoryMonthSummariesJSON(year: year, timeZoneIdentifier: timeZone)
   let years = availableYears.map(String.init).joined(separator: ",")
   let generatedAtValue = ISO8601DateFormatter().string(from: generatedAt)
   let json = """

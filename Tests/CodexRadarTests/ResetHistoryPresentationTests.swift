@@ -40,29 +40,48 @@ struct ResetHistoryPresentationTests {
     #expect(presentation.months.first?.label == "Jan")
     #expect(presentation.recent.first?.dateTime == "Jan 1, 2026 at 12:30\u{202F}AM")
   }
+
+  @Test
+  func includesCommittedYearInUniqueDescendingPickerOptions() throws {
+    let history = try presentationHistory(
+      year: 2025,
+      recentCount: 0,
+      availableYears: [2026, 2024, 2024]
+    )
+    let originalAvailableYears = history.availableYears
+
+    let presentation = ResetHistoryPresentation(
+      history: history,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(presentation.year == 2025)
+    #expect(presentation.availableYears == [2026, 2025, 2024])
+    #expect(history.availableYears == originalAvailableYears)
+  }
 }
 
 private func presentationHistory(
   year: Int,
   recentCount: Int,
   januaryFrom: String? = nil,
+  availableYears: [Int] = [2026, 2025],
   recentAt: String = "2026-07-18T20:21:34Z"
 ) throws -> ResetHistory {
   let months = (1...12).map { month in
-    let identifier = String(format: "%04d-%02d", year, month)
-    let nextMonth = month == 12 ? 1 : month + 1
-    let nextYear = month == 12 ? year + 1 : year
-    let from =
-      month == 1 ? januaryFrom ?? "\(identifier)-01T00:00:00Z" : "\(identifier)-01T00:00:00Z"
-    let to = String(format: "%04d-%02d-01T00:00:00Z", nextYear, nextMonth)
-    return """
-      {"month":"\(identifier)","from":"\(from)","to":"\(to)","count":\(month)}
-      """
+    resetHistoryMonthSummaryJSON(
+      year: year,
+      month: month,
+      timeZoneIdentifier: "Asia/Shanghai",
+      from: month == 1 ? januaryFrom : nil
+    )
   }.joined(separator: ",")
-  let recent = (1...recentCount).map { index in
-    """
-    {"id":"reset-\(index)","reset_at":"\(recentAt)"}
-    """
+  let years = availableYears.map(String.init).joined(separator: ",")
+  let recent = (0..<recentCount).map { offset in
+    let index = offset + 1
+    return """
+      {"id":"reset-\(index)","reset_at":"\(recentAt)"}
+      """
   }.joined(separator: ",")
   let json = """
     {
@@ -70,7 +89,7 @@ private func presentationHistory(
       "generated_at":"2026-07-19T09:00:00Z",
       "time_zone":"Asia/Shanghai",
       "year":\(year),
-      "available_years":[2026,2025],
+      "available_years":[\(years)],
       "current":{
         "week":{"from":"2026-07-13T16:00:00Z","to":"2026-07-20T16:00:00Z","count":2},
         "month":{"from":"2026-06-30T16:00:00Z","to":"2026-07-31T16:00:00Z","count":6}

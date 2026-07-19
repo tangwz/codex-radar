@@ -23,7 +23,7 @@ struct ResetHistoryPresentation {
     let timeZone = TimeZone(identifier: history.timeZone)!
 
     year = history.year
-    availableYears = history.availableYears
+    availableYears = Set(history.availableYears + [history.year]).sorted(by: >)
     weekCount = history.current.week.count
     monthCount = history.current.month.count
     months = history.months.map { summary in

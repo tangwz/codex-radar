@@ -62,7 +62,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     months = try container.decode([ResetMonthSummary].self, forKey: .months)
     recent = try container.decode([ResetHistoryEvent].self, forKey: .recent)
 
-    guard TimeZone(identifier: timeZone) != nil else {
+    guard let decodedTimeZone = TimeZone(identifier: timeZone) else {
       throw invalidValue(
         forKey: .timeZone, in: container, description: "Expected a valid time zone.")
     }
@@ -80,6 +80,11 @@ struct ResetHistory: Decodable, Equatable, Sendable {
         description: "Expected one ordered summary for each month of the requested year."
       )
     }
+    try validateMonthBoundaries(
+      timeZone: decodedTimeZone,
+      forKey: .months,
+      in: container
+    )
     guard recent.count <= 5 else {
       throw invalidValue(
         forKey: .recent,
@@ -91,6 +96,61 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       throw invalidValue(
         forKey: .recent, in: container, description: "Recent reset event IDs must be unique.")
     }
+  }
+
+  private func validateMonthBoundaries(
+    timeZone: TimeZone,
+    forKey key: CodingKeys,
+    in container: KeyedDecodingContainer<CodingKeys>
+  ) throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+
+    for (index, month) in months.enumerated() {
+      let monthNumber = index + 1
+      let nextYear = monthNumber == 12 ? year + 1 : year
+      let nextMonth = monthNumber == 12 ? 1 : monthNumber + 1
+      guard
+        let expectedFrom = naturalMonthBoundary(
+          year: year,
+          month: monthNumber,
+          timeZone: timeZone,
+          calendar: calendar
+        ),
+        let expectedTo = naturalMonthBoundary(
+          year: nextYear,
+          month: nextMonth,
+          timeZone: timeZone,
+          calendar: calendar
+        ),
+        month.from == expectedFrom,
+        month.to == expectedTo
+      else {
+        throw invalidValue(
+          forKey: key,
+          in: container,
+          description:
+            "Month intervals must match their natural boundaries in the response time zone."
+        )
+      }
+    }
+  }
+
+  private func naturalMonthBoundary(
+    year: Int,
+    month: Int,
+    timeZone: TimeZone,
+    calendar: Calendar
+  ) -> Date? {
+    var components = DateComponents()
+    components.timeZone = timeZone
+    components.year = year
+    components.month = month
+    components.day = 1
+    components.hour = 0
+    components.minute = 0
+    components.second = 0
+    return calendar.date(from: components)
   }
 
   private func validate(

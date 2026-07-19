@@ -84,6 +84,23 @@ struct ResetHistoryServiceTests {
       try await service.fetch(timeZoneIdentifier: "Invalid/Zone", year: nil)
     }
   }
+
+  @Test
+  func mapsPlainURLResponseToInvalidResponse() async {
+    let service = ResetHistoryService(
+      loader: HTTPDataLoader { request in
+        (
+          Data(),
+          URLResponse(
+            url: request.url!, mimeType: nil, expectedContentLength: 0, textEncodingName: nil)
+        )
+      }
+    )
+
+    await #expect(throws: ResetHistoryServiceError.invalidResponse) {
+      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", year: 2026)
+    }
+  }
 }
 
 private actor HistoryRequestRecorder {
@@ -99,11 +116,7 @@ private func historyResponse(status: Int, url: URL) -> HTTPURLResponse {
 }
 
 private func historyServiceJSON(timeZone: String = "Asia/Shanghai", year: Int = 2026) -> String {
-  let months = (1...12).map { month in
-    """
-    {"month":"\(String(format: "%04d-%02d", year, month))","from":"\(year)-01-01T00:00:00Z","to":"\(year)-02-01T00:00:00Z","count":\(month)}
-    """
-  }.joined(separator: ",")
+  let months = resetHistoryMonthSummariesJSON(year: year, timeZoneIdentifier: timeZone)
   return """
     {
       "schema_version":"1.0",

@@ -35,6 +35,51 @@ struct ResetHistoryDecodingTests {
     }
   }
 
+  @Test
+  func rejectsCorrectMonthIDsWithRepeatedJanuaryIntervals() {
+    let january = resetHistoryMonthInterval(
+      year: 2026,
+      month: 1,
+      timeZoneIdentifier: "Asia/Shanghai"
+    )
+    let months = (1...12).map { month in
+      resetHistoryMonthSummaryJSON(
+        year: 2026,
+        month: month,
+        timeZoneIdentifier: "Asia/Shanghai",
+        from: january.from,
+        to: january.to
+      )
+    }.joined(separator: ",")
+
+    #expect(throws: DecodingError.self) {
+      try APIJSONCoding.makeDecoder().decode(
+        ResetHistory.self,
+        from: Data(historyJSON(months: months).utf8)
+      )
+    }
+  }
+
+  @Test
+  func rejectsFixedOffsetBoundariesAcrossDaylightSavingTime() {
+    let months = (1...12).map { month in
+      resetHistoryMonthSummaryJSON(
+        year: 2026,
+        month: month,
+        timeZoneIdentifier: "America/New_York",
+        from: month == 4 ? "2026-04-01T05:00:00Z" : nil,
+        to: month == 4 ? "2026-05-01T05:00:00Z" : nil
+      )
+    }.joined(separator: ",")
+
+    #expect(throws: DecodingError.self) {
+      try APIJSONCoding.makeDecoder().decode(
+        ResetHistory.self,
+        from: Data(historyJSON(timeZone: "America/New_York", months: months).utf8)
+      )
+    }
+  }
+
   @Test(arguments: [
     historyJSON(timeZone: "Invalid/Zone"),
     historyJSON(weekCount: -1),
@@ -57,14 +102,14 @@ private func historyJSON(
   months: String? = nil,
   recent: String? = nil
 ) -> String {
+  let boundaryTimeZone = TimeZone(identifier: timeZone) == nil ? "UTC" : timeZone
   let resolvedMonths =
     months
-    ?? (1...monthCount).map { month in
-      let value = String(format: "2026-%02d", month)
-      return """
-        {"month":"\(value)","from":"2026-01-01T00:00:00Z","to":"2026-02-01T00:00:00Z","count":\(month)}
-        """
-    }.joined(separator: ",")
+    ?? resetHistoryMonthSummariesJSON(
+      year: 2026,
+      timeZoneIdentifier: boundaryTimeZone,
+      monthCount: monthCount
+    )
   let resolvedRecent =
     recent
     ?? (1...recentCount).map { index in
@@ -90,24 +135,32 @@ private func historyJSON(
 }
 
 private func invalidIntervalMonths() -> String {
-  let months = (1...12).map { month -> String in
-    let value = String(format: "2026-%02d", month)
-    let to = month == 1 ? "2026-01-01T00:00:00Z" : "2026-02-01T00:00:00Z"
-    return """
-      {"month":"\(value)","from":"2026-01-01T00:00:00Z","to":"\(to)","count":\(month)}
-      """
+  (1...12).map { month -> String in
+    let interval = resetHistoryMonthInterval(
+      year: 2026,
+      month: month,
+      timeZoneIdentifier: "Asia/Shanghai"
+    )
+    return resetHistoryMonthSummaryJSON(
+      year: 2026,
+      month: month,
+      timeZoneIdentifier: "Asia/Shanghai",
+      to: month == 1 ? interval.from : interval.to
+    )
   }
-  return months.joined(separator: ",")
+  .joined(separator: ",")
 }
 
 private func duplicateMonthIDs() -> String {
-  let months = (1...12).map { month in
-    let value = month == 12 ? "2026-11" : String(format: "2026-%02d", month)
-    return """
-      {"month":"\(value)","from":"2026-01-01T00:00:00Z","to":"2026-02-01T00:00:00Z","count":\(month)}
-      """
+  (1...12).map { month in
+    resetHistoryMonthSummaryJSON(
+      year: 2026,
+      month: month,
+      timeZoneIdentifier: "Asia/Shanghai",
+      identifier: month == 12 ? "2026-11" : nil
+    )
   }
-  return months.joined(separator: ",")
+  .joined(separator: ",")
 }
 
 private func duplicateRecentIDs() -> String {
