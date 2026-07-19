@@ -15,13 +15,18 @@ final class ResetHistoryStore: ObservableObject {
   private var isDashboardActive = false
   private var lastObservedResetAt: Date?
   private var activeQuery: Query?
-  private var needsTrailingReload = false
+  private var needsTrailingResetReload = false
   private var loadTask: Task<Void, Never>?
   private var generation: UInt64 = 0
 
   private struct Query: Equatable, Sendable {
     let timeZoneIdentifier: String
     let year: Int
+  }
+
+  private enum RequestTrigger {
+    case ordinary
+    case resetChange
   }
 
   init(
@@ -58,7 +63,7 @@ final class ResetHistoryStore: ObservableObject {
     loadTask?.cancel()
     loadTask = nil
     activeQuery = nil
-    needsTrailingReload = false
+    needsTrailingResetReload = false
     pendingYear = nil
     isLoading = false
   }
@@ -77,7 +82,13 @@ final class ResetHistoryStore: ObservableObject {
     guard resetAt != lastObservedResetAt else { return }
     lastObservedResetAt = resetAt
     guard isDashboardActive else { return }
-    request(year: history?.year ?? Self.currentYear(in: timeZone), timeZone: timeZone)
+    let query =
+      activeQuery
+      ?? Query(
+        timeZoneIdentifier: timeZone.identifier,
+        year: history?.year ?? Self.currentYear(in: timeZone)
+      )
+    request(query, trigger: .resetChange)
   }
 
   private static func currentYear(in timeZone: TimeZone) -> Int {
@@ -88,17 +99,23 @@ final class ResetHistoryStore: ObservableObject {
 
   private func request(year: Int, timeZone: TimeZone) {
     let query = Query(timeZoneIdentifier: timeZone.identifier, year: year)
+    request(query, trigger: .ordinary)
+  }
+
+  private func request(_ query: Query, trigger: RequestTrigger) {
     if activeQuery == query {
-      needsTrailingReload = true
+      if case .resetChange = trigger {
+        needsTrailingResetReload = true
+      }
       return
     }
 
-    needsTrailingReload = false
+    needsTrailingResetReload = false
     generation &+= 1
     let requestGeneration = generation
     loadTask?.cancel()
     activeQuery = query
-    pendingYear = history?.year == year ? nil : year
+    pendingYear = history?.year == query.year ? nil : query.year
     isLoading = true
     let fetchHistory = fetchHistory
 
@@ -131,16 +148,14 @@ final class ResetHistoryStore: ObservableObject {
   private func finish(_ query: Query) {
     guard activeQuery == query else { return }
 
-    let shouldReload = needsTrailingReload && isDashboardActive
+    let shouldReload = needsTrailingResetReload && isDashboardActive
     activeQuery = nil
-    needsTrailingReload = false
+    needsTrailingResetReload = false
     pendingYear = nil
     isLoading = false
     loadTask = nil
 
-    guard shouldReload, let timeZone = TimeZone(identifier: query.timeZoneIdentifier) else {
-      return
-    }
-    request(year: query.year, timeZone: timeZone)
+    guard shouldReload else { return }
+    request(query, trigger: .ordinary)
   }
 }

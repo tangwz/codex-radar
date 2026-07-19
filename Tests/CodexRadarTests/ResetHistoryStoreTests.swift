@@ -10,6 +10,9 @@ struct ResetHistoryStoreTests {
     let fetcher = ControlledHistoryFetcher()
     let store = makeHistoryStore(fetcher: fetcher)
     let zone = TimeZone(identifier: "Asia/Shanghai")!
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    let expectedYear = calendar.component(.year, from: .now)
 
     store.refresh(timeZone: zone)
     await Task.yield()
@@ -20,10 +23,35 @@ struct ResetHistoryStoreTests {
 
     #expect(await fetcher.callCount == 1)
     #expect(
-      await fetcher.requests == [HistoryRequest(timeZoneIdentifier: zone.identifier, year: 2026)])
+      await fetcher.requests
+        == [HistoryRequest(timeZoneIdentifier: zone.identifier, year: expectedYear)])
 
-    await fetcher.completeNext(with: .success(history(year: 2026)))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    await fetcher.completeNext(with: .success(history(year: expectedYear)))
+    await waitUntil { store.history?.year == expectedYear && !store.isLoading }
+  }
+
+  @MainActor
+  @Test
+  func ordinaryIdenticalRequestsCoalesceWithoutATrailingReload() async {
+    let fetcher = ControlledHistoryFetcher()
+    let store = makeHistoryStore(fetcher: fetcher)
+    let zone = TimeZone(identifier: "Asia/Shanghai")!
+
+    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
+    await waitForCallCount(1, fetcher: fetcher)
+    store.refresh(timeZone: zone)
+    store.refresh(timeZone: zone)
+    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
+
+    await fetcher.completeNext(with: .success(history(year: currentYear(in: zone))))
+    await waitForCompletionOrAdditionalCall(store: store, fetcher: fetcher)
+
+    #expect(await fetcher.callCount == 1)
+
+    if await fetcher.callCount > 1 {
+      await fetcher.completeNext(with: .success(history(year: currentYear(in: zone))))
+      await waitUntil { !store.isLoading }
+    }
   }
 
   @MainActor
@@ -53,7 +81,7 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
-  func newerYearRequestWinsAndClearsObsoleteTrailingReload() async {
+  func newerYearRequestWinsOverAnOlderResponse() async {
     let fetcher = ControlledHistoryFetcher()
     let store = makeHistoryStore(fetcher: fetcher)
     let zone = TimeZone(identifier: "Asia/Shanghai")!
@@ -66,7 +94,6 @@ struct ResetHistoryStoreTests {
 
     store.selectYear(2025, timeZone: zone)
     await waitForCallCount(2, fetcher: fetcher)
-    store.selectYear(2025, timeZone: zone)
     store.selectYear(2024, timeZone: zone)
     await waitForCallCount(3, fetcher: fetcher)
 
@@ -86,6 +113,51 @@ struct ResetHistoryStoreTests {
 
     #expect(store.pendingYear == nil)
     #expect(!store.isLoading)
+    #expect(await fetcher.callCount == 3)
+  }
+
+  @MainActor
+  @Test
+  func resetDuringYearSwitchTrailsTheSelectedActiveQuery() async {
+    let fetcher = ControlledHistoryFetcher()
+    let store = makeHistoryStore(fetcher: fetcher)
+    let zone = TimeZone(identifier: "Asia/Shanghai")!
+    let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
+    let changedReset = Date(timeIntervalSince1970: 1_700_000_100)
+    let oldGeneratedAt = Date(timeIntervalSince1970: 1_700_000_010)
+    let newGeneratedAt = Date(timeIntervalSince1970: 1_700_000_110)
+
+    store.dashboardDidAppear(timeZone: zone, lastResetAt: initialReset)
+    await waitForCallCount(1, fetcher: fetcher)
+    await fetcher.completeNext(
+      with: .success(history(year: 2026, availableYears: [2026, 2025])))
+    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+
+    store.selectYear(2025, timeZone: zone)
+    await waitForCallCount(2, fetcher: fetcher)
+    store.lastResetDidChange(changedReset, timeZone: zone)
+
+    await fetcher.completeNext(
+      with: .success(
+        history(
+          year: 2025,
+          availableYears: [2026, 2025],
+          generatedAt: oldGeneratedAt)))
+    await waitForCallCount(3, fetcher: fetcher)
+
+    #expect(await fetcher.requests.map(\.year) == [2026, 2025, 2025])
+    #expect(store.history?.year == 2025)
+    #expect(store.history?.generatedAt == oldGeneratedAt)
+
+    await fetcher.completeNext(
+      with: .success(
+        history(
+          year: 2025,
+          availableYears: [2026, 2025],
+          generatedAt: newGeneratedAt)))
+    await waitUntil { store.history?.generatedAt == newGeneratedAt && !store.isLoading }
+
+    #expect(store.history?.year == 2025)
     #expect(await fetcher.callCount == 3)
   }
 
@@ -192,20 +264,23 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
-  func resetChangeDuringInitialLoadStartsExactlyOneTrailingReload() async {
+  func multipleResetChangesDuringInitialLoadStartExactlyOneTrailingReload() async {
     let fetcher = ControlledHistoryFetcher()
     let store = makeHistoryStore(fetcher: fetcher)
     let zone = TimeZone(identifier: "Asia/Shanghai")!
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    let changedReset = Date(timeIntervalSince1970: 1_700_000_100)
+    let secondReset = Date(timeIntervalSince1970: 1_700_000_100)
+    let thirdReset = Date(timeIntervalSince1970: 1_700_000_200)
+    let fourthReset = Date(timeIntervalSince1970: 1_700_000_300)
     let oldGeneratedAt = Date(timeIntervalSince1970: 1_700_000_010)
     let newGeneratedAt = Date(timeIntervalSince1970: 1_700_000_110)
 
     store.dashboardDidAppear(timeZone: zone, lastResetAt: initialReset)
     await waitForCallCount(1, fetcher: fetcher)
 
-    store.lastResetDidChange(changedReset, timeZone: zone)
-    store.lastResetDidChange(changedReset, timeZone: zone)
+    store.lastResetDidChange(secondReset, timeZone: zone)
+    store.lastResetDidChange(thirdReset, timeZone: zone)
+    store.lastResetDidChange(fourthReset, timeZone: zone)
     await fetcher.completeNext(
       with: .success(history(year: 2026, generatedAt: oldGeneratedAt)))
     await waitForCallCount(2, fetcher: fetcher)
@@ -252,6 +327,27 @@ private func waitForCallCount(_ count: Int, fetcher: ControlledHistoryFetcher) a
     try? await Task.sleep(for: .milliseconds(1))
   }
   Issue.record("Timed out waiting for history request count \(count).")
+}
+
+@MainActor
+private func waitForCompletionOrAdditionalCall(
+  store: ResetHistoryStore,
+  fetcher: ControlledHistoryFetcher
+) async {
+  for _ in 0..<200 {
+    let callCount = await fetcher.callCount
+    if !store.isLoading || callCount > 1 {
+      return
+    }
+    try? await Task.sleep(for: .milliseconds(1))
+  }
+  Issue.record("Timed out waiting for request completion or a trailing reload.")
+}
+
+private func currentYear(in timeZone: TimeZone) -> Int {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = timeZone
+  return calendar.component(.year, from: .now)
 }
 
 private struct HistoryRequest: Equatable, Sendable {
