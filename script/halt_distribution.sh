@@ -119,8 +119,13 @@ current_version=""
 current_build=""
 previous_version=""
 previous_build=""
+halt_state=""
 while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
   case "$key" in
+    halt_state)
+      [[ -z "$halt_state" ]] || die "duplicate halt_state from halt verifier" || exit 1
+      halt_state="$value"
+      ;;
     current_tag)
       [[ -z "$current_tag" ]] || die "duplicate current_tag from halt verifier" || exit 1
       current_tag="$value"
@@ -144,6 +149,8 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     *) die "unexpected halt verifier output" || exit 1 ;;
   esac
 done <"$verification_output"
+[[ "$halt_state" == ready || "$halt_state" == already-halted ]] ||
+  die "halt verifier returned an invalid state" || exit 1
 [[ "$current_tag" == "v$current_version" && "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && \
   "$current_build" =~ ^[1-9][0-9]*$ && "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && \
   "$previous_build" =~ ^[1-9][0-9]*$ ]] ||
@@ -155,15 +162,16 @@ printf 'Current Production Feed: %s (%s), SHA-256 %s\n' \
   "$current_version" "$current_build" "$current_sha256"
 printf 'Previous Production Feed: %s (%s), SHA-256 %s\n' \
   "$previous_version" "$previous_build" "$previous_sha256"
-printf 'Type %s to replace the Production Feed with the exact previous signed bytes: ' \
-  "$current_tag" >&2
-confirmation=""
-IFS= read -r confirmation || true
-[[ "$confirmation" == "$current_tag" ]] ||
-  die "confirmation did not match current tag $current_tag" || exit 1
+if [[ "$halt_state" == ready ]]; then
+  printf 'Type %s to replace the Production Feed with the exact previous signed bytes: ' \
+    "$current_tag" >&2
+  confirmation=""
+  IFS= read -r confirmation || true
+  [[ "$confirmation" == "$current_tag" ]] ||
+    die "confirmation did not match current tag $current_tag" || exit 1
 
-payload_path="$work_dir/put-payload.json"
-/usr/bin/python3 - "$previous_feed" "$current_blob_sha" "$BRANCH" >"$payload_path" <<'PYTHON'
+  payload_path="$work_dir/put-payload.json"
+  /usr/bin/python3 - "$previous_feed" "$current_blob_sha" "$BRANCH" >"$payload_path" <<'PYTHON'
 import base64
 import json
 import pathlib
@@ -178,19 +186,22 @@ print(json.dumps({
 }, separators=(",", ":")))
 PYTHON
 
-put_response="$work_dir/put-response"
-set +e
-"$GH_EXECUTABLE" api --include --method PUT \
-  "repos/$REPOSITORY/contents/$FEED_PATH" --input "$payload_path" >"$put_response"
-put_status=$?
-set -e
-http_status="$(/usr/bin/sed -nE 's/^HTTP\/[^ ]+ ([0-9]{3}).*/\1/p' "$put_response" | \
-  /usr/bin/tail -n 1)"
-if [[ "$http_status" == 409 || "$http_status" == 422 ]]; then
-  die "CAS conflict while writing Production Feed (HTTP $http_status)" || exit 1
-fi
-if [[ "$put_status" -ne 0 || ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-  die "unable to write halted Production Feed" || exit 1
+  put_response="$work_dir/put-response"
+  set +e
+  "$GH_EXECUTABLE" api --include --method PUT \
+    "repos/$REPOSITORY/contents/$FEED_PATH" --input "$payload_path" >"$put_response"
+  put_status=$?
+  set -e
+  http_status="$(/usr/bin/sed -nE 's/^HTTP\/[^ ]+ ([0-9]{3}).*/\1/p' "$put_response" | \
+    /usr/bin/tail -n 1)"
+  if [[ "$http_status" == 409 || "$http_status" == 422 ]]; then
+    die "CAS conflict while writing Production Feed (HTTP $http_status)" || exit 1
+  fi
+  if [[ "$put_status" -ne 0 || ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+    die "unable to write halted Production Feed" || exit 1
+  fi
+else
+  printf 'Distribution Halt is already present in the repository; resuming verification without another PUT.\n'
 fi
 
 repository_response="$work_dir/repository-response.json"

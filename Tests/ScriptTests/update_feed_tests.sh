@@ -595,6 +595,8 @@ done
 for required_releasing_text in \
   'script/halt_distribution.sh --previous-commit' \
   'Distribution Halt Pending' \
+  'already-halted' \
+  '同一个 `--previous-commit`' \
   'already-upgraded installations are not downgraded' \
   'Acceptance status: Pending | Passed' \
   'appcast.xml'; do
@@ -1151,6 +1153,7 @@ halt_verify_output="$fixture_root/halt-verify-output"
 verify_halt "$halt_current_feed" "$halt_previous_feed" \
   "$candidate_dir/update.env" >"$halt_verify_output"
 for expected_line in \
+  'halt_state=ready' \
   'current_tag=v0.2.0' \
   'current_version=0.2.0' \
   'current_build=2' \
@@ -1159,6 +1162,11 @@ for expected_line in \
   /usr/bin/grep -Fx "$expected_line" "$halt_verify_output" >/dev/null ||
     fail "halt verifier did not report $expected_line"
 done
+
+verify_halt "$halt_previous_feed" "$halt_previous_feed" \
+  "$candidate_dir/update.env" >"$halt_verify_output"
+/usr/bin/grep -Fx 'halt_state=already-halted' "$halt_verify_output" >/dev/null ||
+  fail "halt verifier did not report the already-halted state"
 
 halt_invalid_signature="$fixture_root/halt-invalid-signature.xml"
 /bin/cp "$halt_previous_feed" "$halt_invalid_signature"
@@ -1181,7 +1189,7 @@ expect_failure "previous Production Feed failed Ed25519 verification" verify_hal
 
 halt_equal_build="$fixture_root/halt-equal-build.xml"
 make_feed "$halt_equal_build" 0.2.0 2 14.0 "$production_url" \
-  "$archive_length" "$archive_signature"
+  "$archive_length" "$archive_signature" '' false CodexRadarEqualBuild
 expect_failure "previous Production Feed build must be lower than current Production Feed build" \
   verify_halt "$halt_current_feed" "$halt_equal_build" "$candidate_dir/update.env"
 
@@ -1280,6 +1288,11 @@ if [[ "$method" == PUT && "$target" == "repos/tangwz/codex-radar/contents/appcas
   [[ "$include" == true && -f "$input" ]] || exit 2
   /bin/cp "$input" "$HALT_FIXTURE_DIR/put-body.json"
   case "$HALT_FIXTURE_MODE" in
+    put-response-lost)
+      : >"$HALT_FIXTURE_DIR/put-complete"
+      printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n'
+      exit 1
+      ;;
     put-409)
       printf 'HTTP/2.0 409 Conflict\r\n\r\n'
       exit 1
@@ -1337,9 +1350,13 @@ make_feed "$halt_unknown_feed" 9.9.9 999 14.0 \
 
 run_halt_fixture() {
   local mode="$1" previous_feed="${2:-$halt_previous_feed}" confirmation="${3:-v0.2.0}"
+  local preserve_server_state="${4:-false}"
 
-  /bin/rm -f "$halt_fixture_dir/put-complete" "$halt_fixture_dir/put-body.json" \
-    "$halt_fixture_dir/http-count" "$halt_fixture_dir/gh.log" "$halt_fixture_dir/http.log"
+  if [[ "$preserve_server_state" == false ]]; then
+    /bin/rm -f "$halt_fixture_dir/put-complete"
+  fi
+  /bin/rm -f "$halt_fixture_dir/put-body.json" "$halt_fixture_dir/http-count" \
+    "$halt_fixture_dir/gh.log" "$halt_fixture_dir/http.log"
   printf '%s\n' "$confirmation" | env \
     HALT_GH_EXECUTABLE="$halt_fake_gh" \
     HALT_HTTP_EXECUTABLE="$halt_fake_http" \
@@ -1401,7 +1418,32 @@ run_halt_fixture raw-current-then-previous >"$halt_success_output"
 [[ "$(<"$halt_fixture_dir/http-count")" == 2 ]] ||
   fail "halt command did not retry current raw feed bytes before convergence"
 expect_failure "raw Production Feed returned unknown bytes" run_halt_fixture raw-unknown
+expect_failure "unable to write halted Production Feed" run_halt_fixture put-response-lost
+if /usr/bin/grep -F 'Distribution Halt completed' "$fixture_root/failure-output" >/dev/null; then
+  fail "halt command claimed success after a lost PUT response"
+fi
+run_halt_fixture default "$halt_previous_feed" '' true >"$halt_success_output"
+/usr/bin/grep -F 'resuming verification without another PUT' "$halt_success_output" >/dev/null ||
+  fail "halt command did not report resume after a lost PUT response"
+if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+  fail "halt retry repeated PUT after a lost response"
+fi
+
 expect_failure "Distribution Halt Pending" run_halt_fixture raw-timeout
+if /usr/bin/grep -F 'Distribution Halt completed' "$fixture_root/failure-output" >/dev/null; then
+  fail "halt command claimed success before raw feed convergence"
+fi
+run_halt_fixture default "$halt_previous_feed" '' true >"$halt_success_output"
+/usr/bin/grep -F 'resuming verification without another PUT' "$halt_success_output" >/dev/null ||
+  fail "halt command did not report resume after Distribution Halt Pending"
+if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+  fail "halt retry repeated PUT after Distribution Halt Pending"
+fi
+expect_failure "raw Production Feed returned unknown bytes" run_halt_fixture \
+  raw-unknown "$halt_previous_feed" '' true
+if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+  fail "already-halted verification performed PUT before rejecting unknown raw bytes"
+fi
 
 [[ "$production_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||
   fail "verification changed signed production feed bytes"

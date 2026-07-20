@@ -721,7 +721,7 @@ validate_halt_feed_url() {
 validate_halt_mode() {
   local current_feed_path="$1" previous_feed_path="$2"
   local update_config_path="$3" sparkle_source_path="$4"
-  local current_version current_build current_minimum
+  local current_version current_build current_minimum halt_state
 
   assert_real_file "$update_config_path" "update config"
   load_update_config "$update_config_path"
@@ -737,11 +737,18 @@ validate_halt_mode() {
 
   validate_feed_shape "$previous_feed_path" "previous Production Feed"
   validate_halt_feed_url "previous Production Feed"
-  decimal_is_greater "$current_build" "$FEED_BUILD" ||
-    die "previous Production Feed build must be lower than current Production Feed build" || return 1
   [[ "$FEED_MINIMUM_SYSTEM" == "$current_minimum" ]] ||
     die "Production Feed minimum system versions must match" || return 1
 
+  if /usr/bin/cmp -s "$current_feed_path" "$previous_feed_path"; then
+    halt_state="already-halted"
+  else
+    decimal_is_greater "$current_build" "$FEED_BUILD" ||
+      die "previous Production Feed build must be lower than current Production Feed build" || return 1
+    halt_state="ready"
+  fi
+
+  printf 'halt_state=%s\n' "$halt_state"
   printf 'current_tag=v%s\n' "$current_version"
   printf 'current_version=%s\n' "$current_version"
   printf 'current_build=%s\n' "$current_build"
