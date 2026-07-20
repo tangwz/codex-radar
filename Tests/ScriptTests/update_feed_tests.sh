@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PREPARE_SCRIPT="$ROOT_DIR/script/prepare_appcast_inputs.sh"
 VERIFY_SCRIPT="$ROOT_DIR/script/verify_update_artifacts.sh"
 QUALIFY_SCRIPT="$ROOT_DIR/script/qualify_update.sh"
+HALT_SCRIPT="$ROOT_DIR/script/halt_distribution.sh"
 SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
@@ -13,6 +14,7 @@ CANDIDATE_WORKFLOW="$WORKFLOW_DIR/prepare-candidate.yml"
 PUBLISH_WORKFLOW="$WORKFLOW_DIR/publish-update.yml"
 CODEOWNERS_FILE="$ROOT_DIR/.github/CODEOWNERS"
 RELEASING_DOC="$ROOT_DIR/docs/releasing.md"
+README_FILE="$ROOT_DIR/README.md"
 
 [[ -x "$PREPARE_SCRIPT" ]] || {
   echo "prepare_appcast_inputs.sh does not exist" >&2
@@ -24,6 +26,10 @@ RELEASING_DOC="$ROOT_DIR/docs/releasing.md"
 }
 [[ -x "$QUALIFY_SCRIPT" ]] || {
   echo "qualify_update.sh does not exist" >&2
+  exit 1
+}
+[[ -x "$HALT_SCRIPT" ]] || {
+  echo "halt_distribution.sh does not exist" >&2
   exit 1
 }
 [[ -d "$SPARKLE_SOURCE" ]] || {
@@ -573,6 +579,29 @@ expect_failure() {
   }
 }
 
+expect_failure "usage:" "$HALT_SCRIPT"
+expect_failure "usage:" "$HALT_SCRIPT" --previous-commit
+expect_failure "previous commit must be a full Git commit SHA" \
+  "$HALT_SCRIPT" --previous-commit not-a-commit
+
+for required_readme_text in \
+  'releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip' \
+  'CodexRadar-v0.1.0-macos-universal.zip.sha256' \
+  'ad-hoc' \
+  'Open Anyway'; do
+  /usr/bin/grep -F "$required_readme_text" "$README_FILE" >/dev/null ||
+    fail "README.md lacks first-install guidance: $required_readme_text"
+done
+for required_releasing_text in \
+  'script/halt_distribution.sh --previous-commit' \
+  'Distribution Halt Pending' \
+  'already-upgraded installations are not downgraded' \
+  'Acceptance status: Pending | Passed' \
+  'appcast.xml'; do
+  /usr/bin/grep -F "$required_releasing_text" "$RELEASING_DOC" >/dev/null ||
+    fail "docs/releasing.md lacks halt or acceptance guidance: $required_releasing_text"
+done
+
 validate_workflow_policy
 
 yaml_policy_dir="$fixture_root/workflow-policy-yaml"
@@ -950,6 +979,16 @@ verify_published() {
     --sparkle-source "$SPARKLE_SOURCE"
 }
 
+verify_halt() {
+  local current_feed="$1" previous_feed="$2" update_config="$3"
+
+  "$VERIFY_SCRIPT" --mode halt \
+    --current-feed "$current_feed" \
+    --previous-feed "$previous_feed" \
+    --update-config "$update_config" \
+    --sparkle-source "$SPARKLE_SOURCE"
+}
+
 printf '01234567890123456789012345678901' >"$fixture_root/test-seed"
 build_test_signer
 : >"$fixture_root/empty"
@@ -1105,6 +1144,265 @@ expect_failure "published archive failed Ed25519 verification" verify_published 
   "$corrupt_published_feed" "$corrupt_published_archive" \
   "$corrupt_published_archive.manifest" "$candidate_dir/version.env" \
   "$candidate_dir/update.env"
+
+halt_current_feed="$inputs_dir/production/appcast.xml"
+halt_previous_feed="$previous_dir/appcast.xml"
+halt_verify_output="$fixture_root/halt-verify-output"
+verify_halt "$halt_current_feed" "$halt_previous_feed" \
+  "$candidate_dir/update.env" >"$halt_verify_output"
+for expected_line in \
+  'current_tag=v0.2.0' \
+  'current_version=0.2.0' \
+  'current_build=2' \
+  'previous_version=0.1.0' \
+  'previous_build=1'; do
+  /usr/bin/grep -Fx "$expected_line" "$halt_verify_output" >/dev/null ||
+    fail "halt verifier did not report $expected_line"
+done
+
+halt_invalid_signature="$fixture_root/halt-invalid-signature.xml"
+/bin/cp "$halt_previous_feed" "$halt_invalid_signature"
+/usr/bin/python3 - "$halt_invalid_signature" "$published_wrong_signature" <<'PYTHON'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+signature = sys.argv[2].encode("ascii")
+data = path.read_bytes()
+prefix = b"edSignature: "
+start = data.rfind(prefix)
+end = data.find(b"\n", start)
+if start < 0 or end < 0:
+    raise SystemExit("fixture feed signature block is missing")
+path.write_bytes(data[:start] + prefix + signature + data[end:])
+PYTHON
+expect_failure "previous Production Feed failed Ed25519 verification" verify_halt \
+  "$halt_current_feed" "$halt_invalid_signature" "$candidate_dir/update.env"
+
+halt_equal_build="$fixture_root/halt-equal-build.xml"
+make_feed "$halt_equal_build" 0.2.0 2 14.0 "$production_url" \
+  "$archive_length" "$archive_signature"
+expect_failure "previous Production Feed build must be lower than current Production Feed build" \
+  verify_halt "$halt_current_feed" "$halt_equal_build" "$candidate_dir/update.env"
+
+halt_moving_url="$fixture_root/halt-moving-url.xml"
+make_feed "$halt_moving_url" 0.1.0 1 14.0 \
+  "https://github.com/tangwz/codex-radar/releases/latest/download/CodexRadar-v0.1.0-macos-universal.zip" \
+  123 "$archive_signature"
+expect_failure "previous Production Feed enclosure URL must be version-fixed" verify_halt \
+  "$halt_current_feed" "$halt_moving_url" "$candidate_dir/update.env"
+
+halt_wrong_minimum="$fixture_root/halt-wrong-minimum.xml"
+make_feed "$halt_wrong_minimum" 0.1.0 1 13.0 "$previous_url" 123 "$archive_signature"
+expect_failure "Production Feed minimum system versions must match" verify_halt \
+  "$halt_current_feed" "$halt_wrong_minimum" "$candidate_dir/update.env"
+
+halt_fixture_dir="$fixture_root/halt-fixture"
+/bin/mkdir -p "$halt_fixture_dir"
+halt_fake_gh="$halt_fixture_dir/gh"
+halt_fake_http="$halt_fixture_dir/http"
+
+/usr/bin/tee "$halt_fake_gh" >/dev/null <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"$HALT_FIXTURE_DIR/gh.log"
+
+emit_contents() {
+  /usr/bin/python3 - "$1" "$2" <<'PYTHON'
+import base64
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+print(json.dumps({
+    "type": "file",
+    "sha": sys.argv[2],
+    "encoding": "base64",
+    "content": base64.b64encode(path.read_bytes()).decode("ascii"),
+}))
+PYTHON
+}
+
+if [[ "$#" -eq 2 && "$1" == auth && "$2" == status ]]; then
+  exit 0
+fi
+[[ "$#" -ge 2 && "$1" == api ]] || exit 2
+shift
+method=GET
+include=false
+input=""
+target=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --method)
+      method="$2"
+      shift 2
+      ;;
+    --include)
+      include=true
+      shift
+      ;;
+    --input)
+      input="$2"
+      shift 2
+      ;;
+    *)
+      target="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ "$method" == GET && "$target" == *"?ref=main" ]]; then
+  if [[ "$HALT_FIXTURE_MODE" == current-read-failure && ! -e "$HALT_FIXTURE_DIR/put-complete" ]]; then
+    exit 1
+  fi
+  if [[ -e "$HALT_FIXTURE_DIR/put-complete" ]]; then
+    if [[ "$HALT_FIXTURE_MODE" == repository-mismatch ]]; then
+      emit_contents "$HALT_FIXTURE_UNKNOWN_FEED" 3333333333333333333333333333333333333333
+    else
+      emit_contents "$HALT_FIXTURE_PREVIOUS_FEED" 2222222222222222222222222222222222222222
+    fi
+  else
+    emit_contents "$HALT_FIXTURE_CURRENT_FEED" 1111111111111111111111111111111111111111
+  fi
+  exit 0
+fi
+
+if [[ "$method" == GET && "$target" == *"?ref=$HALT_FIXTURE_PREVIOUS_COMMIT" ]]; then
+  emit_contents "$HALT_FIXTURE_PREVIOUS_FEED" 0000000000000000000000000000000000000000
+  exit 0
+fi
+
+if [[ "$method" == PUT && "$target" == "repos/tangwz/codex-radar/contents/appcast.xml" ]]; then
+  [[ "$include" == true && -f "$input" ]] || exit 2
+  /bin/cp "$input" "$HALT_FIXTURE_DIR/put-body.json"
+  case "$HALT_FIXTURE_MODE" in
+    put-409)
+      printf 'HTTP/2.0 409 Conflict\r\n\r\n'
+      exit 1
+      ;;
+    put-422)
+      printf 'HTTP/2.0 422 Unprocessable Entity\r\n\r\n'
+      exit 1
+      ;;
+  esac
+  : >"$HALT_FIXTURE_DIR/put-complete"
+  printf 'HTTP/2.0 200 OK\r\n\r\n{}\n'
+  exit 0
+fi
+
+exit 2
+FAKE_GH
+
+/usr/bin/tee "$halt_fake_http" >/dev/null <<'FAKE_HTTP'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"$HALT_FIXTURE_DIR/http.log"
+count=0
+if [[ -f "$HALT_FIXTURE_DIR/http-count" ]]; then
+  count="$(<"$HALT_FIXTURE_DIR/http-count")"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$HALT_FIXTURE_DIR/http-count"
+case "$HALT_FIXTURE_MODE" in
+  raw-unknown)
+    /bin/cat "$HALT_FIXTURE_UNKNOWN_FEED"
+    ;;
+  raw-timeout)
+    /bin/cat "$HALT_FIXTURE_CURRENT_FEED"
+    ;;
+  raw-current-then-previous)
+    if [[ "$count" -eq 1 ]]; then
+      /bin/cat "$HALT_FIXTURE_CURRENT_FEED"
+    else
+      /bin/cat "$HALT_FIXTURE_PREVIOUS_FEED"
+    fi
+    ;;
+  *)
+    /bin/cat "$HALT_FIXTURE_PREVIOUS_FEED"
+    ;;
+esac
+FAKE_HTTP
+/bin/chmod 755 "$halt_fake_gh" "$halt_fake_http"
+
+halt_previous_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+halt_unknown_feed="$fixture_root/halt-unknown.xml"
+make_feed "$halt_unknown_feed" 9.9.9 999 14.0 \
+  "https://github.com/tangwz/codex-radar/releases/download/v9.9.9/CodexRadar-v9.9.9-macos-universal.zip" \
+  99 "$archive_signature"
+
+run_halt_fixture() {
+  local mode="$1" previous_feed="${2:-$halt_previous_feed}" confirmation="${3:-v0.2.0}"
+
+  /bin/rm -f "$halt_fixture_dir/put-complete" "$halt_fixture_dir/put-body.json" \
+    "$halt_fixture_dir/http-count" "$halt_fixture_dir/gh.log" "$halt_fixture_dir/http.log"
+  printf '%s\n' "$confirmation" | env \
+    HALT_GH_EXECUTABLE="$halt_fake_gh" \
+    HALT_HTTP_EXECUTABLE="$halt_fake_http" \
+    HALT_TEST_UPDATE_CONFIG="$candidate_dir/update.env" \
+    HALT_TEST_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+    HALT_TEST_POLL_ATTEMPTS=3 \
+    HALT_TEST_POLL_INTERVAL_SECONDS=0 \
+    HALT_FIXTURE_DIR="$halt_fixture_dir" \
+    HALT_FIXTURE_MODE="$mode" \
+    HALT_FIXTURE_CURRENT_FEED="$halt_current_feed" \
+    HALT_FIXTURE_PREVIOUS_FEED="$previous_feed" \
+    HALT_FIXTURE_UNKNOWN_FEED="$halt_unknown_feed" \
+    HALT_FIXTURE_PREVIOUS_COMMIT="$halt_previous_commit" \
+    "$HALT_SCRIPT" --previous-commit "$halt_previous_commit"
+}
+
+expect_failure "unable to fetch current Production Feed" run_halt_fixture current-read-failure
+expect_failure "previous Production Feed failed Ed25519 verification" run_halt_fixture \
+  default "$halt_invalid_signature"
+expect_failure "previous Production Feed build must be lower than current Production Feed build" \
+  run_halt_fixture default "$halt_equal_build"
+expect_failure "confirmation did not match current tag v0.2.0" run_halt_fixture \
+  default "$halt_previous_feed" v0.1.0
+
+halt_success_output="$fixture_root/halt-success-output"
+run_halt_fixture default >"$halt_success_output"
+/usr/bin/grep -F 'Distribution Halt completed' "$halt_success_output" >/dev/null ||
+  fail "halt command did not report success"
+/usr/bin/grep -F 'already-upgraded installations are not downgraded' "$halt_success_output" >/dev/null ||
+  fail "halt command did not state the no-downgrade guarantee"
+/usr/bin/python3 - "$halt_fixture_dir/put-body.json" "$halt_previous_feed" <<'PYTHON'
+import base64
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+expected = pathlib.Path(sys.argv[2]).read_bytes()
+if base64.b64decode(payload.get("content", ""), validate=True) != expected:
+    raise SystemExit("halt PUT did not contain the exact previous feed bytes")
+if payload.get("sha") != "1111111111111111111111111111111111111111":
+    raise SystemExit("halt PUT did not contain the current blob SHA")
+if payload.get("branch") != "main":
+    raise SystemExit("halt PUT did not target main")
+PYTHON
+if /usr/bin/grep -E 'release delete|git push --delete|refs/tags' "$halt_fixture_dir/gh.log" >/dev/null; then
+  fail "halt command attempted to delete or mutate a Release or tag"
+fi
+/usr/bin/grep -F -- '--proto =https' "$halt_fixture_dir/http.log" >/dev/null ||
+  fail "halt HTTP transport did not restrict redirects to HTTPS"
+/usr/bin/grep -F -- '--tlsv1.2' "$halt_fixture_dir/http.log" >/dev/null ||
+  fail "halt HTTP transport did not require TLS 1.2 or newer"
+
+expect_failure "CAS conflict while writing Production Feed (HTTP 409)" run_halt_fixture put-409
+expect_failure "CAS conflict while writing Production Feed (HTTP 422)" run_halt_fixture put-422
+expect_failure "repository Production Feed bytes differ after Distribution Halt PUT" \
+  run_halt_fixture repository-mismatch
+run_halt_fixture raw-current-then-previous >"$halt_success_output"
+[[ "$(<"$halt_fixture_dir/http-count")" == 2 ]] ||
+  fail "halt command did not retry current raw feed bytes before convergence"
+expect_failure "raw Production Feed returned unknown bytes" run_halt_fixture raw-unknown
+expect_failure "Distribution Halt Pending" run_halt_fixture raw-timeout
+
 [[ "$production_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||
   fail "verification changed signed production feed bytes"
 [[ "$qualification_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/qualification/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||

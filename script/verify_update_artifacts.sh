@@ -16,6 +16,7 @@ usage:
   $0 --mode artifacts --inputs PATH --archive PATH --manifest PATH --final-info-plist PATH --version-config PATH --update-config PATH --sparkle-source PATH
   $0 --mode published --feed PATH --archive PATH --manifest PATH --version-config PATH --update-config PATH --sparkle-source PATH
   $0 --mode cas (--current-feed PATH|--current-absent) (--expected-previous-feed PATH|--expected-previous-absent) --candidate-feed PATH
+  $0 --mode halt --current-feed PATH --previous-feed PATH --update-config PATH --sparkle-source PATH
 EOF
   return 2
 }
@@ -708,6 +709,46 @@ validate_cas_mode() {
   printf 'cas_state=ready\n'
 }
 
+validate_halt_feed_url() {
+  local description="$1" expected_archive expected_url
+
+  expected_archive="CodexRadar-v${FEED_VERSION}-macos-universal.zip"
+  expected_url="https://github.com/tangwz/codex-radar/releases/download/v${FEED_VERSION}/${expected_archive}"
+  [[ "$FEED_ENCLOSURE_URL" == "$expected_url" ]] ||
+    die "$description enclosure URL must be version-fixed" || return 1
+}
+
+validate_halt_mode() {
+  local current_feed_path="$1" previous_feed_path="$2"
+  local update_config_path="$3" sparkle_source_path="$4"
+  local current_version current_build current_minimum
+
+  assert_real_file "$update_config_path" "update config"
+  load_update_config "$update_config_path"
+  compile_sparkle_verifier "$sparkle_source_path"
+
+  validate_feed_shape "$current_feed_path" "current Production Feed"
+  validate_halt_feed_url "current Production Feed"
+  current_version="$FEED_VERSION"
+  current_build="$FEED_BUILD"
+  current_minimum="$FEED_MINIMUM_SYSTEM"
+  [[ "$current_minimum" == "$MIN_SYSTEM_VERSION" ]] ||
+    die "current Production Feed minimum system version does not match release policy" || return 1
+
+  validate_feed_shape "$previous_feed_path" "previous Production Feed"
+  validate_halt_feed_url "previous Production Feed"
+  decimal_is_greater "$current_build" "$FEED_BUILD" ||
+    die "previous Production Feed build must be lower than current Production Feed build" || return 1
+  [[ "$FEED_MINIMUM_SYSTEM" == "$current_minimum" ]] ||
+    die "Production Feed minimum system versions must match" || return 1
+
+  printf 'current_tag=v%s\n' "$current_version"
+  printf 'current_version=%s\n' "$current_version"
+  printf 'current_build=%s\n' "$current_build"
+  printf 'previous_version=%s\n' "$FEED_VERSION"
+  printf 'previous_build=%s\n' "$FEED_BUILD"
+}
+
 mode=""
 feed_path=""
 inputs_path=""
@@ -722,6 +763,7 @@ current_absent=false
 expected_feed=""
 expected_absent=false
 candidate_feed=""
+previous_feed=""
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -795,6 +837,11 @@ while [[ "$#" -gt 0 ]]; do
       candidate_feed="$2"
       shift 2
       ;;
+    --previous-feed)
+      [[ -z "$previous_feed" && "$#" -ge 2 ]] || usage
+      previous_feed="$2"
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
@@ -826,6 +873,12 @@ case "$mode" in
       ( -n "$expected_feed" || "$expected_absent" == true ) ]] || usage
     validate_cas_mode "$current_feed" "$current_absent" "$expected_feed" \
       "$expected_absent" "$candidate_feed"
+    ;;
+  halt)
+    [[ -n "$current_feed" && "$current_absent" == false && -n "$previous_feed" && \
+      -n "$update_config" && -n "$sparkle_source" ]] || usage
+    work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-update-verify.XXXXXX")"
+    validate_halt_mode "$current_feed" "$previous_feed" "$update_config" "$sparkle_source"
     ;;
   *) usage ;;
 esac

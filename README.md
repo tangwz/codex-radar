@@ -21,6 +21,28 @@
 
 应用会构建到 `dist/CodexRadar.app`。也可以使用 Codex 的 Run action 启动。
 
+## 下载与首次安装
+
+bootstrap 版本使用不可变的版本固定资产，不要使用 `latest/download`：
+
+- ZIP：<https://github.com/tangwz/codex-radar/releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip>
+- SHA-256：<https://github.com/tangwz/codex-radar/releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip.sha256>
+
+下载两个文件后，在同一目录验证 ZIP 与匹配的不可变 checksum 资产：
+
+```bash
+/usr/bin/shasum -a 256 --check CodexRadar-v0.1.0-macos-universal.zip.sha256
+```
+
+SHA-256 只能确认下载字节与该 Release 资产一致，不能证明开发者身份。当前应用是 ad-hoc signed，不是 Developer ID signed，也未 notarized；首次手动下载与 GitHub 分发渠道仍是独立的引导信任边界。
+
+校验通过后解压 ZIP，并把 `CodexRadar.app` 移到 `/Applications` 或 `~/Applications`。首次启动只使用以下单应用流程之一：
+
+1. 在 Finder 中按住 Control 点击 `CodexRadar.app`，选择 Open，再确认 Open。
+2. 如果 macOS 阻止启动，打开 System Settings > Privacy & Security，仅对刚被阻止的 `CodexRadar.app` 选择 Open Anyway。
+
+不要关闭或全局降低 Gatekeeper。首次成功启动后，后续自动更新由应用内置的 Sparkle Ed25519 公钥验证。
+
 ## 测试
 
 安装完整 Xcode 时直接运行：

@@ -49,6 +49,8 @@
 
 bootstrap 0.1.0 (1) 是例外：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用已安装的 0.1.0 (1) 作为上一 Production Update。
 
+bootstrap 的公开 Release、真实 Ed25519 私钥签名 `appcast.xml` 和真实 Mac 首装验收都是外部门禁。在这些门禁完成之前，不得宣称自动更新已可用。仓库根目录的 `appcast.xml` 只能由真实签名的 bootstrap publication workflow 生成并激活；禁止手写、使用测试密钥签名或提交占位 feed。
+
 手动触发 `prepare-candidate` 只执行无 secret dry run：它生成构建 Artifact，但不创建 Release，也不读取发布私钥。
 
 ## 公开与激活 Production Update
@@ -68,3 +70,50 @@ CAS 成功后，公开 Release 和 tag 永远不得自动删除或回滚。workf
 Candidate 资格测试失败后，由 operator 删除不可见 Draft Release 和 tag。对应的 App Version、build number 和 tag 均视为 burned；修复必须使用更高且从未使用的标识重新发布，不得替换同名资产或复用版本。
 
 私钥丢失、完整性无法确认或疑似泄露时，立即停止自动更新发布。保留既有公开 Release 供审计并发布安全公告；恢复只能生成新 key、发布新的手动 bootstrap，并要求用户重新安装，禁止用旧 key 自动换钥或降级到未签名更新。
+
+## Distribution Halt
+
+Distribution Halt 用于最新 Production Feed 指向的版本存在问题、但 Ed25519 更新私钥仍可信的场景。它只把 `main/appcast.xml` 原子恢复为历史提交中仍由同一可信 key 签名的上一份 Production Feed，不删除或修改任何 Release、tag 或资产。它与密钥事件不同：私钥丢失、完整性不明或疑似泄露时不得运行此命令，必须按“失败与密钥事件”停止更新供应链并重新 bootstrap。
+
+先从审计记录中找到包含上一份已公开 signed feed 的完整 40 位 commit SHA，然后在受控 operator Mac 上运行：
+
+```bash
+script/halt_distribution.sh --previous-commit 0123456789abcdef0123456789abcdef01234567
+```
+
+命令使用已认证的 operator `gh` session，通过 GitHub Contents API 读取 `main/appcast.xml` 的当前精确字节和 blob SHA，并从指定 commit 读取上一份精确字节。任何写入前，它会用固定在 `config/update.env` 中的 Sparkle Ed25519 公钥验证两份 feed，要求二者都使用版本固定资产 URL、最低系统版本一致，且 previous build 严格低于 current build。随后命令打印两份 feed 的版本、build 和 SHA-256；operator 必须输入由已验签 current feed 得出的当前 tag，完全匹配后才继续。
+
+写入使用当前 blob SHA 对 `main/appcast.xml` 执行 compare-and-swap，并把上一份 signed feed 的精确字节作为内容。HTTP 409 或 422 表示 CAS 冲突，命令立即停止且绝不强制覆盖。PUT 后命令通过 Contents API 独立复读仓库 blob，要求字节完全等于 previous feed；然后有限次轮询固定 raw URL。raw 返回 current 精确字节时只等待缓存传播，返回 previous 精确字节才报告成功，任何第三种字节立即硬失败。轮询超时只报告 `Distribution Halt Pending`，不得宣称完成，也不得删除 Release 或 tag。
+
+Distribution Halt 不会降级已经完成更新的安装。`Guarantee: already-upgraded installations are not downgraded.` Sparkle 不会把已经安装的新 build 降级到旧 build。必须修复已升级用户时，使用更高且从未使用的 App Version/build 发布 repair update，禁止复用或替换既有版本。
+
+## 真实 Mac 验收记录
+
+每个 bootstrap 首装或后续 Candidate 端到端资格测试都保存一份记录。开始时状态必须是 Pending，只有所有证据复核完毕后才能改为 Passed；失败或证据缺失时保持 Pending。
+
+```text
+Acceptance status: Pending | Passed
+Date (UTC):
+Operator:
+Mac model:
+macOS version:
+Architecture: arm64 | x86_64
+Release tag:
+App version and build:
+Immutable ZIP URL:
+ZIP SHA-256:
+Checksum asset URL:
+Manifest SHA-256:
+Feed SHA-256:
+Install location: /Applications | ~/Applications
+First-install path: Finder Open | Privacy & Security Open Anyway
+Launch result:
+Update settings result:
+Previous installed version and build (non-bootstrap only):
+End-to-end Sparkle update result (non-bootstrap only):
+Read-only location result:
+App Translocation result:
+Failure-injection results:
+Evidence links:
+Notes:
+```
