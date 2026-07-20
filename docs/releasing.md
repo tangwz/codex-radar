@@ -40,7 +40,9 @@ age -p -o codex-radar-ed25519.age "$transfer_file"
 2. 从 `main` 对目标提交创建 `v<MARKETING_VERSION>` tag 并推送。
 3. `prepare-candidate` 先在无 secret 的只读 job 中测试并构建 Universal 2 ZIP；只有 tag 路径会进入 `release` Environment。
 4. workflow 完成后确认 Release 仍为 Draft，并下载保留七天的 qualification Artifact。
-5. 在受控真实 Mac 上，以真实上一 Production Update 运行 `script/qualify_update.sh` 完成端到端更新测试。
+5. 对后续版本，在受控真实 Mac 上，以真实上一 Production Update 运行 `script/qualify_update.sh` 完成端到端更新测试。
+
+bootstrap 0.1.0 (1) 是例外：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用已安装的 0.1.0 (1) 作为上一 Production Update。
 
 手动触发 `prepare-candidate` 只执行无 secret dry run：它生成构建 Artifact，但不创建 Release，也不读取发布私钥。
 

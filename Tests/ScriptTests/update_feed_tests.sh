@@ -101,6 +101,11 @@ end
 
 workflows = Dir.glob(File.join(workflow_dir, "*.{yml,yaml}"), File::FNM_EXTGLOB).sort
 reject("no workflows found") if workflows.empty?
+approved_actions = {
+  "actions/checkout" => "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "actions/upload-artifact" => "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/download-artifact" => "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+}
 
 workflows.each do |workflow_path|
   begin
@@ -123,6 +128,12 @@ workflows.each do |workflow_path|
       action = value.to_s.strip
       next if action.start_with?("./")
       reject("#{File.basename(workflow_path)} contains an unpinned action: #{action}") unless action.match?(/@[0-9a-fA-F]{40}\z/)
+      action_name, revision = action.split("@", 2)
+      approved_revision = approved_actions[action_name]
+      reject("#{File.basename(workflow_path)} uses an unapproved external action: #{action_name}") if approved_revision.nil?
+      if revision != approved_revision
+        reject("#{File.basename(workflow_path)} uses an unapproved action revision: #{action}")
+      end
     end
   end
 
@@ -244,12 +255,19 @@ end
 secret_index = secret_step_indexes.first
 secret_step = sign_steps.fetch(secret_index)
 secret_run = fetch_key(secret_step, "run").to_s
-unless secret_run.lines.grep(/generate_appcast/).length == 2 &&
-  secret_run.scan(/--maximum-versions 1/).length == 2 &&
-  secret_run.scan(/--ed-key-file -/).length == 2 &&
-  secret_run.include?("set +x") &&
-  !secret_run.match?(/\.\/script\/|swift |xcodebuild|gh |curl /)
-  reject("private-key step must only sign the two prepared appcasts through stdin")
+secret_env = fetch_key(secret_step, "env")
+expected_secret_env = {
+  "SPARKLE_ED_PRIVATE_KEY" => "${{ secrets.SPARKLE_ED_PRIVATE_KEY }}"
+}
+expected_secret_run = <<~'SHELL'.strip
+  set +x
+  printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$PRODUCTION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/production
+  printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$QUALIFICATION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/qualification
+SHELL
+unless fetch_key(secret_step, "shell").to_s == "bash" &&
+  secret_env == expected_secret_env &&
+  secret_run.strip == expected_secret_run
+  reject("private-key step must match the approved signing template")
 end
 
 before_secret = sign_steps[0...secret_index].to_s
@@ -319,7 +337,9 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
   "trap",
   "best-effort",
   "encrypted offline backup",
-  "burned"
+  "burned",
+  "bootstrap 0.1.0 (1)",
+  "首装引导验收"
 ].each do |snippet|
   reject("docs/releasing.md lacks required guidance: #{snippet}") unless releasing.include?(snippet)
 end
@@ -412,6 +432,34 @@ inherited_secret_dir="$fixture_root/workflow-policy-inherited-secret"
 } >"$inherited_secret_dir/workflows/inherited-secret.yml"
 expect_failure "inherited-secret.yml references a secret outside sign-candidate" validate_workflow_policy \
   "$inherited_secret_dir/workflows" "$inherited_secret_dir/workflows/ci.yml" "$inherited_secret_dir/CODEOWNERS"
+
+wrong_action_dir="$fixture_root/workflow-policy-wrong-action-revision"
+/bin/mkdir -p "$wrong_action_dir/workflows"
+/bin/cp "$CI_WORKFLOW" "$wrong_action_dir/workflows/ci.yml"
+/bin/cp "$CODEOWNERS_FILE" "$wrong_action_dir/CODEOWNERS"
+{
+  printf '%s\n' 'name: Wrong action revision fixture' 'on: push' 'permissions: {}'
+  printf '%s\n' 'concurrency:' '  group: fixture' '  cancel-in-progress: true'
+  printf '%s\n' 'jobs:' '  validate:' '    runs-on: macos-15' '    steps:'
+  printf '%s\n' '      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
+  printf '%s\n' '      - uses: actions/checkout@0000000000000000000000000000000000000000'
+} >"$wrong_action_dir/workflows/wrong-action.yml"
+expect_failure "wrong-action.yml uses an unapproved action revision" validate_workflow_policy \
+  "$wrong_action_dir/workflows" "$wrong_action_dir/workflows/ci.yml" "$wrong_action_dir/CODEOWNERS"
+
+leaking_candidate="$fixture_root/prepare-candidate-leaking.yml"
+/usr/bin/python3 - "$CANDIDATE_WORKFLOW" "$leaking_candidate" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+marker = "          set +x\n"
+if source.count(marker) != 1:
+    raise SystemExit("candidate signing marker is missing or ambiguous")
+pathlib.Path(sys.argv[2]).write_text(source.replace(marker, marker + "          env\n"))
+PYTHON
+expect_failure "private-key step must match the approved signing template" validate_workflow_policy \
+  "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" "$leaking_candidate" "$RELEASING_DOC"
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
