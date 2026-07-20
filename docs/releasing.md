@@ -13,16 +13,21 @@
 使用仅当前用户可读的传输文件导出私钥，通过标准输入写入受保护的 `release` Environment secret，并在同一次受控操作中创建 encrypted offline backup：
 
 ```bash
-transfer_file="$(mktemp "${TMPDIR:-/tmp}/codex-radar-ed25519.XXXXXX")"
-chmod 600 "$transfer_file"
-cleanup() {
-  rm -f "$transfer_file"
-}
-trap cleanup EXIT HUP INT TERM
+(
+  umask 077
+  transfer_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-radar-ed25519.XXXXXX")"
+  transfer_file="$transfer_dir/private-key"
+  cleanup() {
+    rm -f "$transfer_file"
+    rmdir "$transfer_dir" 2>/dev/null || true
+  }
+  trap cleanup EXIT HUP INT TERM
 
-./bin/generate_keys --account com.terence.codex-radar -x "$transfer_file"
-gh secret set SPARKLE_ED_PRIVATE_KEY --env release <"$transfer_file"
-age -p -o codex-radar-ed25519.age "$transfer_file"
+  ./bin/generate_keys --account com.terence.codex-radar -x "$transfer_file"
+  chmod 600 "$transfer_file"
+  gh secret set SPARKLE_ED_PRIVATE_KEY --env release <"$transfer_file"
+  age -p -o codex-radar-ed25519.age "$transfer_file"
+)
 ```
 
 把加密备份移到离线介质，并从日常工作目录移除。`trap` 清理是 best-effort：runner 崩溃、宿主机异常或强制终止时，脚本无法承诺执行清理，因此这一步只能在受控、一次性的本机环境完成。私钥不得进入命令行参数、仓库、缓存、日志或 Artifact。

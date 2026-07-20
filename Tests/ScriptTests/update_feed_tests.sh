@@ -333,6 +333,7 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
 [
   "./bin/generate_keys --account com.terence.codex-radar -p",
   "gh secret set SPARKLE_ED_PRIVATE_KEY --env release",
+  "mktemp -d",
   "chmod 600",
   "trap",
   "best-effort",
