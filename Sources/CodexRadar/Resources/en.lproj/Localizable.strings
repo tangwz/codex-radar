@@ -90,3 +90,5 @@
 "Check for Updates…" = "Check for Updates…";
 "Updates are available in release builds only." = "Updates are available in release builds only.";
 "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates." = "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates.";
+"CodexRadar cannot install updates from its current location." = "CodexRadar cannot install updates from its current location.";
+"OK" = "OK";

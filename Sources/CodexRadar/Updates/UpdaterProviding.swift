@@ -13,6 +13,11 @@ protocol UpdaterProviding: AnyObject {
 }
 
 @MainActor
+protocol UpdaterStateChangeNotifying: AnyObject {
+  var updaterStateDidChange: (@MainActor () -> Void)? { get set }
+}
+
+@MainActor
 final class UpdaterSettingsModel: ObservableObject {
   @Published private(set) var isAvailable: Bool
   @Published private(set) var unavailableReasonKey: String?
@@ -28,6 +33,12 @@ final class UpdaterSettingsModel: ObservableObject {
     automaticUpdatesEnabled = provider.automaticallyChecksForUpdates
       && provider.automaticallyDownloadsUpdates
     canCheckForUpdates = provider.canCheckForUpdates
+
+    if let notifyingProvider = provider as? any UpdaterStateChangeNotifying {
+      notifyingProvider.updaterStateDidChange = { [weak self] in
+        self?.refresh()
+      }
+    }
   }
 
   func setAutomaticUpdatesEnabled(_ enabled: Bool) {

@@ -54,6 +54,19 @@ struct UpdaterSettingsModelTests {
     #expect(model.canCheckForUpdates == false)
   }
 
+  @Test("tracks provider check availability until it becomes enabled again")
+  func tracksProviderCheckAvailabilityChanges() {
+    let provider = FakeUpdaterProvider(canCheckForUpdates: true)
+    provider.canCheckAfterUserCheck = false
+    let model = UpdaterSettingsModel(provider: provider)
+
+    model.checkForUpdates()
+    #expect(model.canCheckForUpdates == false)
+
+    provider.setCanCheckForUpdates(true)
+    #expect(model.canCheckForUpdates)
+  }
+
   @Test("does not invoke a disabled provider")
   func doesNotInvokeDisabledProvider() {
     let provider = FakeUpdaterProvider(isAvailable: false, canCheckForUpdates: true)
@@ -112,7 +125,8 @@ struct UpdaterSettingsModelTests {
 }
 
 @MainActor
-private final class FakeUpdaterProvider: UpdaterProviding {
+private final class FakeUpdaterProvider: UpdaterProviding, UpdaterStateChangeNotifying {
+  var updaterStateDidChange: (@MainActor () -> Void)?
   var isAvailable: Bool
   var unavailableReasonKey: String?
   var automaticallyChecksForUpdates: Bool
@@ -140,5 +154,10 @@ private final class FakeUpdaterProvider: UpdaterProviding {
     if let canCheckAfterUserCheck {
       canCheckForUpdates = canCheckAfterUserCheck
     }
+  }
+
+  func setCanCheckForUpdates(_ value: Bool) {
+    canCheckForUpdates = value
+    updaterStateDidChange?()
   }
 }

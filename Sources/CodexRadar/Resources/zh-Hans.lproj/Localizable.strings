@@ -90,3 +90,5 @@
 "Check for Updates…" = "检查更新…";
 "Updates are available in release builds only." = "更新功能仅在发布版本中可用。";
 "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates." = "退出 CodexRadar，然后将其移至 /Applications 或 ~/Applications，再检查更新。";
+"CodexRadar cannot install updates from its current location." = "CodexRadar 无法从当前位置安装更新。";
+"OK" = "确定";

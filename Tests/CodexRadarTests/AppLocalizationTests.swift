@@ -60,6 +60,27 @@ struct AppLocalizationTests {
     )
   }
 
+  @Test
+  func buildsLocalizedInstallationAlertContentForProduction() {
+    #expect(
+      UpdateInstallationAlertContent.localized(language: .english, bundle: .module)
+        == UpdateInstallationAlertContent(
+          title: "CodexRadar cannot install updates from its current location.",
+          message:
+            "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates.",
+          buttonTitle: "OK"
+        )
+    )
+    #expect(
+      UpdateInstallationAlertContent.localized(language: .simplifiedChinese, bundle: .module)
+        == UpdateInstallationAlertContent(
+          title: "CodexRadar 无法从当前位置安装更新。",
+          message: "退出 CodexRadar，然后将其移至 /Applications 或 ~/Applications，再检查更新。",
+          buttonTitle: "确定"
+        )
+    )
+  }
+
   private func localized(_ key: String, language: AppLanguage) -> String {
     AppLocalization.string(key, language: language, bundle: .module)
   }
