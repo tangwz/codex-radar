@@ -3,247 +3,194 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_SPARKLE_VERSION="2.9.4"
+EXPECTED_SPARKLE_REVISION="b6496a74a087257ef5e6da1c5b29a447a60f5bd7"
+EXPECTED_TOOLS_SHA256="ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9"
+TOOLS_URL="https://github.com/sparkle-project/Sparkle/releases/download/2.9.4/Sparkle-2.9.4.tar.xz"
+PRODUCTION_FEED_URL="https://raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml"
+TEST_HARNESS=false
 
-usage() {
-  cat >&2 <<EOF
-usage: $0 --bundle PATH --previous-app PATH
-EOF
-  return 2
-}
+die() { echo "$*" >&2; return 1; }
+usage() { echo "usage: $0 --bundle PATH --previous-app PATH [--tools-archive PATH]" >&2; return 2; }
+real_file() { [[ -f "$1" && ! -L "$1" ]] || die "$2 must be a real file"; }
+real_dir() { [[ -d "$1" && ! -L "$1" ]] || die "$2 must be a real directory"; }
+plist() { /usr/bin/plutil -extract "$2" raw "$1" 2>/dev/null; }
+assert_plist() { [[ "$(plist "$1" "$2" 2>/dev/null || true)" == "$3" ]] || die "$4"; }
 
-die() {
-  echo "$*" >&2
-  return 1
-}
-
-assert_real_file() {
-  local path="$1" description="$2"
-
-  [[ -f "$path" && ! -L "$path" ]] || die "$description must be a real file" || return 1
-}
-
-assert_real_directory() {
-  local path="$1" description="$2"
-
-  [[ -d "$path" && ! -L "$path" ]] || die "$description must be a real directory" || return 1
-}
-
-plist_value() {
-  /usr/bin/plutil -extract "$2" raw "$1" 2>/dev/null
-}
-
-assert_plist_value() {
-  local plist_path="$1" key="$2" expected="$3" message="$4" actual
-
-  actual="$(plist_value "$plist_path" "$key" 2>/dev/null || true)"
-  [[ "$actual" == "$expected" ]] || die "$message" || return 1
-}
-
-bundle_path=""
-previous_app=""
+bundle="" previous_app="" tools_archive=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --bundle)
-      [[ -z "$bundle_path" && "$#" -ge 2 ]] || usage
-      bundle_path="$2"
-      shift 2
-      ;;
-    --previous-app)
-      [[ -z "$previous_app" && "$#" -ge 2 ]] || usage
-      previous_app="$2"
-      shift 2
-      ;;
+    --bundle) [[ -z "$bundle" && "$#" -ge 2 ]] || usage; bundle="$2"; shift 2 ;;
+    --previous-app) [[ -z "$previous_app" && "$#" -ge 2 ]] || usage; previous_app="$2"; shift 2 ;;
+    --tools-archive) [[ -z "$tools_archive" && "$#" -ge 2 ]] || usage; tools_archive="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
+[[ -n "$bundle" && -n "$previous_app" ]] || usage
+real_dir "$bundle" "qualification bundle"; bundle="$(/bin/realpath "$bundle")"
+real_dir "$previous_app" "previous application"; previous_app="$(/bin/realpath "$previous_app")"
 
-[[ -n "$bundle_path" && -n "$previous_app" ]] || usage
-assert_real_directory "$bundle_path" "qualification bundle"
-bundle_path="$(/bin/realpath "$bundle_path")"
-assert_real_directory "$previous_app" "previous application"
-previous_app="$(/bin/realpath "$previous_app")"
-
-python_executable="${QUALIFY_PYTHON_EXECUTABLE:-/usr/bin/python3}"
-sparkle_cli="${QUALIFY_SPARKLE_CLI:-$bundle_path/bin/sparkle}"
-runner="${QUALIFY_RUNNER:-}"
-verify_script="${QUALIFY_VERIFY_SCRIPT:-$ROOT_DIR/script/verify_update_artifacts.sh}"
+python="${QUALIFY_PYTHON_EXECUTABLE:-/usr/bin/python3}"
+verify="${QUALIFY_VERIFY_SCRIPT:-$ROOT_DIR/script/verify_update_artifacts.sh}"
 version_config="${QUALIFY_VERSION_CONFIG:-$ROOT_DIR/version.env}"
 update_config="${QUALIFY_UPDATE_CONFIG:-$ROOT_DIR/config/update.env}"
-sparkle_source="${QUALIFY_SPARKLE_SOURCE:-$ROOT_DIR/.build/checkouts/Sparkle}"
+sparkle_checkout="${QUALIFY_SPARKLE_SOURCE:-$ROOT_DIR/.build/checkouts/Sparkle}"
+fetch="${QUALIFY_FETCH_EXECUTABLE:-}"
+runner="${QUALIFY_RUNNER:-}"
+real_file "$python" "Python executable"; [[ -x "$python" ]] || die "Python executable must be executable"
+real_file "$verify" "update artifact verifier"; [[ -x "$verify" ]] || die "update artifact verifier must be executable"
+real_file "$version_config" "version config"; real_file "$update_config" "update config"
+real_dir "$sparkle_checkout" "Sparkle source"
 
-assert_real_file "$python_executable" "Python executable"
-[[ -x "$python_executable" ]] || die "Python executable must be executable"
-assert_real_file "$verify_script" "update artifact verifier"
-[[ -x "$verify_script" ]] || die "update artifact verifier must be executable"
-assert_real_file "$version_config" "version config"
-assert_real_file "$update_config" "update config"
-assert_real_directory "$sparkle_source" "Sparkle source"
-
-assert_real_file "$bundle_path/manifest" "qualification manifest"
-assert_real_file "$bundle_path/Info.plist" "qualification Info.plist"
-assert_real_file "$bundle_path/previous-appcast.xml" "previous signed appcast"
-assert_real_directory "$bundle_path/qualification" "qualification directory"
-assert_real_directory "$bundle_path/production" "production directory"
-
-archive_name="$(/usr/bin/awk -F= '
-  $1 == "archive_name" { count++; value = $2 }
-  END { if (count == 1) print value }
-' "$bundle_path/manifest")"
-[[ "$archive_name" =~ ^CodexRadar-v[0-9]+\.[0-9]+\.[0-9]+-macos-universal\.zip$ ]] ||
-  die "qualification manifest has an invalid archive_name"
-assert_real_file "$bundle_path/qualification/$archive_name" "qualification archive"
-assert_real_file "$bundle_path/qualification/appcast.xml" "qualification signed appcast"
-
-# The CLI is intentionally taken from the artifact, not from PATH. Its framework is
-# also part of the pinned distribution and provides the authoritative release version.
-assert_real_file "$sparkle_cli" "Sparkle CLI"
-[[ -x "$sparkle_cli" ]] || die "Sparkle CLI must be executable"
-[[ "$(/bin/realpath "$sparkle_cli")" == "$bundle_path/bin/sparkle" ]] ||
-  die "Sparkle CLI must be qualification bundle bin/sparkle"
-sparkle_framework_info="$bundle_path/Frameworks/Sparkle.framework/Resources/Info.plist"
-assert_real_file "$sparkle_framework_info" "Sparkle CLI framework Info.plist"
-assert_plist_value "$sparkle_framework_info" CFBundleShortVersionString "$EXPECTED_SPARKLE_VERSION" \
-  "Sparkle CLI version must equal $EXPECTED_SPARKLE_VERSION"
-
-# This performs the manifest hash/length, exact ZIP, signed feed, and relative
-# enclosure checks before a local listener or Sparkle process is created.
-"$verify_script" --mode artifacts \
-  --inputs "$bundle_path" \
-  --archive "$bundle_path/qualification/$archive_name" \
-  --manifest "$bundle_path/manifest" \
-  --final-info-plist "$bundle_path/Info.plist" \
-  --version-config "$version_config" \
-  --update-config "$update_config" \
-  --sparkle-source "$sparkle_source"
-"$verify_script" --mode previous \
-  --feed "$bundle_path/previous-appcast.xml" \
-  --version-config "$version_config" \
-  --update-config "$update_config" \
-  --sparkle-source "$sparkle_source"
-
-previous_values="$("$python_executable" - "$bundle_path/previous-appcast.xml" <<'PYTHON'
-import sys
-import xml.etree.ElementTree as ET
-
-feed_path = sys.argv[1]
-namespace = "http://www.andymatuschak.org/xml-namespaces/sparkle"
-root = ET.parse(feed_path).getroot()
-items = root.findall("./channel/item")
-if len(items) != 1:
-    raise SystemExit("previous signed appcast must contain one item")
-item = items[0]
-version = item.findtext("{%s}shortVersionString" % namespace)
-build = item.findtext("{%s}version" % namespace)
-if version is None or build is None:
-    raise SystemExit("previous signed appcast is missing version metadata")
-print("%s %s" % (version, build))
-PYTHON
-)"
-IFS=' ' read -r previous_version previous_build <<<"$previous_values"
-[[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$previous_build" =~ ^[1-9][0-9]*$ ]] ||
-  die "previous signed appcast has invalid version metadata"
-
-previous_info="$previous_app/Contents/Info.plist"
-assert_real_file "$previous_info" "previous application Info.plist"
-/usr/bin/plutil -lint "$previous_info" >/dev/null
-assert_plist_value "$previous_info" CFBundleIdentifier "com.terence.codex-radar" \
-  "previous application bundle identifier does not match"
-assert_plist_value "$previous_info" CFBundleShortVersionString "$previous_version" \
-  "previous application version is not the immediately previous Production Update"
-assert_plist_value "$previous_info" CFBundleVersion "$previous_build" \
-  "previous application build is not the immediately previous Production Update"
-
-work_dir=""
-server_pid=""
+work="" server_pid="" stop_file=""
 cleanup() {
   local status="$?"
-
   trap - EXIT INT TERM
-  if [[ -n "$server_pid" ]]; then
-    /bin/kill "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
-  fi
-  if [[ -n "$work_dir" && -d "$work_dir" && ! -L "$work_dir" ]]; then
-    /bin/rm -rf "$work_dir"
-  fi
+  if [[ -n "$stop_file" ]]; then : >"$stop_file"; fi
+  if [[ -n "$server_pid" ]]; then wait "$server_pid" 2>/dev/null || true; fi
+  if [[ -n "$work" && -d "$work" && ! -L "$work" ]]; then /bin/rm -rf "$work"; fi
   return "$status"
 }
-handle_interrupt() {
-  exit 130
-}
-handle_termination() {
-  exit 143
-}
 trap cleanup EXIT
-trap handle_interrupt INT
-trap handle_termination TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
+work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-qualify.XXXXXX")"; /bin/chmod 700 "$work"
 
-work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-qualify.XXXXXX")"
-/bin/chmod 700 "$work_dir"
-copied_app="$work_dir/CodexRadar.app"
-/usr/bin/ditto "$previous_app" "$copied_app"
-assert_real_directory "$copied_app" "copied previous application"
+# Keep the source bundle out of every later trust decision. The verifier runs again
+# on this private, immutable-at-use snapshot.
+snapshot="$work/inputs"
+/usr/bin/ditto "$bundle" "$snapshot"
+real_file "$snapshot/manifest" "qualification manifest"
+archive_name="$(/usr/bin/awk -F= '$1 == "archive_name" { n++; v=$2 } END { if (n == 1) print v }' "$snapshot/manifest")"
+[[ "$archive_name" =~ ^CodexRadar-v[0-9]+\.[0-9]+\.[0-9]+-macos-universal\.zip$ ]] || die "qualification manifest has an invalid archive_name"
+"$verify" --mode artifacts --inputs "$snapshot" --archive "$snapshot/qualification/$archive_name" \
+  --manifest "$snapshot/manifest" --final-info-plist "$snapshot/Info.plist" \
+  --version-config "$version_config" --update-config "$update_config" --sparkle-source "$sparkle_checkout"
+"$verify" --mode previous --feed "$snapshot/previous-appcast.xml" --version-config "$version_config" \
+  --update-config "$update_config" --sparkle-source "$sparkle_checkout"
 
-port_path="$work_dir/server-port"
-server_log="$work_dir/server.log"
-"$python_executable" - "$bundle_path/qualification" >"$port_path" 2>"$server_log" <<'PYTHON' &
-import functools
-import http.server
-import sys
-
-directory = sys.argv[1]
-handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-print(server.server_address[1], flush=True)
-server.serve_forever()
-PYTHON
-server_pid="$!"
-
-port=""
-attempt=0
-while [[ "$attempt" -lt 50 ]]; do
-  if [[ -s "$port_path" ]]; then
-    IFS= read -r port <"$port_path" || true
-    break
-  fi
-  /bin/kill -0 "$server_pid" 2>/dev/null || die "qualification HTTP server exited before binding"
-  /bin/sleep 0.1
-  attempt=$((attempt + 1))
-done
-[[ "$port" =~ ^[1-9][0-9]*$ && "$port" -le 65535 ]] ||
-  die "qualification HTTP server did not select a valid port"
-
-feed_url="http://127.0.0.1:$port/appcast.xml"
-if [[ -n "$runner" ]]; then
-  assert_real_file "$runner" "qualification runner"
-  [[ -x "$runner" ]] || die "qualification runner must be executable"
-  "$runner" "$sparkle_cli" "$copied_app" --application "$copied_app" \
-    --check-immediately --feed-url "$feed_url" --interactive --verbose
+current_feed="$work/current-production-feed.xml"
+if [[ -n "$fetch" ]]; then
+  real_file "$fetch" "Production Feed fetch executable"; [[ -x "$fetch" ]] || die "Production Feed fetch executable must be executable"
+  "$fetch" "$PRODUCTION_FEED_URL" "$current_feed"
 else
-  "$sparkle_cli" "$copied_app" --application "$copied_app" \
-    --check-immediately --feed-url "$feed_url" --interactive --verbose
+  /usr/bin/curl --fail --location --silent --show-error --proto '=https' "$PRODUCTION_FEED_URL" --output "$current_feed"
 fi
+"$verify" --mode previous --feed "$current_feed" --version-config "$version_config" \
+  --update-config "$update_config" --sparkle-source "$sparkle_checkout"
+/usr/bin/cmp -s "$current_feed" "$snapshot/previous-appcast.xml" ||
+  die "bundled previous Production Feed is stale"
 
-installed_info="$copied_app/Contents/Info.plist"
-assert_real_file "$installed_info" "installed application Info.plist"
-/usr/bin/plutil -lint "$installed_info" >/dev/null
-assert_plist_value "$installed_info" CFBundleIdentifier "com.terence.codex-radar" \
-  "installed application bundle identifier does not match"
-candidate_version="$(plist_value "$bundle_path/Info.plist" CFBundleShortVersionString)"
-candidate_build="$(plist_value "$bundle_path/Info.plist" CFBundleVersion)"
-assert_plist_value "$installed_info" CFBundleShortVersionString "$candidate_version" \
-  "installed application version does not match qualification bundle"
-assert_plist_value "$installed_info" CFBundleVersion "$candidate_build" \
-  "installed application build does not match qualification bundle"
-for key in SUFeedURL SUPublicEDKey SUEnableAutomaticChecks SUAutomaticallyUpdate \
-  SUVerifyUpdateBeforeExtraction SURequireSignedFeed CodexRadarUpdatesEnabled; do
-  expected_value="$(plist_value "$bundle_path/Info.plist" "$key")"
-  assert_plist_value "$installed_info" "$key" "$expected_value" \
-    "installed application $key does not match qualification bundle"
-done
-for key in SUEnableAutomaticChecks SUAutomaticallyUpdate SUVerifyUpdateBeforeExtraction \
-  SURequireSignedFeed CodexRadarUpdatesEnabled; do
-  assert_plist_value "$installed_info" "$key" true "installed application $key must equal true"
-done
+read -r previous_version previous_build <<EOF
+$("$python" - "$current_feed" <<'PYTHON'
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+item, = root.findall('./channel/item')
+ns = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
+print(item.findtext('{%s}shortVersionString' % ns), item.findtext('{%s}version' % ns))
+PYTHON
+)
+EOF
+[[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$previous_build" =~ ^[1-9][0-9]*$ ]] || die "current Production Feed has invalid version metadata"
 
-printf 'Qualified update to %s (%s)\n' "$candidate_version" "$candidate_build"
+tree_manifest() {
+  "$python" - "$1" "$2" <<'PYTHON'
+import hashlib, os, stat, sys
+root, output = map(os.path.realpath, sys.argv[1:])
+if not os.path.isdir(root): raise SystemExit('application root is not a directory')
+records = []
+for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    names = sorted(dirs + files, key=os.fsencode)
+    dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
+    for name in names:
+        path = os.path.join(base, name); rel = os.path.relpath(path, root)
+        st = os.lstat(path); mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISLNK(st.st_mode):
+            target = os.readlink(path); resolved = os.path.realpath(path)
+            if not os.path.exists(resolved) or os.path.commonpath((root, resolved)) != root:
+                raise SystemExit('application contains an unresolved or escaping symlink: ' + rel)
+            records.append((os.fsencode(rel), b'L', str(mode).encode(), os.fsencode(target)))
+        elif stat.S_ISREG(st.st_mode):
+            digest = hashlib.sha256()
+            with open(path, 'rb') as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b''): digest.update(chunk)
+            records.append((os.fsencode(rel), b'F', str(mode).encode(), digest.hexdigest().encode()))
+        elif stat.S_ISDIR(st.st_mode): records.append((os.fsencode(rel), b'D', str(mode).encode(), b''))
+        else: raise SystemExit('application contains an unsupported file type: ' + rel)
+with open(output, 'wb') as handle:
+    for record in sorted(records): handle.write(b'\0'.join(record) + b'\0')
+PYTHON
+}
+source_tree="$work/source-tree.manifest"; copied_tree="$work/copied-tree.manifest"; source_after="$work/source-after.manifest"
+tree_manifest "$previous_app" "$source_tree"
+previous_info="$previous_app/Contents/Info.plist"; real_file "$previous_info" "previous application Info.plist"
+assert_plist "$previous_info" CFBundleIdentifier com.terence.codex-radar "previous application bundle identifier does not match"
+assert_plist "$previous_info" CFBundleShortVersionString "$previous_version" "previous application version is not the immediately previous Production Update"
+assert_plist "$previous_info" CFBundleVersion "$previous_build" "previous application build is not the immediately previous Production Update"
+
+copied_app="$work/CodexRadar.app"; /usr/bin/ditto "$previous_app" "$copied_app"
+tree_manifest "$previous_app" "$source_after"; /usr/bin/cmp -s "$source_tree" "$source_after" || die "previous application changed while being copied"
+tree_manifest "$copied_app" "$copied_tree"; /usr/bin/cmp -s "$source_tree" "$copied_tree" || die "copied previous application differs from source"
+copied_info="$copied_app/Contents/Info.plist"; real_file "$copied_info" "copied previous application Info.plist"
+assert_plist "$copied_info" CFBundleShortVersionString "$previous_version" "copied previous application version is not the immediately previous Production Update"
+assert_plist "$copied_info" CFBundleVersion "$previous_build" "copied previous application build is not the immediately previous Production Update"
+
+tools="$work/sparkle-tools"; /bin/mkdir -m 700 "$tools"
+archive="$work/Sparkle-2.9.4.tar.xz"
+if [[ -n "$tools_archive" ]]; then real_file "$tools_archive" "Sparkle tools archive"; /bin/cp "$tools_archive" "$archive"; else /usr/bin/curl --fail --location --silent --show-error --proto '=https' "$TOOLS_URL" --output "$archive"; fi
+[[ "$(/usr/bin/shasum -a 256 "$archive" | /usr/bin/awk '{print $1}')" == "$EXPECTED_TOOLS_SHA256" ]] || die "Sparkle tools archive SHA-256 does not match 2.9.4"
+"$python" - "$archive" "$tools" <<'PYTHON'
+import os, sys, tarfile
+archive, destination = sys.argv[1:]
+with tarfile.open(archive, 'r:xz') as source:
+    for member in source.getmembers():
+        name = member.name
+        while name.startswith('./'): name = name[2:]
+        if not name or name == '.': continue
+        parts = name.split('/')
+        if member.name.startswith('/') or any(part in ('', '.', '..') for part in parts): raise SystemExit('unsafe Sparkle tools archive path')
+    source.extractall(destination)
+PYTHON
+
+# Sparkle 2.9.4's public tools archive is provenance evidence only: it deliberately
+# lacks sparkle-cli. The executable is rebuilt from an isolated git archive of the
+# exact source commit, never from the bundle or a mutable checkout.
+[[ "$(/usr/bin/git -C "$sparkle_checkout" rev-parse HEAD)" == "$EXPECTED_SPARKLE_REVISION" ]] || die "Sparkle source revision must equal $EXPECTED_SPARKLE_REVISION"
+source_tree_dir="$work/sparkle-source"; /bin/mkdir -m 700 "$source_tree_dir"
+/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/git -C "$sparkle_checkout" archive "$EXPECTED_SPARKLE_REVISION" | /usr/bin/tar -x -C "$source_tree_dir"
+[[ "$(/usr/bin/git -C "$sparkle_checkout" rev-parse "$EXPECTED_SPARKLE_REVISION^{tree}")" == "$(/usr/bin/git -C "$sparkle_checkout" rev-parse HEAD^{tree})" ]] || die "Sparkle source tree does not match pinned revision"
+cli="$work/sparkle-cli"
+if [[ "$TEST_HARNESS" == true && -n "${QUALIFY_TEST_CLI:-}" ]]; then
+  real_file "$QUALIFY_TEST_CLI" "test Sparkle CLI"; /bin/cp "$QUALIFY_TEST_CLI" "$cli"; /bin/chmod 755 "$cli"
+else
+  /bin/mkdir -m 700 "$work/home" "$work/tmp"
+  /usr/bin/env -i PATH=/usr/bin:/bin HOME="$work/home" TMPDIR="$work/tmp" SWIFTPM_DISABLE_SANDBOX=1 \
+    /usr/bin/xcodebuild -project "$source_tree_dir/Sparkle.xcodeproj" -scheme sparkle-cli -configuration Release \
+    SYMROOT="$work/build" OBJROOT="$work/obj" CODE_SIGNING_ALLOWED=NO build >/dev/null
+  /bin/cp "$work/build/Release/sparkle" "$cli"; /bin/chmod 755 "$cli"
+fi
+real_file "$cli" "verified Sparkle CLI"; [[ -x "$cli" ]] || die "verified Sparkle CLI must be executable"
+
+stop_file="$work/server.stop"; port_file="$work/server.port"; server_log="$work/server.log"
+"$python" - "$snapshot/qualification" "$stop_file" "$port_file" >"$server_log" 2>&1 <<'PYTHON' &
+import functools, http.server, os, sys
+directory, stop, port_file = sys.argv[1:]
+server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory))
+server.timeout = .1
+with open(port_file, 'w') as handle: handle.write(str(server.server_address[1]))
+while not os.path.exists(stop): server.handle_request()
+server.server_close()
+PYTHON
+server_pid="$!"; [[ -n "${QUALIFY_TEST_SERVER_PID_FILE:-}" ]] && printf '%s\n' "$server_pid" >"$QUALIFY_TEST_SERVER_PID_FILE"
+port=""; for attempt in {1..50}; do [[ -s "$port_file" ]] && { IFS= read -r port <"$port_file" || true; break; }; /bin/sleep .1; done
+[[ "$port" =~ ^[1-9][0-9]*$ && "$port" -le 65535 ]] || die "qualification HTTP server did not select a valid port"
+/bin/kill -0 "$server_pid" 2>/dev/null || die "qualification HTTP server exited after publishing its port"
+feed_url="http://127.0.0.1:$port/appcast.xml"
+if [[ -n "$runner" ]]; then "$runner" "$cli" "$copied_app" --application "$copied_app" --check-immediately --feed-url "$feed_url" --interactive --verbose; else "$cli" "$copied_app" --application "$copied_app" --check-immediately --feed-url "$feed_url" --interactive --verbose; fi
+/bin/kill -0 "$server_pid" 2>/dev/null || die "qualification HTTP server exited during Sparkle execution"
+
+for key in CFBundleShortVersionString CFBundleVersion SUFeedURL SUPublicEDKey SUEnableAutomaticChecks SUAutomaticallyUpdate SUVerifyUpdateBeforeExtraction SURequireSignedFeed CodexRadarUpdatesEnabled; do
+  assert_plist "$copied_info" "$key" "$(plist "$snapshot/Info.plist" "$key")" "installed application $key does not match qualification bundle"
+done
+for key in SUEnableAutomaticChecks SUAutomaticallyUpdate SUVerifyUpdateBeforeExtraction SURequireSignedFeed CodexRadarUpdatesEnabled; do assert_plist "$copied_info" "$key" true "installed application $key must equal true"; done
+printf 'Qualified update to %s (%s)\n' "$(plist "$copied_info" CFBundleShortVersionString)" "$(plist "$copied_info" CFBundleVersion)"

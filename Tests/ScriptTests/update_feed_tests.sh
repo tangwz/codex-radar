@@ -650,7 +650,8 @@ set -euo pipefail
 
 printf '%s\n' "$@" >"$QUALIFY_TEST_RUNNER_ARGUMENTS"
 [[ "$#" -eq 9 ]]
-[[ "$1" == "$QUALIFY_TEST_SPARKLE_CLI" ]]
+[[ "$(/usr/bin/basename "$1")" == sparkle-cli ]]
+[[ "$1" != "$QUALIFY_TEST_BUNDLE_CLI" ]]
 [[ "$3" == --application ]]
 [[ "$4" == "$2" ]]
 [[ "$5" == --check-immediately ]]
@@ -662,6 +663,11 @@ printf '%s\n' "$@" >"$QUALIFY_TEST_RUNNER_ARGUMENTS"
 
 case "${QUALIFY_TEST_RUNNER_MODE:-success}" in
   success)
+    /bin/cp "$QUALIFY_TEST_CANDIDATE_INFO" "$2/Contents/Info.plist"
+    ;;
+  mutate-source)
+    printf 'mutated source bundle\n' >"$QUALIFY_TEST_SOURCE_BUNDLE/qualification/appcast.xml"
+    /usr/bin/curl --fail --silent "$7" | /usr/bin/cmp -s - "$QUALIFY_TEST_EXPECTED_FEED"
     /bin/cp "$QUALIFY_TEST_CANDIDATE_INFO" "$2/Contents/Info.plist"
     ;;
   failure)
@@ -678,19 +684,45 @@ esac
 RUNNER
 /bin/chmod 755 "$qualification_python" "$qualification_runner"
 
+qualification_fetch="$fixture_root/qualification-fetch"
+qualification_harness="$fixture_root/qualify-update-harness.sh"
+qualification_tools_root="$fixture_root/qualification-tools"
+qualification_tools_archive="$fixture_root/Sparkle-2.9.4-test.tar.xz"
+/bin/mkdir -p "$qualification_tools_root/bin"
+printf 'fixture\n' >"$qualification_tools_root/bin/placeholder"
+/usr/bin/tar -cJf "$qualification_tools_archive" -C "$qualification_tools_root" .
+qualification_tools_sha="$(/usr/bin/shasum -a 256 "$qualification_tools_archive" | /usr/bin/awk '{print $1}')"
+{
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+  printf '[[ "$1" == "https://raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml" ]]\n'
+  printf '/bin/cp "$QUALIFY_TEST_CURRENT_FEED" "$2"\n'
+} >"$qualification_fetch"
+/bin/chmod 755 "$qualification_fetch"
+/usr/bin/sed \
+  -e "s/^EXPECTED_TOOLS_SHA256=.*/EXPECTED_TOOLS_SHA256=\"$qualification_tools_sha\"/" \
+  -e 's/^TEST_HARNESS=false/TEST_HARNESS=true/' \
+  "$QUALIFY_SCRIPT" >"$qualification_harness"
+/bin/chmod 755 "$qualification_harness"
+
 run_qualification() {
   env \
     QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
-    QUALIFY_SPARKLE_CLI="$qualification_bundle/bin/sparkle" \
+    QUALIFY_TEST_CLI="$qualification_bundle/bin/sparkle" \
     QUALIFY_RUNNER="$qualification_runner" \
+    QUALIFY_FETCH_EXECUTABLE="$qualification_fetch" \
+    QUALIFY_VERIFY_SCRIPT="$VERIFY_SCRIPT" \
     QUALIFY_VERSION_CONFIG="$candidate_dir/version.env" \
     QUALIFY_UPDATE_CONFIG="$candidate_dir/update.env" \
     QUALIFY_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
     QUALIFY_TEST_PYTHON_LOG="$qualification_python_log" \
     QUALIFY_TEST_RUNNER_ARGUMENTS="$qualification_runner_arguments" \
-    QUALIFY_TEST_SPARKLE_CLI="$qualification_bundle/bin/sparkle" \
+    QUALIFY_TEST_BUNDLE_CLI="$qualification_bundle/bin/sparkle" \
     QUALIFY_TEST_CANDIDATE_INFO="$candidate_info" \
-    "$QUALIFY_SCRIPT" --bundle "$qualification_bundle" --previous-app "$previous_app"
+    QUALIFY_TEST_CURRENT_FEED="$previous_dir/appcast.xml" \
+    QUALIFY_TEST_SOURCE_BUNDLE="$qualification_bundle" \
+    QUALIFY_TEST_EXPECTED_FEED="$qualification_bundle/qualification/appcast.xml" \
+    "$qualification_harness" --bundle "$qualification_bundle" --previous-app "$previous_app" \
+    --tools-archive "$qualification_tools_archive"
 }
 
 : >"$qualification_python_log"
@@ -707,27 +739,30 @@ printf 'unexpected=true\n' >>"$bad_manifest_bundle/manifest"
 : >"$qualification_python_log"
 if env \
   QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
-  QUALIFY_SPARKLE_CLI="$bad_manifest_bundle/bin/sparkle" \
+  QUALIFY_TEST_CLI="$bad_manifest_bundle/bin/sparkle" \
   QUALIFY_RUNNER="$qualification_runner" \
+  QUALIFY_FETCH_EXECUTABLE="$qualification_fetch" \
+  QUALIFY_VERIFY_SCRIPT="$VERIFY_SCRIPT" \
   QUALIFY_VERSION_CONFIG="$candidate_dir/version.env" \
   QUALIFY_UPDATE_CONFIG="$candidate_dir/update.env" \
   QUALIFY_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
   QUALIFY_TEST_PYTHON_LOG="$qualification_python_log" \
   QUALIFY_TEST_RUNNER_ARGUMENTS="$qualification_runner_arguments" \
-  QUALIFY_TEST_SPARKLE_CLI="$bad_manifest_bundle/bin/sparkle" \
+  QUALIFY_TEST_BUNDLE_CLI="$bad_manifest_bundle/bin/sparkle" \
   QUALIFY_TEST_CANDIDATE_INFO="$candidate_info" \
-  "$QUALIFY_SCRIPT" --bundle "$bad_manifest_bundle" --previous-app "$previous_app"; then
+  QUALIFY_TEST_CURRENT_FEED="$previous_dir/appcast.xml" \
+  "$qualification_harness" --bundle "$bad_manifest_bundle" --previous-app "$previous_app" \
+  --tools-archive "$qualification_tools_archive"; then
   fail "qualification accepted an invalid manifest"
 fi
 [[ ! -s "$qualification_python_log" ]] || fail "qualification started a server before manifest validation"
 
-/usr/bin/plutil -replace CFBundleShortVersionString -string 2.9.3 \
-  "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources/Info.plist"
-: >"$qualification_python_log"
-expect_failure "Sparkle CLI version must equal 2.9.4" run_qualification
-[[ ! -s "$qualification_python_log" ]] || fail "qualification started a server before CLI validation"
-/usr/bin/plutil -replace CFBundleShortVersionString -string 2.9.4 \
-  "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources/Info.plist"
+forged_bundle_cli="$qualification_bundle/bin/sparkle"
+printf '#!/usr/bin/env bash\necho forged\n' >"$forged_bundle_cli"
+/bin/chmod 755 "$forged_bundle_cli"
+run_qualification
+[[ "$(/usr/bin/sed -n '1p' "$qualification_runner_arguments")" != "$forged_bundle_cli" ]] ||
+  fail "qualification executed a forged bundle CLI"
 
 : >"$qualification_python_log"
 if QUALIFY_TEST_RUNNER_MODE=failure run_qualification; then
