@@ -592,17 +592,15 @@ while [[ "$publish_index" -lt "${#publish_sources[@]}" ]]; do
   publish_destination="${publish_destinations[$publish_index]}"
   publish_device="$(/usr/bin/stat -f '%d' "$publish_source")"
   publish_inode="$(/usr/bin/stat -f '%i' "$publish_source")"
+  published_names+=("$publish_destination")
+  published_devices+=("$publish_device")
+  published_inodes+=("$publish_inode")
   publication_in_flight=true
   publish_status=0
   "$atomic_swap_executable" publish "$output_path" "$publish_stage_name" \
     "$publish_destination" "$publish_destination" "$output_device" \
     "$output_inode" "$publish_stage_device" "$publish_stage_inode" \
     "$publish_device" "$publish_inode" || publish_status=$?
-  if [[ "$publish_status" -eq 0 ]]; then
-    published_names+=("$publish_destination")
-    published_devices+=("$publish_device")
-    published_inodes+=("$publish_inode")
-  fi
   publication_in_flight=false
   if [[ -n "$pending_release_signal" ]]; then
     echo "release publishing interrupted" >&2

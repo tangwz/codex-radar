@@ -144,6 +144,38 @@ static int pause_before_release_publish_rename(void) {
   return -1;
 }
 
+static int pause_after_release_publish_rename(void) {
+  const char *ready_path =
+      getenv("PACKAGE_RELEASE_TEST_HELPER_PAUSE_AFTER_RENAME_READY");
+  const char *continue_path =
+      getenv("PACKAGE_RELEASE_TEST_HELPER_PAUSE_AFTER_RENAME_CONTINUE");
+  struct timespec delay = {.tv_sec = 0, .tv_nsec = 10000000};
+  int ready_fd;
+  int attempts;
+
+  if (ready_path == NULL && continue_path == NULL) {
+    return 0;
+  }
+  if (ready_path == NULL || continue_path == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  ready_fd = open(ready_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (ready_fd >= 0) {
+    close(ready_fd);
+  } else if (errno != EEXIST) {
+    return -1;
+  }
+  for (attempts = 0; attempts < 1000; attempts++) {
+    if (access(continue_path, F_OK) == 0) {
+      return 0;
+    }
+    nanosleep(&delay, NULL);
+  }
+  errno = ETIMEDOUT;
+  return -1;
+}
+
 static int remove_tree_contents(int directory_fd) {
   struct dirent *entry;
   DIR *directory = fdopendir(dup(directory_fd));
@@ -281,19 +313,30 @@ static int swap_application(int argc, char **argv) {
   uint64_t parent_inode;
   uint64_t staged_device;
   uint64_t staged_inode;
+  uint64_t expected_destination_device = 0;
+  uint64_t expected_destination_inode = 0;
   int destination_fd = -1;
   int staged_fd;
   int parent_fd;
   int recheck_fd;
   int destination_exists = 1;
+  int require_expected_destination = strcmp(argv[1], "swap-expected") == 0;
   unsigned int rename_flags;
 
-  if (argc != 9 || !valid_name(argv[3]) || !valid_name(argv[4]) ||
+  if ((require_expected_destination ? argc != 11 : argc != 9) ||
+      !valid_name(argv[3]) || !valid_name(argv[4]) ||
       parse_identity(argv[5], &parent_device) != 0 ||
       parse_identity(argv[6], &parent_inode) != 0 ||
       parse_identity(argv[7], &staged_device) != 0 ||
-      parse_identity(argv[8], &staged_inode) != 0) {
-    fprintf(stderr, "usage: atomic_swap swap PARENT STAGED DEST PARENT_DEV PARENT_INO STAGED_DEV STAGED_INO\n");
+      parse_identity(argv[8], &staged_inode) != 0 ||
+      (require_expected_destination &&
+       (parse_identity(argv[9], &expected_destination_device) != 0 ||
+        parse_identity(argv[10], &expected_destination_inode) != 0))) {
+    fprintf(stderr,
+            "usage: atomic_swap swap PARENT STAGED DEST PARENT_DEV PARENT_INO "
+            "STAGED_DEV STAGED_INO\n"
+            "       atomic_swap swap-expected PARENT STAGED DEST PARENT_DEV "
+            "PARENT_INO STAGED_DEV STAGED_INO DEST_DEV DEST_INO\n");
     return 2;
   }
   parent_fd = open_verified_parent(argv[2], parent_device, parent_inode);
@@ -322,6 +365,18 @@ static int swap_application(int argc, char **argv) {
     close(parent_fd);
     return fail("cannot inspect destination application");
   }
+  if (require_expected_destination &&
+      (!destination_exists ||
+       !same_identity(&destination_status, expected_destination_device,
+                      expected_destination_inode))) {
+    if (destination_fd >= 0) {
+      close(destination_fd);
+    }
+    close(staged_fd);
+    close(parent_fd);
+    errno = ESTALE;
+    return fail("destination application identity does not match expected source");
+  }
   if (pause_before_rename() != 0) {
     close(destination_fd);
     close(staged_fd);
@@ -346,13 +401,24 @@ static int swap_application(int argc, char **argv) {
   }
   close(recheck_fd);
   if (destination_exists) {
-    recheck_fd = verify_named_directory(parent_fd, argv[4],
-                                        (uint64_t)destination_status.st_dev,
-                                        (uint64_t)destination_status.st_ino, NULL);
+    uint64_t destination_device =
+        require_expected_destination
+            ? expected_destination_device
+            : (uint64_t)destination_status.st_dev;
+    uint64_t destination_inode =
+        require_expected_destination
+            ? expected_destination_inode
+            : (uint64_t)destination_status.st_ino;
+    recheck_fd = verify_named_directory(parent_fd, argv[4], destination_device,
+                                        destination_inode, NULL);
     if (recheck_fd < 0) {
       close(destination_fd);
       close(staged_fd);
       close(parent_fd);
+      if (require_expected_destination) {
+        return fail(
+            "destination application identity does not match expected source");
+      }
       return fail("destination application identity changed before commit");
     }
     close(recheck_fd);
@@ -551,6 +617,15 @@ static int publish_file(int argc, char **argv) {
     close(parent_fd);
     return fail("cannot atomically publish release artifact");
   }
+  if (pause_after_release_publish_rename() != 0) {
+    (void)renameatx_np(parent_fd, argv[5], staged_directory_fd, argv[4],
+                       kRenameSafetyFlags | RENAME_EXCL);
+    (void)fsync(parent_fd);
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    return fail("release post-rename helper pause failed");
+  }
   if (fstatat(parent_fd, argv[5], &named_status, AT_SYMLINK_NOFOLLOW) != 0 ||
       !same_identity(&named_status, staged_file_device, staged_file_inode) ||
       fsync(parent_fd) != 0) {
@@ -606,13 +681,16 @@ static int remove_published_file(int argc, char **argv) {
 int main(int argc, char **argv) {
   if (argc < 2) {
     fprintf(stderr,
-            "usage: atomic_swap lock|swap|remove|publish|remove-file ...\n");
+            "usage: atomic_swap lock|swap|swap-expected|remove|publish|remove-file ...\n");
     return 2;
   }
   if (strcmp(argv[1], "lock") == 0) {
     return lock_parent(argc, argv);
   }
   if (strcmp(argv[1], "swap") == 0) {
+    return swap_application(argc, argv);
+  }
+  if (strcmp(argv[1], "swap-expected") == 0) {
     return swap_application(argc, argv);
   }
   if (strcmp(argv[1], "remove") == 0) {

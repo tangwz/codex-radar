@@ -893,6 +893,73 @@ env "${lifecycle_environment[@]}" \
   "$SIGN_SCRIPT" --app "$signing_lifecycle_fixture/CodexRadar.app" \
   --signing-mode adhoc || fail "signing lock was not released after staging failure"
 
+swap_identity_fixture="$(setup_task6_app signing-swap-expected-identity)"
+mkdir "$swap_identity_fixture/swap-bin" "$swap_identity_fixture/control"
+cat >"$swap_identity_fixture/swap-bin/codesign" <<'MOCK_SWAP_IDENTITY_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == --verify && -n "${SIGN_APP_TEST_VERIFY_READY:-}" ]]; then
+  : >"$SIGN_APP_TEST_VERIFY_READY"
+  while [[ ! -e "$SIGN_APP_TEST_VERIFY_CONTINUE" ]]; do
+    /bin/sleep 0.01
+  done
+fi
+exit 0
+MOCK_SWAP_IDENTITY_CODESIGN
+chmod +x "$swap_identity_fixture/swap-bin/codesign"
+SIGN_APP_CODESIGN_EXECUTABLE="$swap_identity_fixture/swap-bin/codesign" \
+SIGN_APP_TEST_VERIFY_READY="$swap_identity_fixture/control/ready" \
+SIGN_APP_TEST_VERIFY_CONTINUE="$swap_identity_fixture/control/continue" \
+  "$SIGN_SCRIPT" --app "$swap_identity_fixture/CodexRadar.app" \
+  --signing-mode adhoc >"$swap_identity_fixture/signer.log" 2>&1 &
+swap_identity_signer_pid=$!
+swap_identity_ready=false
+for _ in $(seq 1 500); do
+  if [[ -f "$swap_identity_fixture/control/ready" ]]; then
+    swap_identity_ready=true
+    break
+  fi
+  /bin/sleep 0.01
+done
+if [[ "$swap_identity_ready" != true ]]; then
+  /bin/kill -TERM "$swap_identity_signer_pid" >/dev/null 2>&1 || true
+  wait "$swap_identity_signer_pid" >/dev/null 2>&1 || true
+  cat "$swap_identity_fixture/signer.log" >&2
+  fail "signer did not pause during final staged verification"
+fi
+mv "$swap_identity_fixture/CodexRadar.app" \
+  "$swap_identity_fixture/source-before-final-replacement.app"
+/usr/bin/ditto "$swap_identity_fixture/source-before-final-replacement.app" \
+  "$swap_identity_fixture/CodexRadar.app"
+final_replacement_inode="$(/usr/bin/stat -f '%i' \
+  "$swap_identity_fixture/CodexRadar.app")"
+snapshot_task6_app "$swap_identity_fixture/CodexRadar.app" \
+  "$swap_identity_fixture/final-replacement-before.snapshot"
+: >"$swap_identity_fixture/control/continue"
+if wait "$swap_identity_signer_pid"; then
+  fail "signer replaced an application installed during final verification"
+fi
+grep -F "destination application identity does not match expected source" \
+  "$swap_identity_fixture/signer.log" >/dev/null || {
+  cat "$swap_identity_fixture/signer.log" >&2
+  fail "atomic signer did not report destination identity replacement"
+}
+[[ "$(/usr/bin/stat -f '%i' "$swap_identity_fixture/CodexRadar.app")" == \
+  "$final_replacement_inode" ]] ||
+  fail "atomic signer replaced the newer application"
+snapshot_task6_app "$swap_identity_fixture/CodexRadar.app" \
+  "$swap_identity_fixture/final-replacement-after.snapshot"
+/usr/bin/cmp -s "$swap_identity_fixture/final-replacement-before.snapshot" \
+  "$swap_identity_fixture/final-replacement-after.snapshot" ||
+  fail "atomic signer changed the newer application tree"
+[[ -z "$(/usr/bin/find "$swap_identity_fixture" -maxdepth 1 \
+  -name '.CodexRadar.app.sign.*' -print -quit)" ]] ||
+  fail "destination identity failure retained a signed private stage"
+SIGN_APP_CODESIGN_EXECUTABLE="$swap_identity_fixture/swap-bin/codesign" \
+  "$SIGN_SCRIPT" --app "$swap_identity_fixture/CodexRadar.app" \
+  --signing-mode adhoc || fail "signing lock was not released after swap rejection"
+
 developer_id_fixture="$(setup_task6_app developer-id-inputs)"
 assert_task6_rejected "developer-id signing requires DEVELOPER_ID_APPLICATION" \
   "$developer_id_fixture" env -u DEVELOPER_ID_APPLICATION \
@@ -1439,11 +1506,91 @@ assert_release_artifact_set_absent "$critical_signal_fixture"
 /usr/bin/shasum -a 256 --check \
   "$critical_signal_fixture/prior-before.sha256" >/dev/null ||
   fail "publish signal rollback changed a prior artifact set"
-run_release_fixture "$critical_signal_fixture" >/dev/null 2>&1 ||
+critical_retry_output="$(run_release_fixture "$critical_signal_fixture" 2>&1)" || {
+  echo "$critical_retry_output" >&2
   fail "release output lock was not released after deferred signal rollback"
+}
 /usr/bin/shasum -a 256 --check \
   "$critical_signal_fixture/prior-before.sha256" >/dev/null ||
   fail "successful retry changed a prior artifact set"
+
+post_rename_signal_fixture="$(setup_release_fixture publish-post-rename-signal)"
+post_rename_control="$post_rename_signal_fixture/control"
+mkdir "$post_rename_control" "$post_rename_signal_fixture/output"
+printf 'prior archive\n' >"$post_rename_signal_fixture/output/Prior-v0.0.1.zip"
+printf 'prior checksum\n' >"$post_rename_signal_fixture/output/Prior-v0.0.1.zip.sha256"
+printf 'prior manifest\n' >"$post_rename_signal_fixture/output/Prior-v0.0.1.zip.manifest"
+/usr/bin/shasum -a 256 \
+  "$post_rename_signal_fixture/output/Prior-v0.0.1.zip" \
+  "$post_rename_signal_fixture/output/Prior-v0.0.1.zip.sha256" \
+  "$post_rename_signal_fixture/output/Prior-v0.0.1.zip.manifest" \
+  >"$post_rename_signal_fixture/prior-before.sha256"
+env PACKAGE_RELEASE_TEST_APP_SOURCE="$valid_verify_fixture/CodexRadar.app" \
+  PACKAGE_RELEASE_DITTO_EXECUTABLE="$post_rename_signal_fixture/bin/ditto" \
+  PACKAGE_RELEASE_REAL_DITTO=/usr/bin/ditto \
+  PACKAGE_RELEASE_TEST_HELPER_PAUSE_AFTER_RENAME_READY="$post_rename_control/ready" \
+  PACKAGE_RELEASE_TEST_HELPER_PAUSE_AFTER_RENAME_CONTINUE="$post_rename_control/continue" \
+  /usr/bin/python3 -c \
+  'import os, sys
+child_pid = os.fork()
+if child_pid:
+    with open(sys.argv[1], "w", encoding="utf-8") as pid_file:
+        pid_file.write(str(child_pid))
+    _, status = os.waitpid(child_pid, 0)
+    if os.WIFEXITED(status):
+        sys.exit(os.WEXITSTATUS(status))
+    if os.WIFSIGNALED(status):
+        sys.exit(128 + os.WTERMSIG(status))
+    sys.exit(1)
+os.setsid()
+os.execv(sys.argv[2], sys.argv[2:])' \
+  "$post_rename_control/publisher.pid" \
+  "$post_rename_signal_fixture/script/package_release.sh" \
+  --output "$post_rename_signal_fixture/output" --signing-mode adhoc \
+  >"$post_rename_signal_fixture/publisher.log" 2>&1 &
+post_rename_publisher_wrapper_pid=$!
+post_rename_ready=false
+for _ in $(seq 1 1000); do
+  if [[ -f "$post_rename_control/ready" ]]; then
+    post_rename_ready=true
+    break
+  fi
+  /bin/sleep 0.01
+done
+if [[ "$post_rename_ready" != true ]]; then
+  if [[ -f "$post_rename_control/publisher.pid" ]]; then
+    post_rename_publisher_pid="$(<"$post_rename_control/publisher.pid")"
+    /bin/kill -TERM -- "-$post_rename_publisher_pid" >/dev/null 2>&1 || true
+  else
+    /bin/kill -TERM "$post_rename_publisher_wrapper_pid" >/dev/null 2>&1 || true
+  fi
+  wait "$post_rename_publisher_wrapper_pid" >/dev/null 2>&1 || true
+  cat "$post_rename_signal_fixture/publisher.log" >&2
+  fail "release helper did not pause after the publish rename"
+fi
+post_rename_publisher_pid="$(<"$post_rename_control/publisher.pid")"
+post_rename_archive="$post_rename_signal_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+[[ -f "$post_rename_archive" ]] ||
+  fail "post-rename pause occurred before the release artifact rename"
+/bin/kill -TERM -- "-$post_rename_publisher_pid"
+post_rename_publisher_status=0
+wait "$post_rename_publisher_wrapper_pid" || post_rename_publisher_status=$?
+[[ "$post_rename_publisher_status" -eq 130 ]] || {
+  cat "$post_rename_signal_fixture/publisher.log" >&2
+  fail "post-rename process-group signal did not exit with status 130"
+}
+grep -F "release publishing interrupted" \
+  "$post_rename_signal_fixture/publisher.log" >/dev/null ||
+  fail "post-rename process-group signal was not reported"
+assert_release_artifact_set_absent "$post_rename_signal_fixture"
+/usr/bin/shasum -a 256 --check \
+  "$post_rename_signal_fixture/prior-before.sha256" >/dev/null ||
+  fail "post-rename rollback changed a prior artifact set"
+run_release_fixture "$post_rename_signal_fixture" >/dev/null 2>&1 ||
+  fail "release output lock was not released after post-rename helper death"
+/usr/bin/shasum -a 256 --check \
+  "$post_rename_signal_fixture/prior-before.sha256" >/dev/null ||
+  fail "post-rename retry changed a prior artifact set"
 
 existing_artifact_fixture="$(setup_release_fixture preserve-existing-release)"
 existing_archive="$existing_artifact_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"

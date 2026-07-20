@@ -423,8 +423,9 @@ sign_target "$app_path"
 "$CODESIGN_EXECUTABLE" --verify --deep --strict --verbose=2 "$app_path"
 
 trap '' HUP INT TERM
-"$atomic_swap_executable" swap "$app_parent_real" "$staged_name" "$app_name" \
-  "$parent_device" "$parent_inode" "$staged_device" "$staged_inode"
+"$atomic_swap_executable" swap-expected "$app_parent_real" "$staged_name" \
+  "$app_name" "$parent_device" "$parent_inode" "$staged_device" \
+  "$staged_inode" "$source_device" "$source_inode"
 committed=true
 exec 9>&-
 lock_pipe_open=false
