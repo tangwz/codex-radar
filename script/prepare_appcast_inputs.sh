@@ -109,6 +109,8 @@ load_manifest() {
   MANIFEST_BUILD=""
   MANIFEST_BYTE_LENGTH=""
   MANIFEST_SHA256=""
+  MANIFEST_SIGNING_MODE=""
+  MANIFEST_DISTRIBUTION_TRUST=""
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || die "invalid manifest line" || return 1
     key="${line%%=*}"
@@ -142,13 +144,15 @@ load_manifest() {
       signing_mode)
         [[ "$seen_mode" == false ]] || die "duplicate signing_mode" || return 1
         seen_mode=true
+        MANIFEST_SIGNING_MODE="$value"
         [[ "$value" == adhoc || "$value" == developer-id ]] ||
           die "invalid manifest signing_mode" || return 1
         ;;
       distribution_trust)
         [[ "$seen_trust" == false ]] || die "duplicate distribution_trust" || return 1
         seen_trust=true
-        case "$value" in
+        MANIFEST_DISTRIBUTION_TRUST="$value"
+        case "$MANIFEST_DISTRIBUTION_TRUST" in
           locally-signed-not-developer-id-not-notarized-not-gatekeeper-trusted | \
             developer-id-notarized) ;;
           *) die "invalid manifest distribution_trust" || return 1 ;;
@@ -170,6 +174,11 @@ load_manifest() {
   [[ "$MANIFEST_BYTE_LENGTH" =~ ^(0|[1-9][0-9]*)$ ]] ||
     die "invalid manifest byte_length" || return 1
   [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "invalid manifest sha256" || return 1
+  case "$MANIFEST_SIGNING_MODE:$MANIFEST_DISTRIBUTION_TRUST" in
+    adhoc:locally-signed-not-developer-id-not-notarized-not-gatekeeper-trusted | \
+      developer-id:developer-id-notarized) ;;
+    *) die "invalid manifest signing trust" || return 1 ;;
+  esac
 }
 
 validate_release_history_empty() {

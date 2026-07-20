@@ -184,25 +184,61 @@ cleanup() {
 trap cleanup EXIT
 
 compile_sparkle_verifier() {
-  local sparkle_source="$1" source_dir head path
+  local sparkle_source="$1" source_dir head path index_entry expected_blob written_blob
+  local checkout_status compiler_path sdk_path
 
   assert_real_directory "$sparkle_source" "Sparkle source"
-  head="$(/usr/bin/git -C "$sparkle_source" rev-parse HEAD 2>/dev/null)" ||
+  [[ "$(git_in_sparkle_checkout "$sparkle_source" rev-parse --is-inside-work-tree 2>/dev/null)" == true ]] ||
+    die "Sparkle source must be a Git checkout" || return 1
+  head="$(git_in_sparkle_checkout "$sparkle_source" rev-parse HEAD 2>/dev/null)" ||
     die "Sparkle source must be a Git checkout" || return 1
   [[ "$head" == "$EXPECTED_SPARKLE_REVISION" ]] ||
     die "Sparkle source revision must equal $EXPECTED_SPARKLE_REVISION" || return 1
-  source_dir="$sparkle_source/Vendor/ed25519-sparkle/src"
-  assert_real_directory "$source_dir" "Sparkle Ed25519 source"
+  git_in_sparkle_checkout "$sparkle_source" cat-file -e "$EXPECTED_SPARKLE_REVISION^{commit}" ||
+    die "Sparkle source revision is unavailable" || return 1
+  checkout_status="$(git_in_sparkle_checkout "$sparkle_source" status --porcelain=v1 \
+    --untracked-files=all --ignored=no)" ||
+    die "Sparkle source checkout status is unavailable" || return 1
+  [[ -z "$checkout_status" ]] || die "Sparkle source checkout is dirty" || return 1
   for path in ed25519.h fixedint.h fe.h fe.c ge.h ge.c precomp_data.h sc.h sc.c \
     sha512.h sha512.c verify.c; do
-    assert_real_file "$source_dir/$path" "Sparkle Ed25519 source file"
+    index_entry="$(git_in_sparkle_checkout "$sparkle_source" ls-files -v -- \
+      "Vendor/ed25519-sparkle/src/$path")" ||
+      die "Sparkle Ed25519 source file is unavailable" || return 1
+    [[ "$index_entry" == "H Vendor/ed25519-sparkle/src/$path" ]] ||
+      die "Sparkle source checkout has hidden index flags" || return 1
   done
-  /usr/bin/git -C "$sparkle_source" diff --quiet "$head" -- \
-    Vendor/ed25519-sparkle/src ||
-    die "Sparkle Ed25519 source has local modifications" || return 1
 
-  /usr/bin/xcrun clang -std=c11 -Wall -Wextra -Werror -DED25519_NO_SEED \
-    -I "$source_dir" \
+  source_dir="$work_dir/sparkle-ed25519"
+  /bin/mkdir -m 700 "$source_dir" || die "unable to create isolated Sparkle source" || return 1
+  for path in ed25519.h fixedint.h fe.h fe.c ge.h ge.c precomp_data.h sc.h sc.c \
+    sha512.h sha512.c verify.c; do
+    expected_blob="$(git_in_sparkle_checkout "$sparkle_source" rev-parse \
+      "$EXPECTED_SPARKLE_REVISION:Vendor/ed25519-sparkle/src/$path" 2>/dev/null)" ||
+      die "Sparkle Ed25519 source file is unavailable" || return 1
+    [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]] ||
+      die "Sparkle Ed25519 source file has an invalid pinned blob" || return 1
+    git_in_sparkle_checkout "$sparkle_source" cat-file blob \
+      "$EXPECTED_SPARKLE_REVISION:Vendor/ed25519-sparkle/src/$path" >"$source_dir/$path" ||
+      die "unable to export pinned Sparkle source" || return 1
+    written_blob="$(git_in_sparkle_checkout "$sparkle_source" hash-object "$source_dir/$path")" ||
+      die "unable to hash exported Sparkle source" || return 1
+    [[ "$written_blob" == "$expected_blob" ]] ||
+      die "exported Sparkle source does not match its pinned blob" || return 1
+  done
+
+  compiler_path="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
+    /usr/bin/xcrun --sdk macosx --find clang 2>/dev/null)" ||
+    die "unable to locate the C compiler" || return 1
+  sdk_path="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
+    /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)" ||
+    die "unable to locate the macOS SDK" || return 1
+  [[ -x "$compiler_path" && -d "$sdk_path" ]] ||
+    die "unable to locate the C compiler or macOS SDK" || return 1
+
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "$compiler_path" \
+    -std=c11 -Wall -Wextra -Werror -DED25519_NO_SEED -isysroot "$sdk_path" \
+    -iquote "$source_dir" \
     "$source_dir/fe.c" \
     "$source_dir/ge.c" \
     "$source_dir/sc.c" \
@@ -262,6 +298,13 @@ int main(int argc, char **argv) {
     return valid ? 0 : 1;
 }
 C
+}
+
+git_in_sparkle_checkout() {
+  local sparkle_source="$1"
+  shift
+
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/git -C "$sparkle_source" "$@"
 }
 
 signature_counter=0

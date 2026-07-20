@@ -21,7 +21,12 @@ SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 }
 
 fixture_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-feed-tests.XXXXXX")"
-trap '/bin/rm -rf "$fixture_root"' EXIT
+sparkle_source_file="Vendor/ed25519-sparkle/src/fe.c"
+
+cleanup() {
+  /bin/rm -rf "$fixture_root"
+}
+trap cleanup EXIT
 
 fail() {
   echo "$*" >&2
@@ -255,6 +260,12 @@ prepare_command() {
 }
 
 verify_artifacts() {
+  verify_artifacts_with_sparkle "$SPARKLE_SOURCE" "$@"
+}
+
+verify_artifacts_with_sparkle() {
+  local sparkle_source="$1"
+  shift
   local inputs_path="$1" archive_path="$2" manifest_path="$3" info_plist="$4"
   local version_config="$5" update_config="$6"
 
@@ -265,7 +276,7 @@ verify_artifacts() {
     --final-info-plist "$info_plist" \
     --version-config "$version_config" \
     --update-config "$update_config" \
-    --sparkle-source "$SPARKLE_SOURCE"
+    --sparkle-source "$sparkle_source"
 }
 
 printf '01234567890123456789012345678901' >"$fixture_root/test-seed"
@@ -372,6 +383,15 @@ expect_failure "bootstrap requires empty GitHub Release history" prepare_command
   "$bootstrap_archive" "$bootstrap_archive.manifest" "$bootstrap_dir/final-Info.plist" \
   --bootstrap --release-history "$fixture_root/nonempty-history.json"
 
+bad_trust_manifest="$fixture_root/bad-trust.manifest"
+/usr/bin/sed \
+  's/distribution_trust=locally-signed-not-developer-id-not-notarized-not-gatekeeper-trusted/distribution_trust=developer-id-notarized/' \
+  "$candidate_manifest" >"$bad_trust_manifest"
+expect_failure "invalid manifest signing trust" prepare_command \
+  "$fixture_root/bad-trust-inputs" "$candidate_dir/version.env" "$candidate_dir/update.env" \
+  "$candidate_archive" "$bad_trust_manifest" "$candidate_info" \
+  --production-feed "$previous_dir/appcast.xml"
+
 production_url="https://github.com/tangwz/codex-radar/releases/download/v0.2.0/$archive_name"
 make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
@@ -416,6 +436,57 @@ make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
 printf ' ' >>"$inputs_dir/production/appcast.xml"
 assert_artifact_failure "invalid signed feed block"
+
+make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$archive_signature"
+/usr/bin/tail -n 4 "$inputs_dir/production/appcast.xml" >"$fixture_root/original-feed-block"
+/usr/bin/python3 - "$inputs_dir/production/appcast.xml" <<'PYTHON'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+marker = b"<!-- sparkle-signatures:\n"
+content, block = data.rsplit(marker, 1)
+if b"CodexRadar" not in content:
+    raise SystemExit("fixture feed does not contain a mutable signed byte")
+path.write_bytes(content.replace(b"CodexRadar", b"CodexQadar", 1) + marker + block)
+PYTHON
+/usr/bin/tail -n 4 "$inputs_dir/production/appcast.xml" >"$fixture_root/mutated-feed-block"
+/usr/bin/cmp -s "$fixture_root/original-feed-block" "$fixture_root/mutated-feed-block" ||
+  fail "signed feed mutation changed the signature block"
+assert_artifact_failure "production signed feed failed Ed25519 verification"
+
+wrong_signature="$(sign_file "$fixture_root/empty")"
+make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$wrong_signature"
+make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
+  "$archive_name" "$archive_length" "$wrong_signature"
+assert_artifact_failure "production archive failed Ed25519 verification"
+
+make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$archive_signature"
+wrong_signature="$(sign_file "$fixture_root/empty")"
+/usr/bin/python3 - "$inputs_dir/production/appcast.xml" "$wrong_signature" <<'PYTHON'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+signature = sys.argv[2].encode("ascii")
+data = path.read_bytes()
+prefix = b"edSignature: "
+start = data.rfind(prefix)
+end = data.find(b"\n", start)
+if start < 0 or end < 0:
+    raise SystemExit("fixture feed signature block is missing")
+path.write_bytes(data[:start] + prefix + signature + data[end:])
+PYTHON
+assert_artifact_failure "production signed feed failed Ed25519 verification"
+
+make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$archive_signature"
+make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
+  "$archive_name" "$archive_length" "$archive_signature"
 
 make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
@@ -502,5 +573,41 @@ expect_failure "CAS conflict: current feed is absent" \
   "$VERIFY_SCRIPT" --mode cas --current-absent \
   --expected-previous-feed "$inputs_dir/previous-appcast.xml" \
   --candidate-feed "$inputs_dir/production/appcast.xml"
+
+mutable_sparkle_source="$fixture_root/mutable-Sparkle"
+/usr/bin/git clone --quiet --no-local "$SPARKLE_SOURCE" "$mutable_sparkle_source"
+/usr/bin/git -c advice.detachedHead=false -C "$mutable_sparkle_source" checkout --quiet --detach \
+  b6496a74a087257ef5e6da1c5b29a447a60f5bd7
+mutable_sparkle_source_path="$mutable_sparkle_source/$sparkle_source_file"
+mutable_sparkle_injected_header="$mutable_sparkle_source/Vendor/ed25519-sparkle/src/stdlib.h"
+
+printf '#include_next <stdlib.h>\n' >"$mutable_sparkle_injected_header"
+expect_failure "Sparkle source checkout is dirty" verify_artifacts_with_sparkle \
+  "$mutable_sparkle_source" \
+  "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+/bin/rm -f "$mutable_sparkle_injected_header"
+
+/bin/cp "$mutable_sparkle_source_path" "$fixture_root/original-fe.c"
+printf '\n' >>"$mutable_sparkle_source_path"
+expect_failure "Sparkle source checkout is dirty" verify_artifacts_with_sparkle \
+  "$mutable_sparkle_source" \
+  "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+/bin/cp "$fixture_root/original-fe.c" "$mutable_sparkle_source_path"
+
+/usr/bin/git -C "$mutable_sparkle_source" update-index --assume-unchanged "$sparkle_source_file"
+expect_failure "Sparkle source checkout has hidden index flags" verify_artifacts_with_sparkle \
+  "$mutable_sparkle_source" \
+  "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+/usr/bin/git -C "$mutable_sparkle_source" update-index --no-assume-unchanged "$sparkle_source_file"
+
+/usr/bin/git -C "$mutable_sparkle_source" update-index --skip-worktree "$sparkle_source_file"
+expect_failure "Sparkle source checkout has hidden index flags" verify_artifacts_with_sparkle \
+  "$mutable_sparkle_source" \
+  "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+/usr/bin/git -C "$mutable_sparkle_source" update-index --no-skip-worktree "$sparkle_source_file"
 
 echo "update feed fixtures passed"
