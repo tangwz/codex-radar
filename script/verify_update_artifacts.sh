@@ -16,7 +16,7 @@ usage:
   $0 --mode artifacts --inputs PATH --archive PATH --manifest PATH --final-info-plist PATH --version-config PATH --update-config PATH --sparkle-source PATH
   $0 --mode published --feed PATH --archive PATH --manifest PATH --version-config PATH --update-config PATH --sparkle-source PATH
   $0 --mode cas (--current-feed PATH|--current-absent) (--expected-previous-feed PATH|--expected-previous-absent) --candidate-feed PATH
-  $0 --mode halt --current-feed PATH --previous-feed PATH --update-config PATH --sparkle-source PATH
+  $0 --mode halt --current-feed PATH --previous-feed PATH [--intervening-feed PATH] --update-config PATH --sparkle-source PATH
 EOF
   return 2
 }
@@ -720,8 +720,9 @@ validate_halt_feed_url() {
 
 validate_halt_mode() {
   local current_feed_path="$1" previous_feed_path="$2"
-  local update_config_path="$3" sparkle_source_path="$4"
-  local current_version current_build current_minimum halt_state
+  local intervening_feed_path="$3" update_config_path="$4" sparkle_source_path="$5"
+  local current_version current_build current_minimum
+  local previous_version previous_build halt_state
 
   assert_real_file "$update_config_path" "update config"
   load_update_config "$update_config_path"
@@ -739,11 +740,26 @@ validate_halt_mode() {
   validate_halt_feed_url "previous Production Feed"
   [[ "$FEED_MINIMUM_SYSTEM" == "$current_minimum" ]] ||
     die "Production Feed minimum system versions must match" || return 1
+  previous_version="$FEED_VERSION"
+  previous_build="$FEED_BUILD"
 
   if /usr/bin/cmp -s "$current_feed_path" "$previous_feed_path"; then
+    [[ -n "$intervening_feed_path" ]] ||
+      die "already-halted verification requires an intervening Production Feed" || return 1
+    validate_feed_shape "$intervening_feed_path" "intervening Production Feed"
+    validate_halt_feed_url "intervening Production Feed"
+    [[ "$FEED_MINIMUM_SYSTEM" == "$current_minimum" ]] ||
+      die "Production Feed minimum system versions must match" || return 1
+    if /usr/bin/cmp -s "$intervening_feed_path" "$current_feed_path"; then
+      die "intervening Production Feed must differ from halted Production Feed" || return 1
+    fi
+    decimal_is_greater "$FEED_BUILD" "$current_build" ||
+      die "intervening Production Feed build must be higher than halted Production Feed build" || return 1
     halt_state="already-halted"
   else
-    decimal_is_greater "$current_build" "$FEED_BUILD" ||
+    [[ -z "$intervening_feed_path" ]] ||
+      die "intervening Production Feed is only valid for already-halted verification" || return 1
+    decimal_is_greater "$current_build" "$previous_build" ||
       die "previous Production Feed build must be lower than current Production Feed build" || return 1
     halt_state="ready"
   fi
@@ -752,8 +768,8 @@ validate_halt_mode() {
   printf 'current_tag=v%s\n' "$current_version"
   printf 'current_version=%s\n' "$current_version"
   printf 'current_build=%s\n' "$current_build"
-  printf 'previous_version=%s\n' "$FEED_VERSION"
-  printf 'previous_build=%s\n' "$FEED_BUILD"
+  printf 'previous_version=%s\n' "$previous_version"
+  printf 'previous_build=%s\n' "$previous_build"
 }
 
 mode=""
@@ -771,6 +787,7 @@ expected_feed=""
 expected_absent=false
 candidate_feed=""
 previous_feed=""
+intervening_feed=""
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -849,6 +866,11 @@ while [[ "$#" -gt 0 ]]; do
       previous_feed="$2"
       shift 2
       ;;
+    --intervening-feed)
+      [[ -z "$intervening_feed" && "$#" -ge 2 ]] || usage
+      intervening_feed="$2"
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
@@ -885,7 +907,8 @@ case "$mode" in
     [[ -n "$current_feed" && "$current_absent" == false && -n "$previous_feed" && \
       -n "$update_config" && -n "$sparkle_source" ]] || usage
     work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-update-verify.XXXXXX")"
-    validate_halt_mode "$current_feed" "$previous_feed" "$update_config" "$sparkle_source"
+    validate_halt_mode "$current_feed" "$previous_feed" "$intervening_feed" \
+      "$update_config" "$sparkle_source"
     ;;
   *) usage ;;
 esac

@@ -597,6 +597,8 @@ for required_releasing_text in \
   'Distribution Halt Pending' \
   'already-halted' \
   '同一个 `--previous-commit`' \
+  'commits?sha=main&path=appcast.xml&per_page=1' \
+  'intervening Production Feed' \
   'already-upgraded installations are not downgraded' \
   'Acceptance status: Pending | Passed' \
   'appcast.xml'; do
@@ -983,12 +985,19 @@ verify_published() {
 
 verify_halt() {
   local current_feed="$1" previous_feed="$2" update_config="$3"
-
-  "$VERIFY_SCRIPT" --mode halt \
-    --current-feed "$current_feed" \
-    --previous-feed "$previous_feed" \
-    --update-config "$update_config" \
+  local intervening_feed="${4:-}"
+  local arguments=(
+    --mode halt
+    --current-feed "$current_feed"
+    --previous-feed "$previous_feed"
+    --update-config "$update_config"
     --sparkle-source "$SPARKLE_SOURCE"
+  )
+
+  if [[ -n "$intervening_feed" ]]; then
+    arguments+=(--intervening-feed "$intervening_feed")
+  fi
+  "$VERIFY_SCRIPT" "${arguments[@]}"
 }
 
 printf '01234567890123456789012345678901' >"$fixture_root/test-seed"
@@ -1163,10 +1172,15 @@ for expected_line in \
     fail "halt verifier did not report $expected_line"
 done
 
+expect_failure "already-halted verification requires an intervening Production Feed" \
+  verify_halt "$halt_previous_feed" "$halt_previous_feed" "$candidate_dir/update.env"
 verify_halt "$halt_previous_feed" "$halt_previous_feed" \
-  "$candidate_dir/update.env" >"$halt_verify_output"
+  "$candidate_dir/update.env" "$halt_current_feed" >"$halt_verify_output"
 /usr/bin/grep -Fx 'halt_state=already-halted' "$halt_verify_output" >/dev/null ||
   fail "halt verifier did not report the already-halted state"
+expect_failure "intervening Production Feed is only valid for already-halted verification" \
+  verify_halt "$halt_current_feed" "$halt_previous_feed" \
+  "$candidate_dir/update.env" "$halt_current_feed"
 
 halt_invalid_signature="$fixture_root/halt-invalid-signature.xml"
 /bin/cp "$halt_previous_feed" "$halt_invalid_signature"
@@ -1284,6 +1298,34 @@ if [[ "$method" == GET && "$target" == *"?ref=$HALT_FIXTURE_PREVIOUS_COMMIT" ]];
   exit 0
 fi
 
+if [[ "$method" == GET && "$target" == \
+  "repos/tangwz/codex-radar/commits?sha=main&path=appcast.xml&per_page=1" ]]; then
+  case "$HALT_FIXTURE_MODE" in
+    provenance-read-failure)
+      exit 1
+      ;;
+    provenance-malformed)
+      printf '{"not":"an array"}\n'
+      exit 0
+      ;;
+    provenance-missing-parent)
+      printf '[{"sha":"4444444444444444444444444444444444444444","parents":[]}]\n'
+      exit 0
+      ;;
+  esac
+  printf '[{"sha":"4444444444444444444444444444444444444444","parents":[{"sha":"5555555555555555555555555555555555555555"}]}]\n'
+  exit 0
+fi
+
+if [[ "$method" == GET && "$target" == *"?ref=5555555555555555555555555555555555555555" ]]; then
+  if [[ "$HALT_FIXTURE_MODE" == provenance-lower ]]; then
+    emit_contents "$HALT_FIXTURE_LOWER_FEED" 6666666666666666666666666666666666666666
+  else
+    emit_contents "$HALT_FIXTURE_CURRENT_FEED" 6666666666666666666666666666666666666666
+  fi
+  exit 0
+fi
+
 if [[ "$method" == PUT && "$target" == "repos/tangwz/codex-radar/contents/appcast.xml" ]]; then
   [[ "$include" == true && -f "$input" ]] || exit 2
   /bin/cp "$input" "$HALT_FIXTURE_DIR/put-body.json"
@@ -1335,6 +1377,13 @@ case "$HALT_FIXTURE_MODE" in
       /bin/cat "$HALT_FIXTURE_PREVIOUS_FEED"
     fi
     ;;
+  raw-intervening-then-previous)
+    if [[ "$count" -eq 1 ]]; then
+      /bin/cat "$HALT_FIXTURE_CURRENT_FEED"
+    else
+      /bin/cat "$HALT_FIXTURE_PREVIOUS_FEED"
+    fi
+    ;;
   *)
     /bin/cat "$HALT_FIXTURE_PREVIOUS_FEED"
     ;;
@@ -1368,6 +1417,7 @@ run_halt_fixture() {
     HALT_FIXTURE_MODE="$mode" \
     HALT_FIXTURE_CURRENT_FEED="$halt_current_feed" \
     HALT_FIXTURE_PREVIOUS_FEED="$previous_feed" \
+    HALT_FIXTURE_LOWER_FEED="$halt_previous_feed" \
     HALT_FIXTURE_UNKNOWN_FEED="$halt_unknown_feed" \
     HALT_FIXTURE_PREVIOUS_COMMIT="$halt_previous_commit" \
     "$HALT_SCRIPT" --previous-commit "$halt_previous_commit"
@@ -1380,6 +1430,14 @@ expect_failure "previous Production Feed build must be lower than current Produc
   run_halt_fixture default "$halt_equal_build"
 expect_failure "confirmation did not match current tag v0.2.0" run_halt_fixture \
   default "$halt_previous_feed" v0.1.0
+expect_failure "intervening Production Feed build must be higher than halted Production Feed build" \
+  run_halt_fixture provenance-lower "$halt_current_feed" ''
+if /usr/bin/grep -F 'Distribution Halt completed' "$fixture_root/failure-output" >/dev/null; then
+  fail "halt command accepted a lower-build provenance parent"
+fi
+if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+  fail "halt command performed PUT after rejecting a lower-build provenance parent"
+fi
 
 halt_success_output="$fixture_root/halt-success-output"
 run_halt_fixture default >"$halt_success_output"
@@ -1439,11 +1497,33 @@ run_halt_fixture default "$halt_previous_feed" '' true >"$halt_success_output"
 if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
   fail "halt retry repeated PUT after Distribution Halt Pending"
 fi
+run_halt_fixture raw-intervening-then-previous \
+  "$halt_previous_feed" '' true >"$halt_success_output"
+[[ "$(<"$halt_fixture_dir/http-count")" == 2 ]] ||
+  fail "already-halted retry did not allow the verified intervening feed during raw convergence"
+if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+  fail "already-halted raw convergence performed PUT"
+fi
 expect_failure "raw Production Feed returned unknown bytes" run_halt_fixture \
   raw-unknown "$halt_previous_feed" '' true
 if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
   fail "already-halted verification performed PUT before rejecting unknown raw bytes"
 fi
+for provenance_mode in provenance-read-failure provenance-malformed provenance-missing-parent; do
+  case "$provenance_mode" in
+    provenance-read-failure)
+      expected_provenance_error="unable to fetch Production Feed commit history"
+      ;;
+    *)
+      expected_provenance_error="invalid Production Feed commit history"
+      ;;
+  esac
+  expect_failure "$expected_provenance_error" run_halt_fixture \
+    "$provenance_mode" "$halt_previous_feed" '' true
+  if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+    fail "halt provenance failure performed PUT: $provenance_mode"
+  fi
+done
 
 [[ "$production_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||
   fail "verification changed signed production feed bytes"

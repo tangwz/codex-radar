@@ -85,7 +85,9 @@ script/halt_distribution.sh --previous-commit 0123456789abcdef0123456789abcdef01
 
 写入使用当前 blob SHA 对 `main/appcast.xml` 执行 compare-and-swap，并把上一份 signed feed 的精确字节作为内容。HTTP 409 或 422 表示 CAS 冲突，命令立即停止且绝不强制覆盖。PUT 后命令通过 Contents API 独立复读仓库 blob，要求字节完全等于 previous feed；然后有限次轮询固定 raw URL。raw 返回 current 精确字节时只等待缓存传播，返回 previous 精确字节才报告成功，任何第三种字节立即硬失败。轮询超时只报告 `Distribution Halt Pending`，不得宣称完成，也不得删除 Release 或 tag。
 
-如果 PUT 已在 GitHub 生效但响应丢失，或命令在写入后进入 `Distribution Halt Pending`，使用同一个 `--previous-commit` 原样重跑。两次读取的 signed feed 精确字节相等且各自验证通过时，verifier 返回 `already-halted`；命令不再要求 tag 确认，也不重复 PUT，只复读 repository blob 并继续轮询 fixed raw URL。raw URL 返回 previous 精确字节才完成，返回任何其他非 current/previous 预期状态的字节仍然硬失败。不要改用另一个 commit 猜测恢复状态。
+如果 PUT 已在 GitHub 生效但响应丢失，或命令在写入后进入 `Distribution Halt Pending`，使用同一个 `--previous-commit` 原样重跑。current 与 previous 精确字节相等本身不足以证明 Distribution Halt 已经发生：命令还会通过 authenticated `repos/tangwz/codex-radar/commits?sha=main&path=appcast.xml&per_page=1` 查询最近一次修改 `appcast.xml` 的 commit，严格读取它的第一个 parent SHA，并从该 parent 获取 intervening Production Feed。
+
+只有 current、previous 和 intervening Production Feed 都由同一固定公钥验签，使用版本固定 URL 和相同最低系统版本，intervening bytes 与 halted bytes 不同，且 intervening build 严格高于 halted build 时，verifier 才返回 `already-halted`。commit history 读取失败、结构或 SHA 非法、缺少 parent、parent feed 无效或 build 方向错误都会硬失败；判定不依赖 commit message。进入 `already-halted` 后，命令不再要求 tag 确认，也不重复 PUT，只复读 repository blob 并继续轮询 fixed raw URL。raw URL 返回已验签的 intervening 精确字节时可以等待缓存传播，返回 previous 精确字节才完成，任何第三种字节立即硬失败。不要改用另一个 commit 猜测恢复状态。
 
 Distribution Halt 不会降级已经完成更新的安装。`Guarantee: already-upgraded installations are not downgraded.` Sparkle 不会把已经安装的新 build 降级到旧 build。必须修复已升级用户时，使用更高且从未使用的 App Version/build 发布 repair update，禁止复用或替换既有版本。
 

@@ -91,6 +91,40 @@ fetch_contents() {
   decode_contents_response "$response_path" "$output_path" "$sha_path"
 }
 
+parse_latest_feed_parent() {
+  local response_path="$1" parent_path="$2"
+
+  /usr/bin/python3 - "$response_path" "$parent_path" <<'PYTHON'
+import json
+import pathlib
+import re
+import sys
+
+response_path, parent_path = map(pathlib.Path, sys.argv[1:])
+try:
+    response = json.loads(response_path.read_bytes())
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    raise SystemExit("invalid commit history response: {}".format(error))
+if not isinstance(response, list) or len(response) != 1:
+    raise SystemExit("commit history response must contain exactly one commit")
+commit = response[0]
+if not isinstance(commit, dict):
+    raise SystemExit("commit history entry must be an object")
+commit_sha = commit.get("sha")
+parents = commit.get("parents")
+if not isinstance(commit_sha, str) or re.fullmatch(r"[0-9a-f]{40}", commit_sha) is None:
+    raise SystemExit("commit history entry has an invalid SHA")
+if not isinstance(parents, list) or not parents or not isinstance(parents[0], dict):
+    raise SystemExit("commit history entry is missing its first parent")
+parent_sha = parents[0].get("sha")
+if not isinstance(parent_sha, str) or re.fullmatch(r"[0-9a-f]{40}", parent_sha) is None:
+    raise SystemExit("commit history first parent has an invalid SHA")
+if parent_sha == commit_sha:
+    raise SystemExit("commit history first parent must differ from the commit")
+parent_path.write_text(parent_sha + "\n", encoding="ascii")
+PYTHON
+}
+
 "$GH_EXECUTABLE" auth status >/dev/null 2>&1 ||
   die "an authenticated operator gh session is required" || exit 1
 
@@ -107,12 +141,36 @@ previous_sha_path="$work_dir/previous-blob-sha"
 fetch_contents "$previous_commit" "$previous_response" "$previous_feed" "$previous_sha_path" ||
   die "unable to fetch previous Production Feed from commit $previous_commit" || exit 1
 
+intervening_feed=""
+if /usr/bin/cmp -s "$current_feed" "$previous_feed"; then
+  history_response="$work_dir/appcast-history.json"
+  "$GH_EXECUTABLE" api --method GET \
+    "repos/$REPOSITORY/commits?sha=$BRANCH&path=$FEED_PATH&per_page=1" >"$history_response" ||
+    die "unable to fetch Production Feed commit history" || exit 1
+  parent_sha_path="$work_dir/appcast-parent-sha"
+  parse_latest_feed_parent "$history_response" "$parent_sha_path" ||
+    die "invalid Production Feed commit history" || exit 1
+  parent_sha="$(<"$parent_sha_path")"
+  intervening_response="$work_dir/intervening-response.json"
+  intervening_feed="$work_dir/intervening-appcast.xml"
+  intervening_sha_path="$work_dir/intervening-blob-sha"
+  fetch_contents "$parent_sha" "$intervening_response" "$intervening_feed" \
+    "$intervening_sha_path" ||
+    die "unable to fetch intervening Production Feed from commit $parent_sha" || exit 1
+fi
+
 verification_output="$work_dir/halt-verification"
-"$VERIFY_SCRIPT" --mode halt \
-  --current-feed "$current_feed" \
-  --previous-feed "$previous_feed" \
-  --update-config "$UPDATE_CONFIG" \
-  --sparkle-source "$SPARKLE_SOURCE" >"$verification_output"
+verification_arguments=(
+  --mode halt
+  --current-feed "$current_feed"
+  --previous-feed "$previous_feed"
+  --update-config "$UPDATE_CONFIG"
+  --sparkle-source "$SPARKLE_SOURCE"
+)
+if [[ -n "$intervening_feed" ]]; then
+  verification_arguments+=(--intervening-feed "$intervening_feed")
+fi
+"$VERIFY_SCRIPT" "${verification_arguments[@]}" >"$verification_output"
 
 current_tag=""
 current_version=""
@@ -213,6 +271,11 @@ fetch_contents "$BRANCH" "$repository_response" "$repository_feed" "$repository_
   die "repository Production Feed bytes differ after Distribution Halt PUT" || exit 1
 
 raw_feed="$work_dir/raw-appcast.xml"
+retry_feed="$current_feed"
+if [[ "$halt_state" == already-halted ]]; then
+  [[ -n "$intervening_feed" ]] || die "already-halted state lacks provenance feed" || exit 1
+  retry_feed="$intervening_feed"
+fi
 for ((attempt = 1; attempt <= POLL_ATTEMPTS; attempt++)); do
   : >"$raw_feed"
   if "$HTTP_EXECUTABLE" --fail --silent --show-error --location \
@@ -223,7 +286,7 @@ for ((attempt = 1; attempt <= POLL_ATTEMPTS; attempt++)); do
       printf 'Note: already-upgraded installations are not downgraded; publish a higher-version repair when needed.\n'
       exit 0
     fi
-    /usr/bin/cmp -s "$raw_feed" "$current_feed" ||
+    /usr/bin/cmp -s "$raw_feed" "$retry_feed" ||
       die "raw Production Feed returned unknown bytes" || exit 1
   fi
   if [[ "$attempt" -lt "$POLL_ATTEMPTS" && "$POLL_INTERVAL_SECONDS" -gt 0 ]]; then
