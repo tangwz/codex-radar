@@ -422,6 +422,7 @@ resources_path="$contents_path/Resources"
 frameworks_path="$contents_path/Frameworks"
 executable_path="$macos_path/$APP_NAME"
 /bin/mkdir -p "$macos_path" "$resources_path" "$frameworks_path"
+/bin/chmod 0755 "$staged_app"
 
 "$LIPO_EXECUTABLE" -create "${binaries[@]}" -output "$executable_path"
 /bin/chmod +x "$executable_path"

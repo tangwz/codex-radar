@@ -527,9 +527,12 @@ install_mock_swift "$cleanup_fixture"
 mkdir -p "$cleanup_fixture/dist/CodexRadar.app"
 printf 'old artifact\n' >"$cleanup_fixture/dist/CodexRadar.app/marker"
 /bin/chmod 500 "$cleanup_fixture/dist/CodexRadar.app"
-assert_succeeds "$cleanup_fixture" \
-  --output "$cleanup_fixture/dist" --configuration debug \
-  --architectures arm64 --updates-enabled false
+(
+  umask 077
+  assert_succeeds "$cleanup_fixture" \
+    --output "$cleanup_fixture/dist" --configuration debug \
+    --architectures arm64 --updates-enabled false
+)
 [[ -f "$cleanup_fixture/dist/CodexRadar.app/Contents/MacOS/CodexRadar" ]] ||
   fail "cleanup failure did not leave the committed application"
 [[ "$(stat -f '%Lp' "$cleanup_fixture/dist/CodexRadar.app")" == 755 ]] ||
