@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PREPARE_SCRIPT="$ROOT_DIR/script/prepare_appcast_inputs.sh"
 VERIFY_SCRIPT="$ROOT_DIR/script/verify_update_artifacts.sh"
+QUALIFY_SCRIPT="$ROOT_DIR/script/qualify_update.sh"
 SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 
@@ -13,6 +14,10 @@ SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 }
 [[ -x "$VERIFY_SCRIPT" ]] || {
   echo "verify_update_artifacts.sh does not exist" >&2
+  exit 1
+}
+[[ -x "$QUALIFY_SCRIPT" ]] || {
+  echo "qualify_update.sh does not exist" >&2
   exit 1
 }
 [[ -d "$SPARKLE_SOURCE" ]] || {
@@ -609,5 +614,133 @@ expect_failure "Sparkle source checkout has hidden index flags" verify_artifacts
   "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
   "$candidate_dir/version.env" "$candidate_dir/update.env"
 /usr/bin/git -C "$mutable_sparkle_source" update-index --no-skip-worktree "$sparkle_source_file"
+
+qualification_bundle="$fixture_root/qualification-bundle"
+/usr/bin/ditto "$inputs_dir" "$qualification_bundle"
+/bin/mkdir -p "$qualification_bundle/bin" \
+  "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$qualification_bundle/bin/sparkle"
+/bin/chmod 755 "$qualification_bundle/bin/sparkle"
+write_info_plist \
+  "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources/Info.plist" \
+  2.9.4 1 14.0 "$PUBLIC_KEY"
+/bin/ln -s A "$qualification_bundle/Frameworks/Sparkle.framework/Versions/Current"
+/bin/ln -s Versions/Current/Resources "$qualification_bundle/Frameworks/Sparkle.framework/Resources"
+
+previous_app="$fixture_root/previous-app/CodexRadar.app"
+write_info_plist "$previous_app/Contents/Info.plist" 0.1.0 1 14.0 "$PUBLIC_KEY"
+/bin/mkdir -p "$previous_app/Contents/MacOS"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$previous_app/Contents/MacOS/CodexRadar"
+/bin/chmod 755 "$previous_app/Contents/MacOS/CodexRadar"
+previous_info_sha="$(/usr/bin/shasum -a 256 "$previous_app/Contents/Info.plist" | /usr/bin/awk '{print $1}')"
+
+qualification_python="$fixture_root/qualification-python"
+qualification_runner="$fixture_root/qualification-runner"
+qualification_python_log="$fixture_root/qualification-python.log"
+qualification_runner_arguments="$fixture_root/qualification-runner.arguments"
+cat >"$qualification_python" <<'PYTHON_WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'python\n' >>"$QUALIFY_TEST_PYTHON_LOG"
+exec /usr/bin/python3 "$@"
+PYTHON_WRAPPER
+cat >"$qualification_runner" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$@" >"$QUALIFY_TEST_RUNNER_ARGUMENTS"
+[[ "$#" -eq 9 ]]
+[[ "$1" == "$QUALIFY_TEST_SPARKLE_CLI" ]]
+[[ "$3" == --application ]]
+[[ "$4" == "$2" ]]
+[[ "$5" == --check-immediately ]]
+[[ "$6" == --feed-url ]]
+[[ "$7" =~ ^http://127\.0\.0\.1:[1-9][0-9]*/appcast\.xml$ ]]
+[[ "$8" == --interactive ]]
+[[ "$9" == --verbose ]]
+/usr/bin/curl --fail --silent "$7" >/dev/null
+
+case "${QUALIFY_TEST_RUNNER_MODE:-success}" in
+  success)
+    /bin/cp "$QUALIFY_TEST_CANDIDATE_INFO" "$2/Contents/Info.plist"
+    ;;
+  failure)
+    exit 17
+    ;;
+  interrupt)
+    /bin/kill -TERM "$PPID"
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+RUNNER
+/bin/chmod 755 "$qualification_python" "$qualification_runner"
+
+run_qualification() {
+  env \
+    QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
+    QUALIFY_SPARKLE_CLI="$qualification_bundle/bin/sparkle" \
+    QUALIFY_RUNNER="$qualification_runner" \
+    QUALIFY_VERSION_CONFIG="$candidate_dir/version.env" \
+    QUALIFY_UPDATE_CONFIG="$candidate_dir/update.env" \
+    QUALIFY_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+    QUALIFY_TEST_PYTHON_LOG="$qualification_python_log" \
+    QUALIFY_TEST_RUNNER_ARGUMENTS="$qualification_runner_arguments" \
+    QUALIFY_TEST_SPARKLE_CLI="$qualification_bundle/bin/sparkle" \
+    QUALIFY_TEST_CANDIDATE_INFO="$candidate_info" \
+    "$QUALIFY_SCRIPT" --bundle "$qualification_bundle" --previous-app "$previous_app"
+}
+
+: >"$qualification_python_log"
+run_qualification
+[[ -s "$qualification_runner_arguments" ]] || fail "qualification did not invoke runner"
+[[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
+  fail "qualification did not clean copied application"
+[[ "$previous_info_sha" == "$(/usr/bin/shasum -a 256 "$previous_app/Contents/Info.plist" | /usr/bin/awk '{print $1}')" ]] ||
+  fail "qualification changed original previous application"
+
+bad_manifest_bundle="$fixture_root/bad-manifest-qualification-bundle"
+/usr/bin/ditto "$qualification_bundle" "$bad_manifest_bundle"
+printf 'unexpected=true\n' >>"$bad_manifest_bundle/manifest"
+: >"$qualification_python_log"
+if env \
+  QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
+  QUALIFY_SPARKLE_CLI="$bad_manifest_bundle/bin/sparkle" \
+  QUALIFY_RUNNER="$qualification_runner" \
+  QUALIFY_VERSION_CONFIG="$candidate_dir/version.env" \
+  QUALIFY_UPDATE_CONFIG="$candidate_dir/update.env" \
+  QUALIFY_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+  QUALIFY_TEST_PYTHON_LOG="$qualification_python_log" \
+  QUALIFY_TEST_RUNNER_ARGUMENTS="$qualification_runner_arguments" \
+  QUALIFY_TEST_SPARKLE_CLI="$bad_manifest_bundle/bin/sparkle" \
+  QUALIFY_TEST_CANDIDATE_INFO="$candidate_info" \
+  "$QUALIFY_SCRIPT" --bundle "$bad_manifest_bundle" --previous-app "$previous_app"; then
+  fail "qualification accepted an invalid manifest"
+fi
+[[ ! -s "$qualification_python_log" ]] || fail "qualification started a server before manifest validation"
+
+/usr/bin/plutil -replace CFBundleShortVersionString -string 2.9.3 \
+  "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources/Info.plist"
+: >"$qualification_python_log"
+expect_failure "Sparkle CLI version must equal 2.9.4" run_qualification
+[[ ! -s "$qualification_python_log" ]] || fail "qualification started a server before CLI validation"
+/usr/bin/plutil -replace CFBundleShortVersionString -string 2.9.4 \
+  "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources/Info.plist"
+
+: >"$qualification_python_log"
+if QUALIFY_TEST_RUNNER_MODE=failure run_qualification; then
+  fail "qualification accepted a failed Sparkle command"
+fi
+[[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
+  fail "qualification did not clean copied application after runner failure"
+
+: >"$qualification_python_log"
+if QUALIFY_TEST_RUNNER_MODE=interrupt run_qualification; then
+  fail "qualification accepted an interrupt"
+fi
+[[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
+  fail "qualification did not clean copied application after interrupt"
 
 echo "update feed fixtures passed"
