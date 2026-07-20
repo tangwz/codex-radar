@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Install verified actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_url="https://github.com/rhysd/actionlint/releases/download/v1.7.12/"
+          case "$(uname -m)" in
+            arm64)
+              archive="actionlint_1.7.12_darwin_arm64.tar.gz"
+              archive_sha="aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
+              ;;
+            x86_64)
+              archive="actionlint_1.7.12_darwin_amd64.tar.gz"
+              archive_sha="5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644"
+              ;;
+            *)
+              echo "unsupported actionlint architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/actionlint"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive_path" "$base_url$archive"
+          printf '%s  %s\n' "$archive_sha" "$archive_path" | shasum -a 256 -c -
+          mkdir -p "$install_dir"
+          tar -xzf "$archive_path" -C "$install_dir"
+          "$install_dir/actionlint" -version
+
+      - name: Lint workflows
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/actionlint/actionlint" .github/workflows/*.yml
+
+      - name: Run validation suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test
+          bash Tests/ScriptTests/release_common_tests.sh
+          bash Tests/ScriptTests/package_verification_tests.sh
+          bash Tests/ScriptTests/update_feed_tests.sh
+          find script -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          ./script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false

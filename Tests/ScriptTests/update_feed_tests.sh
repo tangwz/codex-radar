@@ -7,6 +7,9 @@ VERIFY_SCRIPT="$ROOT_DIR/script/verify_update_artifacts.sh"
 QUALIFY_SCRIPT="$ROOT_DIR/script/qualify_update.sh"
 SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
+WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
+CI_WORKFLOW="$WORKFLOW_DIR/ci.yml"
+CODEOWNERS_FILE="$ROOT_DIR/.github/CODEOWNERS"
 
 [[ -x "$PREPARE_SCRIPT" ]] || {
   echo "prepare_appcast_inputs.sh does not exist" >&2
@@ -37,6 +40,140 @@ fail() {
   echo "$*" >&2
   exit 1
 }
+
+validate_workflow_policy() {
+  /usr/bin/python3 - "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" <<'PYTHON'
+import pathlib
+import re
+import sys
+
+workflow_dir = pathlib.Path(sys.argv[1])
+ci_path = pathlib.Path(sys.argv[2])
+codeowners_path = pathlib.Path(sys.argv[3])
+
+
+def reject(message: str) -> None:
+    raise SystemExit(message)
+
+
+if not ci_path.is_file():
+    reject("CI workflow does not exist")
+
+workflows = sorted(workflow_dir.glob("*.yml"))
+if not workflows:
+    reject("no workflows found")
+
+for workflow_path in workflows:
+    text = workflow_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    for line in lines:
+        match = re.match(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", line)
+        if not match:
+            continue
+        action = match.group(1).strip("'\"")
+        if action.startswith("./"):
+            continue
+        if not re.search(r"@[0-9a-fA-F]{40}$", action):
+            reject(f"{workflow_path.name} contains an unpinned action: {action}")
+
+    top_permissions = []
+    in_top_permissions = False
+    current_job = None
+    in_jobs = False
+    has_concurrency = False
+    has_cancellation = False
+    in_top_concurrency = False
+    for line in lines:
+        concurrency_match = re.match(r"^concurrency:\s*(.*)$", line)
+        if concurrency_match:
+            has_concurrency = True
+            in_top_concurrency = not concurrency_match.group(1).strip().startswith("#")
+            if concurrency_match.group(1).strip():
+                in_top_concurrency = False
+            continue
+        if in_top_concurrency:
+            if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+                in_top_concurrency = False
+            elif re.match(r"^\s+cancel-in-progress:\s*true\s*(?:#.*)?$", line):
+                has_cancellation = True
+
+        permissions_match = re.match(r"^permissions:\s*(.*)$", line)
+        if permissions_match:
+            permissions_value = permissions_match.group(1).split("#", 1)[0].strip()
+            if permissions_value and ("write" in permissions_value or permissions_value == "write-all"):
+                top_permissions.append(line)
+            in_top_permissions = not permissions_value
+            continue
+        if in_top_permissions:
+            if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+                in_top_permissions = False
+            elif re.match(r"^\s+contents:\s*write\s*(?:#.*)?$", line):
+                top_permissions.append(line)
+
+        if re.match(r"^jobs:\s*(?:#.*)?$", line):
+            in_jobs = True
+            current_job = None
+            continue
+        if in_jobs:
+            job_match = re.match(r"^  ([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$", line)
+            if job_match:
+                current_job = job_match.group(1)
+            elif line and not line[0].isspace() and not line.lstrip().startswith("#"):
+                in_jobs = False
+                current_job = None
+        if re.search(r"\$\{\{\s*secrets\.", line) and current_job != "sign-candidate":
+            reject(f"{workflow_path.name} references a secret outside sign-candidate")
+
+    if top_permissions:
+        reject(f"{workflow_path.name} grants global contents: write")
+    if not has_concurrency or not has_cancellation:
+        reject(f"{workflow_path.name} lacks cancellable concurrency")
+
+ci = ci_path.read_text(encoding="utf-8")
+required_ci_snippets = (
+    "permissions:\n  contents: read",
+    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "swift test",
+    "bash Tests/ScriptTests/release_common_tests.sh",
+    "bash Tests/ScriptTests/package_verification_tests.sh",
+    "bash Tests/ScriptTests/update_feed_tests.sh",
+    "find script -name '*.sh' -print0 | xargs -0 -n1 bash -n",
+    './script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false',
+    "https://github.com/rhysd/actionlint/releases/download/v1.7.12/",
+    "actionlint_1.7.12_darwin_arm64.tar.gz",
+    "actionlint_1.7.12_darwin_amd64.tar.gz",
+    "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f",
+    "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644",
+)
+for snippet in required_ci_snippets:
+    if snippet not in ci:
+        reject(f"ci.yml lacks required content: {snippet}")
+
+checksum_index = ci.find("shasum -a 256 -c -")
+extract_index = ci.find("tar -xzf")
+if checksum_index < 0 or extract_index < 0 or checksum_index > extract_index:
+    reject("ci.yml must verify actionlint before extraction")
+
+if not codeowners_path.is_file():
+    reject("CODEOWNERS does not exist")
+expected_owners = (
+    "/.github/workflows/ @tangwz",
+    "/script/ @tangwz",
+    "/config/update.env @tangwz",
+    "/appcast.xml @tangwz",
+)
+actual_owners = tuple(
+    line.strip()
+    for line in codeowners_path.read_text(encoding="utf-8").splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+)
+if actual_owners != expected_owners:
+    reject("CODEOWNERS does not protect update supply-chain files")
+PYTHON
+}
+
+validate_workflow_policy
 
 expect_failure() {
   local expected_message="$1"
