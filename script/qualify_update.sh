@@ -128,12 +128,14 @@ PYTHON
 }
 source_tree="$work/source-tree.manifest"; copied_tree="$work/copied-tree.manifest"; source_after="$work/source-after.manifest"
 tree_manifest "$previous_app" "$source_tree"
+source_identity="$(/usr/bin/stat -f '%d:%i' "$previous_app")"
 previous_info="$previous_app/Contents/Info.plist"; real_file "$previous_info" "previous application Info.plist"
 assert_plist "$previous_info" CFBundleIdentifier com.terence.codex-radar "previous application bundle identifier does not match"
 assert_plist "$previous_info" CFBundleShortVersionString "$previous_version" "previous application version is not the immediately previous Production Update"
 assert_plist "$previous_info" CFBundleVersion "$previous_build" "previous application build is not the immediately previous Production Update"
 
 copied_app="$work/CodexRadar.app"; /usr/bin/ditto "$previous_app" "$copied_app"
+[[ "$source_identity" == "$(/usr/bin/stat -f '%d:%i' "$previous_app")" ]] || die "previous application directory changed while being copied"
 tree_manifest "$previous_app" "$source_after"; /usr/bin/cmp -s "$source_tree" "$source_after" || die "previous application changed while being copied"
 tree_manifest "$copied_app" "$copied_tree"; /usr/bin/cmp -s "$source_tree" "$copied_tree" || die "copied previous application differs from source"
 copied_info="$copied_app/Contents/Info.plist"; real_file "$copied_info" "copied previous application Info.plist"

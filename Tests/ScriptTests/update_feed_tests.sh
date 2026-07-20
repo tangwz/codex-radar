@@ -216,12 +216,13 @@ make_feed() {
   local output_path="$1" version="$2" build="$3" minimum_system="$4"
   local enclosure_url="$5" enclosure_length="$6" archive_signature="$7"
   local extra_item_xml="${8:-}" second_entry="${9:-false}"
+  local channel_title="${10:-CodexRadar}"
   local content_path="$output_path.content" feed_signature content_length
 
   {
     printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>'
     printf '<rss xmlns:sparkle="%s" version="2.0">\n' "$SPARKLE_NAMESPACE"
-    printf '%s\n' '<channel><title>CodexRadar</title><item>'
+    printf '<channel><title>%s</title><item>\n' "$channel_title"
     printf '<title>%s</title>\n' "$version"
     printf '<sparkle:version>%s</sparkle:version>\n' "$build"
     printf '<sparkle:shortVersionString>%s</sparkle:shortVersionString>\n' "$version"
@@ -619,7 +620,7 @@ qualification_bundle="$fixture_root/qualification-bundle"
 /usr/bin/ditto "$inputs_dir" "$qualification_bundle"
 /bin/mkdir -p "$qualification_bundle/bin" \
   "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources"
-printf '#!/usr/bin/env bash\nexit 0\n' >"$qualification_bundle/bin/sparkle"
+printf '#!/usr/bin/env bash\n[[ -z "${QUALIFY_TEST_CLI_LOG:-}" ]] || printf "cli\\n" >>"$QUALIFY_TEST_CLI_LOG"\nexit 0\n' >"$qualification_bundle/bin/sparkle"
 /bin/chmod 755 "$qualification_bundle/bin/sparkle"
 write_info_plist \
   "$qualification_bundle/Frameworks/Sparkle.framework/Versions/A/Resources/Info.plist" \
@@ -632,16 +633,53 @@ write_info_plist "$previous_app/Contents/Info.plist" 0.1.0 1 14.0 "$PUBLIC_KEY"
 /bin/mkdir -p "$previous_app/Contents/MacOS"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$previous_app/Contents/MacOS/CodexRadar"
 /bin/chmod 755 "$previous_app/Contents/MacOS/CodexRadar"
-previous_info_sha="$(/usr/bin/shasum -a 256 "$previous_app/Contents/Info.plist" | /usr/bin/awk '{print $1}')"
+
+app_tree_manifest() {
+  /usr/bin/python3 - "$1" <<'PYTHON'
+import hashlib, os, stat, sys
+
+root = os.path.realpath(sys.argv[1])
+records = []
+for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    names = sorted(dirs + files, key=os.fsencode)
+    dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
+    for name in names:
+        path = os.path.join(base, name)
+        rel = os.path.relpath(path, root)
+        mode = stat.S_IMODE(os.lstat(path).st_mode)
+        if os.path.islink(path):
+            records.append((rel, 'L', str(mode), os.readlink(path)))
+        elif os.path.isfile(path):
+            digest = hashlib.sha256()
+            with open(path, 'rb') as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            records.append((rel, 'F', str(mode), digest.hexdigest()))
+        elif os.path.isdir(path):
+            records.append((rel, 'D', str(mode), ''))
+        else:
+            raise SystemExit('unsupported file type: ' + rel)
+print(hashlib.sha256(repr(sorted(records)).encode()).hexdigest())
+PYTHON
+}
+
+previous_tree_manifest="$(app_tree_manifest "$previous_app")"
 
 qualification_python="$fixture_root/qualification-python"
 qualification_runner="$fixture_root/qualification-runner"
 qualification_python_log="$fixture_root/qualification-python.log"
 qualification_runner_arguments="$fixture_root/qualification-runner.arguments"
+qualification_cli_log="$fixture_root/qualification-cli.log"
+qualification_server_pid="$fixture_root/qualification-server.pid"
+qualification_harness_pid="$fixture_root/qualification-harness.pid"
 cat >"$qualification_python" <<'PYTHON_WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'python\n' >>"$QUALIFY_TEST_PYTHON_LOG"
+if [[ "${QUALIFY_TEST_PYTHON_MODE:-}" == server-exits && "$#" -eq 4 && "$1" == - && "$4" == *.port ]]; then
+  printf '49152\n' >"$4"
+  exit 0
+fi
 exec /usr/bin/python3 "$@"
 PYTHON_WRAPPER
 cat >"$qualification_runner" <<'RUNNER'
@@ -670,11 +708,22 @@ case "${QUALIFY_TEST_RUNNER_MODE:-success}" in
     /usr/bin/curl --fail --silent "$7" | /usr/bin/cmp -s - "$QUALIFY_TEST_EXPECTED_FEED"
     /bin/cp "$QUALIFY_TEST_CANDIDATE_INFO" "$2/Contents/Info.plist"
     ;;
+  install-info)
+    /bin/cp "$QUALIFY_TEST_INSTALLED_INFO" "$2/Contents/Info.plist"
+    ;;
+  wait-for-signal)
+    : >"$QUALIFY_TEST_RUNNER_READY"
+    while [[ ! -e "$QUALIFY_TEST_RUNNER_RELEASE" ]]; do /bin/sleep .05; done
+    ;;
   failure)
     exit 17
     ;;
-  interrupt)
-    /bin/kill -TERM "$PPID"
+  signal-int)
+    /bin/kill -INT "$(<"$QUALIFY_TEST_HARNESS_PID_FILE")"
+    exit 0
+    ;;
+  signal-term)
+    /bin/kill -TERM "$(<"$QUALIFY_TEST_HARNESS_PID_FILE")"
     exit 0
     ;;
   *)
@@ -682,7 +731,32 @@ case "${QUALIFY_TEST_RUNNER_MODE:-success}" in
     ;;
 esac
 RUNNER
-/bin/chmod 755 "$qualification_python" "$qualification_runner"
+qualification_ditto="$fixture_root/qualification-ditto"
+cat >"$qualification_ditto" <<'DITTO'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${QUALIFY_TEST_DITTO_MODE:-copy}" in
+  copy)
+    ;;
+  mutate)
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 99' "$1/Contents/Info.plist"
+    ;;
+  replace)
+    replacement="$1.replacement"
+    original="$1.original"
+    /usr/bin/ditto "$1" "$replacement"
+    /bin/mv "$1" "$original"
+    /bin/mv "$replacement" "$1"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+
+exec /usr/bin/ditto "$@"
+DITTO
+/bin/chmod 755 "$qualification_python" "$qualification_runner" "$qualification_ditto"
 
 qualification_fetch="$fixture_root/qualification-fetch"
 qualification_harness="$fixture_root/qualify-update-harness.sh"
@@ -702,9 +776,27 @@ qualification_tools_sha="$(/usr/bin/shasum -a 256 "$qualification_tools_archive"
   -e "s/^EXPECTED_TOOLS_SHA256=.*/EXPECTED_TOOLS_SHA256=\"$qualification_tools_sha\"/" \
   -e 's/^TEST_HARNESS=false/TEST_HARNESS=true/' \
   "$QUALIFY_SCRIPT" >"$qualification_harness"
+/usr/bin/sed -i '' \
+  's@copied_app="$work/CodexRadar.app"; /usr/bin/ditto "$previous_app" "$copied_app"@copied_app="$work/CodexRadar.app"; "${QUALIFY_TEST_DITTO:-/usr/bin/ditto}" "$previous_app" "$copied_app"@' \
+  "$qualification_harness"
+/usr/bin/python3 - "$qualification_harness" <<'PYTHON'
+import pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+source = path.read_text()
+needle = 'TEST_HARNESS=true\n'
+replacement = needle + '[[ -z "${QUALIFY_TEST_HARNESS_PID_FILE:-}" ]] || printf \'%s\\n\' "$$" >"$QUALIFY_TEST_HARNESS_PID_FILE"\n'
+if source.count(needle) != 1:
+    raise SystemExit('fixture harness marker is missing or ambiguous')
+path.write_text(source.replace(needle, replacement))
+PYTHON
 /bin/chmod 755 "$qualification_harness"
 
 run_qualification() {
+  local bundle_path="${1:-$qualification_bundle}"
+  local app_path="${2:-$previous_app}"
+  local current_feed="${3:-$previous_dir/appcast.xml}"
+
   env \
     QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
     QUALIFY_TEST_CLI="$qualification_bundle/bin/sparkle" \
@@ -718,20 +810,179 @@ run_qualification() {
     QUALIFY_TEST_RUNNER_ARGUMENTS="$qualification_runner_arguments" \
     QUALIFY_TEST_BUNDLE_CLI="$qualification_bundle/bin/sparkle" \
     QUALIFY_TEST_CANDIDATE_INFO="$candidate_info" \
-    QUALIFY_TEST_CURRENT_FEED="$previous_dir/appcast.xml" \
-    QUALIFY_TEST_SOURCE_BUNDLE="$qualification_bundle" \
-    QUALIFY_TEST_EXPECTED_FEED="$qualification_bundle/qualification/appcast.xml" \
-    "$qualification_harness" --bundle "$qualification_bundle" --previous-app "$previous_app" \
+    QUALIFY_TEST_CURRENT_FEED="$current_feed" \
+    QUALIFY_TEST_SOURCE_BUNDLE="$bundle_path" \
+    QUALIFY_TEST_EXPECTED_FEED="$qualification_expected_feed" \
+    QUALIFY_TEST_DITTO="$qualification_ditto" \
+    QUALIFY_TEST_SERVER_PID_FILE="$qualification_server_pid" \
+    QUALIFY_TEST_HARNESS_PID_FILE="$qualification_harness_pid" \
+    QUALIFY_TEST_DITTO_MODE="${QUALIFY_TEST_DITTO_MODE:-copy}" \
+    QUALIFY_TEST_PYTHON_MODE="${QUALIFY_TEST_PYTHON_MODE:-}" \
+    QUALIFY_TEST_RUNNER_MODE="${QUALIFY_TEST_RUNNER_MODE:-success}" \
+    QUALIFY_TEST_INSTALLED_INFO="${QUALIFY_TEST_INSTALLED_INFO:-}" \
+    QUALIFY_TEST_RUNNER_READY="${QUALIFY_TEST_RUNNER_READY:-}" \
+    QUALIFY_TEST_RUNNER_RELEASE="${QUALIFY_TEST_RUNNER_RELEASE:-}" \
+    "$qualification_harness" --bundle "$bundle_path" --previous-app "$app_path" \
     --tools-archive "$qualification_tools_archive"
 }
+
+run_qualification_without_runner() {
+  local bundle_path="$1" app_path="$2" current_feed="$3"
+
+  env \
+    QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
+    QUALIFY_TEST_CLI="$qualification_bundle/bin/sparkle" \
+    QUALIFY_RUNNER="" \
+    QUALIFY_FETCH_EXECUTABLE="$qualification_fetch" \
+    QUALIFY_VERIFY_SCRIPT="$VERIFY_SCRIPT" \
+    QUALIFY_VERSION_CONFIG="$candidate_dir/version.env" \
+    QUALIFY_UPDATE_CONFIG="$candidate_dir/update.env" \
+    QUALIFY_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+    QUALIFY_TEST_PYTHON_LOG="$qualification_python_log" \
+    QUALIFY_TEST_CLI_LOG="$qualification_cli_log" \
+    QUALIFY_TEST_CURRENT_FEED="$current_feed" \
+    QUALIFY_TEST_DITTO="$qualification_ditto" \
+    QUALIFY_TEST_SERVER_PID_FILE="$qualification_server_pid" \
+    QUALIFY_TEST_HARNESS_PID_FILE="$qualification_harness_pid" \
+    QUALIFY_TEST_DITTO_MODE="${QUALIFY_TEST_DITTO_MODE:-copy}" \
+    QUALIFY_TEST_PYTHON_MODE="${QUALIFY_TEST_PYTHON_MODE:-}" \
+    "$qualification_harness" --bundle "$bundle_path" --previous-app "$app_path" \
+    --tools-archive "$qualification_tools_archive"
+}
+
+assert_preflight_did_not_run_update() {
+  [[ ! -s "$qualification_runner_arguments" ]] || fail "qualification invoked runner before rejecting input"
+  [[ ! -s "$qualification_cli_log" ]] || fail "qualification invoked CLI before rejecting input"
+}
+
+expect_preflight_failure() {
+  local expected_message="$1"
+  shift
+  : >"$qualification_runner_arguments"
+  : >"$qualification_cli_log"
+  : >"$qualification_python_log"
+  expect_failure "$expected_message" run_qualification_without_runner "$@"
+  assert_preflight_did_not_run_update
+}
+
+expect_preflight_rejection() {
+  local bundle_path="$1" app_path="$2" current_feed="$3"
+  local output_path="$fixture_root/preflight-output"
+
+  : >"$qualification_runner_arguments"
+  : >"$qualification_cli_log"
+  : >"$qualification_python_log"
+  if run_qualification_without_runner "$bundle_path" "$app_path" "$current_feed" >"$output_path" 2>&1; then
+    /bin/cat "$output_path" >&2
+    fail "qualification accepted invalid preflight input"
+  fi
+  assert_preflight_did_not_run_update
+}
+
+expect_installed_rejection() {
+  local key="$1" installed_info="$2"
+  local output_path="$fixture_root/installed-output"
+
+  : >"$qualification_runner_arguments"
+  if QUALIFY_TEST_RUNNER_MODE=install-info QUALIFY_TEST_INSTALLED_INFO="$installed_info" \
+    run_qualification >"$output_path" 2>&1; then
+    /bin/cat "$output_path" >&2
+    fail "qualification accepted an installed application with invalid $key"
+  fi
+  /usr/bin/grep -F "installed application $key does not match qualification bundle" "$output_path" >/dev/null || {
+    /bin/cat "$output_path" >&2
+    fail "qualification did not reject invalid installed $key"
+  }
+  [[ -s "$qualification_runner_arguments" ]] || fail "qualification did not run the fixture installer"
+}
+
+qualification_expected_feed="$fixture_root/expected-qualification-appcast.xml"
+/bin/cp "$qualification_bundle/qualification/appcast.xml" "$qualification_expected_feed"
 
 : >"$qualification_python_log"
 run_qualification
 [[ -s "$qualification_runner_arguments" ]] || fail "qualification did not invoke runner"
 [[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
   fail "qualification did not clean copied application"
-[[ "$previous_info_sha" == "$(/usr/bin/shasum -a 256 "$previous_app/Contents/Info.plist" | /usr/bin/awk '{print $1}')" ]] ||
+[[ "$previous_tree_manifest" == "$(app_tree_manifest "$previous_app")" ]] ||
   fail "qualification changed original previous application"
+
+replaced_source_app="$fixture_root/replaced-source/CodexRadar.app"
+/usr/bin/ditto "$previous_app" "$replaced_source_app"
+replaced_source_tree="$(app_tree_manifest "$replaced_source_app")"
+QUALIFY_TEST_DITTO_MODE=replace expect_preflight_failure "previous application directory changed while being copied" \
+  "$qualification_bundle" "$replaced_source_app" "$previous_dir/appcast.xml"
+[[ "$replaced_source_tree" == "$(app_tree_manifest "$replaced_source_app")" ]] ||
+  fail "source replacement did not preserve the original whole-tree fixture"
+
+mutated_source_app="$fixture_root/mutated-source/CodexRadar.app"
+/usr/bin/ditto "$previous_app" "$mutated_source_app"
+mutated_source_tree="$(app_tree_manifest "$mutated_source_app")"
+QUALIFY_TEST_DITTO_MODE=mutate expect_preflight_failure "previous application changed while being copied" \
+  "$qualification_bundle" "$mutated_source_app" "$previous_dir/appcast.xml"
+[[ "$mutated_source_tree" != "$(app_tree_manifest "$mutated_source_app")" ]] ||
+  fail "copy mutation fixture did not alter the source application"
+
+current_feed_mismatch="$fixture_root/current-production-feed-mismatch.xml"
+make_feed "$current_feed_mismatch" 0.1.0 1 14.0 "$previous_url" 123 "$archive_signature" \
+  '' false CodexRadarCurrent
+expect_preflight_failure "bundled previous Production Feed is stale" \
+  "$qualification_bundle" "$previous_app" "$current_feed_mismatch"
+
+escaping_contents_app="$fixture_root/escaping-contents/CodexRadar.app"
+escaping_target="$fixture_root/escaping-target"
+/usr/bin/ditto "$previous_app" "$escaping_contents_app"
+/bin/mkdir -p "$escaping_target"
+/bin/mv "$escaping_contents_app/Contents" "$escaping_contents_app/RealContents"
+/bin/ln -s "$escaping_target" "$escaping_contents_app/Contents"
+expect_preflight_failure "application contains an unresolved or escaping symlink: Contents" \
+  "$qualification_bundle" "$escaping_contents_app" "$previous_dir/appcast.xml"
+
+internal_symlink_app="$fixture_root/internal-symlink/CodexRadar.app"
+/usr/bin/ditto "$previous_app" "$internal_symlink_app"
+/bin/ln -s MacOS "$internal_symlink_app/Contents/InternalExecutableDirectory"
+internal_symlink_tree="$(app_tree_manifest "$internal_symlink_app")"
+run_qualification "$qualification_bundle" "$internal_symlink_app" "$previous_dir/appcast.xml"
+[[ "$internal_symlink_tree" == "$(app_tree_manifest "$internal_symlink_app")" ]] ||
+  fail "qualification changed the internal-symlink source application"
+
+snapshot_mutation_bundle="$fixture_root/snapshot-mutation-bundle"
+/usr/bin/ditto "$qualification_bundle" "$snapshot_mutation_bundle"
+QUALIFY_TEST_RUNNER_MODE=mutate-source run_qualification \
+  "$snapshot_mutation_bundle" "$previous_app" "$previous_dir/appcast.xml"
+[[ ! -s "$qualification_runner_arguments" ]] && fail "qualification did not run the snapshot mutation fixture"
+/usr/bin/cmp -s "$snapshot_mutation_bundle/qualification/appcast.xml" "$qualification_expected_feed" &&
+  fail "source bundle mutation did not change the source feed"
+
+QUALIFY_TEST_PYTHON_MODE=server-exits expect_preflight_failure \
+  "qualification HTTP server exited after publishing its port" \
+  "$qualification_bundle" "$previous_app" "$previous_dir/appcast.xml"
+
+for key in CFBundleShortVersionString CFBundleVersion SUFeedURL SUPublicEDKey; do
+  invalid_installed_info="$fixture_root/invalid-installed-$key.plist"
+  /bin/cp "$candidate_info" "$invalid_installed_info"
+  /usr/libexec/PlistBuddy -c "Set :$key invalid" "$invalid_installed_info"
+  expect_installed_rejection "$key" "$invalid_installed_info"
+done
+for key in SUEnableAutomaticChecks SUAutomaticallyUpdate SUVerifyUpdateBeforeExtraction SURequireSignedFeed CodexRadarUpdatesEnabled; do
+  invalid_installed_info="$fixture_root/invalid-installed-$key.plist"
+  /bin/cp "$candidate_info" "$invalid_installed_info"
+  /usr/libexec/PlistBuddy -c "Set :$key false" "$invalid_installed_info"
+  expect_installed_rejection "$key" "$invalid_installed_info"
+done
+
+for key in CFBundleShortVersionString CFBundleVersion SUFeedURL SUPublicEDKey; do
+  invalid_bundle="$fixture_root/invalid-bundle-$key"
+  /usr/bin/ditto "$qualification_bundle" "$invalid_bundle"
+  /usr/libexec/PlistBuddy -c "Set :$key invalid" "$invalid_bundle/Info.plist"
+  expect_preflight_rejection "$invalid_bundle" "$previous_app" "$previous_dir/appcast.xml"
+done
+for key in SUEnableAutomaticChecks SUAutomaticallyUpdate SUVerifyUpdateBeforeExtraction SURequireSignedFeed CodexRadarUpdatesEnabled; do
+  invalid_bundle="$fixture_root/invalid-bundle-$key"
+  /usr/bin/ditto "$qualification_bundle" "$invalid_bundle"
+  /usr/libexec/PlistBuddy -c "Set :$key false" "$invalid_bundle/Info.plist"
+  expect_preflight_rejection "$invalid_bundle" "$previous_app" "$previous_dir/appcast.xml"
+done
 
 bad_manifest_bundle="$fixture_root/bad-manifest-qualification-bundle"
 /usr/bin/ditto "$qualification_bundle" "$bad_manifest_bundle"
@@ -771,11 +1022,21 @@ fi
 [[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
   fail "qualification did not clean copied application after runner failure"
 
-: >"$qualification_python_log"
-if QUALIFY_TEST_RUNNER_MODE=interrupt run_qualification; then
-  fail "qualification accepted an interrupt"
-fi
-[[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
-  fail "qualification did not clean copied application after interrupt"
+for signal_mode in signal-int signal-term; do
+  : >"$qualification_server_pid"
+  : >"$qualification_python_log"
+  if QUALIFY_TEST_RUNNER_MODE="$signal_mode" run_qualification; then
+    fail "qualification accepted $signal_mode"
+  else
+    signal_status="$?"
+  fi
+  [[ "$signal_status" == "$([[ "$signal_mode" == signal-int ]] && echo 130 || echo 143)" ]] ||
+    fail "qualification returned $signal_status after $signal_mode"
+  [[ -s "$qualification_server_pid" ]] || fail "qualification did not record server PID for $signal_mode"
+  server_pid="$(<"$qualification_server_pid")"
+  /bin/kill -0 "$server_pid" 2>/dev/null && fail "qualification left server $server_pid alive after $signal_mode"
+  [[ ! -e "$(/usr/bin/dirname "$(/usr/bin/sed -n '2p' "$qualification_runner_arguments")")" ]] ||
+    fail "qualification did not clean copied application after $signal_mode"
+done
 
 echo "update feed fixtures passed"
