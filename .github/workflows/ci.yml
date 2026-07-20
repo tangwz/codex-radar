@@ -52,7 +52,8 @@ jobs:
       - name: Lint workflows
         shell: bash
         run: |
-          "$RUNNER_TEMP/actionlint/actionlint" .github/workflows/*.yml
+          find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
+            xargs -0 "$RUNNER_TEMP/actionlint/actionlint"
 
       - name: Run validation suite
         shell: bash

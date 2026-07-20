@@ -42,138 +42,151 @@ fail() {
 }
 
 validate_workflow_policy() {
-  /usr/bin/python3 - "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" <<'PYTHON'
-import pathlib
-import re
-import sys
+  local workflow_dir="${1:-$WORKFLOW_DIR}"
+  local ci_workflow="${2:-$CI_WORKFLOW}"
+  local codeowners_file="${3:-$CODEOWNERS_FILE}"
 
-workflow_dir = pathlib.Path(sys.argv[1])
-ci_path = pathlib.Path(sys.argv[2])
-codeowners_path = pathlib.Path(sys.argv[3])
+  /usr/bin/ruby - "$workflow_dir" "$ci_workflow" "$codeowners_file" <<'RUBY'
+require "yaml"
 
+workflow_dir, ci_path, codeowners_path = ARGV
 
-def reject(message: str) -> None:
-    raise SystemExit(message)
+def reject(message)
+  warn(message)
+  exit(1)
+end
 
+def fetch_key(mapping, name)
+  return nil unless mapping.is_a?(Hash)
 
-if not ci_path.is_file():
-    reject("CI workflow does not exist")
+  pair = mapping.find { |key, _value| key.to_s == name }
+  pair&.last
+end
 
-workflows = sorted(workflow_dir.glob("*.yml"))
-if not workflows:
-    reject("no workflows found")
+def each_mapping(value, &block)
+  case value
+  when Hash
+    yield(value)
+    value.each_value { |child| each_mapping(child, &block) }
+  when Array
+    value.each { |child| each_mapping(child, &block) }
+  end
+end
 
-for workflow_path in workflows:
-    text = workflow_path.read_text(encoding="utf-8")
-    lines = text.splitlines()
+def secret_reference?(value)
+  case value
+  when Hash
+    value.any? do |key, child|
+      (key.to_s == "secrets" && child.to_s.strip == "inherit") || secret_reference?(child)
+    end
+  when Array
+    value.any? { |child| secret_reference?(child) }
+  when String
+    value.match?(/\$\{\{.*?\bsecrets\b.*?\}\}/m)
+  else
+    false
+  end
+end
 
-    for line in lines:
-        match = re.match(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", line)
-        if not match:
-            continue
-        action = match.group(1).strip("'\"")
-        if action.startswith("./"):
-            continue
-        if not re.search(r"@[0-9a-fA-F]{40}$", action):
-            reject(f"{workflow_path.name} contains an unpinned action: {action}")
+unless File.file?(ci_path)
+  reject("CI workflow does not exist")
+end
 
-    top_permissions = []
-    in_top_permissions = False
-    current_job = None
-    in_jobs = False
-    has_concurrency = False
-    has_cancellation = False
-    in_top_concurrency = False
-    for line in lines:
-        concurrency_match = re.match(r"^concurrency:\s*(.*)$", line)
-        if concurrency_match:
-            has_concurrency = True
-            in_top_concurrency = not concurrency_match.group(1).strip().startswith("#")
-            if concurrency_match.group(1).strip():
-                in_top_concurrency = False
-            continue
-        if in_top_concurrency:
-            if line and not line[0].isspace() and not line.lstrip().startswith("#"):
-                in_top_concurrency = False
-            elif re.match(r"^\s+cancel-in-progress:\s*true\s*(?:#.*)?$", line):
-                has_cancellation = True
+workflows = Dir.glob(File.join(workflow_dir, "*.{yml,yaml}"), File::FNM_EXTGLOB).sort
+reject("no workflows found") if workflows.empty?
 
-        permissions_match = re.match(r"^permissions:\s*(.*)$", line)
-        if permissions_match:
-            permissions_value = permissions_match.group(1).split("#", 1)[0].strip()
-            if permissions_value and ("write" in permissions_value or permissions_value == "write-all"):
-                top_permissions.append(line)
-            in_top_permissions = not permissions_value
-            continue
-        if in_top_permissions:
-            if line and not line[0].isspace() and not line.lstrip().startswith("#"):
-                in_top_permissions = False
-            elif re.match(r"^\s+contents:\s*write\s*(?:#.*)?$", line):
-                top_permissions.append(line)
+workflows.each do |workflow_path|
+  begin
+    document = YAML.safe_load(
+      File.read(workflow_path, encoding: "UTF-8"),
+      permitted_classes: [],
+      permitted_symbols: [],
+      aliases: true,
+      filename: workflow_path
+    ) || {}
+  rescue Psych::Exception => error
+    reject("#{File.basename(workflow_path)} is invalid YAML: #{error.message}")
+  end
+  reject("#{File.basename(workflow_path)} must contain a YAML mapping") unless document.is_a?(Hash)
 
-        if re.match(r"^jobs:\s*(?:#.*)?$", line):
-            in_jobs = True
-            current_job = None
-            continue
-        if in_jobs:
-            job_match = re.match(r"^  ([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$", line)
-            if job_match:
-                current_job = job_match.group(1)
-            elif line and not line[0].isspace() and not line.lstrip().startswith("#"):
-                in_jobs = False
-                current_job = None
-        if re.search(r"\$\{\{\s*secrets\.", line) and current_job != "sign-candidate":
-            reject(f"{workflow_path.name} references a secret outside sign-candidate")
+  each_mapping(document) do |mapping|
+    mapping.each do |key, value|
+      next unless key.to_s == "uses"
 
-    if top_permissions:
-        reject(f"{workflow_path.name} grants global contents: write")
-    if not has_concurrency or not has_cancellation:
-        reject(f"{workflow_path.name} lacks cancellable concurrency")
+      action = value.to_s.strip
+      next if action.start_with?("./")
+      reject("#{File.basename(workflow_path)} contains an unpinned action: #{action}") unless action.match?(/@[0-9a-fA-F]{40}\z/)
+    end
+  end
 
-ci = ci_path.read_text(encoding="utf-8")
-required_ci_snippets = (
-    "permissions:\n  contents: read",
-    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-    "swift test",
-    "bash Tests/ScriptTests/release_common_tests.sh",
-    "bash Tests/ScriptTests/package_verification_tests.sh",
-    "bash Tests/ScriptTests/update_feed_tests.sh",
-    "find script -name '*.sh' -print0 | xargs -0 -n1 bash -n",
-    './script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false',
-    "https://github.com/rhysd/actionlint/releases/download/v1.7.12/",
-    "actionlint_1.7.12_darwin_arm64.tar.gz",
-    "actionlint_1.7.12_darwin_amd64.tar.gz",
-    "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f",
-    "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644",
-)
-for snippet in required_ci_snippets:
-    if snippet not in ci:
-        reject(f"ci.yml lacks required content: {snippet}")
+  permissions = fetch_key(document, "permissions")
+  write_all = permissions.is_a?(String) && permissions.strip == "write-all"
+  contents = fetch_key(permissions, "contents")
+  contents_write = contents.is_a?(String) && contents.strip == "write"
+  reject("#{File.basename(workflow_path)} grants global contents: write") if write_all || contents_write
 
-checksum_index = ci.find("shasum -a 256 -c -")
-extract_index = ci.find("tar -xzf")
-if checksum_index < 0 or extract_index < 0 or checksum_index > extract_index:
-    reject("ci.yml must verify actionlint before extraction")
+  concurrency = fetch_key(document, "concurrency")
+  cancellation = fetch_key(concurrency, "cancel-in-progress")
+  group = fetch_key(concurrency, "group")
+  unless cancellation == true && !group.to_s.strip.empty?
+    reject("#{File.basename(workflow_path)} lacks cancellable concurrency")
+  end
 
-if not codeowners_path.is_file():
-    reject("CODEOWNERS does not exist")
-expected_owners = (
-    "/.github/workflows/ @tangwz",
-    "/script/ @tangwz",
-    "/config/update.env @tangwz",
-    "/appcast.xml @tangwz",
-)
-actual_owners = tuple(
-    line.strip()
-    for line in codeowners_path.read_text(encoding="utf-8").splitlines()
-    if line.strip() and not line.lstrip().startswith("#")
-)
-if actual_owners != expected_owners:
-    reject("CODEOWNERS does not protect update supply-chain files")
-PYTHON
+  top_level = document.reject { |key, _value| key.to_s == "jobs" }
+  if secret_reference?(top_level)
+    reject("#{File.basename(workflow_path)} references a secret outside sign-candidate")
+  end
+  jobs = fetch_key(document, "jobs")
+  if jobs.is_a?(Hash)
+    jobs.each do |job_name, job|
+      next if job_name.to_s == "sign-candidate"
+      if secret_reference?(job)
+        reject("#{File.basename(workflow_path)} references a secret outside sign-candidate")
+      end
+    end
+  end
+end
+
+ci = File.read(ci_path, encoding: "UTF-8")
+required_ci_snippets = [
+  "permissions:\n  contents: read",
+  "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "swift test",
+  "bash Tests/ScriptTests/release_common_tests.sh",
+  "bash Tests/ScriptTests/package_verification_tests.sh",
+  "bash Tests/ScriptTests/update_feed_tests.sh",
+  "find script -name '*.sh' -print0 | xargs -0 -n1 bash -n",
+  "find .github/workflows -type f \\( -name '*.yml' -o -name '*.yaml' \\) -print0",
+  './script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false',
+  "https://github.com/rhysd/actionlint/releases/download/v1.7.12/",
+  "actionlint_1.7.12_darwin_arm64.tar.gz",
+  "actionlint_1.7.12_darwin_amd64.tar.gz",
+  "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f",
+  "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644"
+]
+required_ci_snippets.each do |snippet|
+  reject("ci.yml lacks required content: #{snippet}") unless ci.include?(snippet)
+end
+
+checksum_index = ci.index("shasum -a 256 -c -")
+extract_index = ci.index("tar -xzf")
+if checksum_index.nil? || extract_index.nil? || checksum_index > extract_index
+  reject("ci.yml must verify actionlint before extraction")
+end
+
+reject("CODEOWNERS does not exist") unless File.file?(codeowners_path)
+expected_owners = [
+  "/.github/workflows/ @tangwz",
+  "/script/ @tangwz",
+  "/config/update.env @tangwz",
+  "/appcast.xml @tangwz"
+]
+actual_owners = File.readlines(codeowners_path, chomp: true, encoding: "UTF-8")
+  .map(&:strip)
+  .reject { |line| line.empty? || line.start_with?("#") }
+reject("CODEOWNERS does not protect update supply-chain files") unless actual_owners == expected_owners
+RUBY
 }
-
-validate_workflow_policy
 
 expect_failure() {
   local expected_message="$1"
@@ -188,6 +201,61 @@ expect_failure() {
     fail "fixture did not report: $expected_message"
   }
 }
+
+validate_workflow_policy
+
+yaml_policy_dir="$fixture_root/workflow-policy-yaml"
+/bin/mkdir -p "$yaml_policy_dir/workflows"
+/bin/cp "$CI_WORKFLOW" "$yaml_policy_dir/workflows/ci.yml"
+/bin/cp "$CODEOWNERS_FILE" "$yaml_policy_dir/CODEOWNERS"
+{
+  printf '%s\n' 'name: Unpinned YAML fixture'
+  printf '%s\n' 'on: push'
+  printf '%s\n' 'permissions: { contents: read }'
+  printf '%s\n' 'concurrency:' '  group: fixture' '  cancel-in-progress: true'
+  printf '%s\n' 'jobs:' '  validate:' '    runs-on: macos-15' '    steps:'
+  printf '%s\n' '      - uses: actions/checkout@v4'
+} >"$yaml_policy_dir/workflows/unpinned.yaml"
+expect_failure "unpinned.yaml contains an unpinned action" validate_workflow_policy \
+  "$yaml_policy_dir/workflows" "$yaml_policy_dir/workflows/ci.yml" "$yaml_policy_dir/CODEOWNERS"
+
+quoted_permission_dir="$fixture_root/workflow-policy-quoted-permission"
+/bin/mkdir -p "$quoted_permission_dir/workflows"
+/bin/cp "$CI_WORKFLOW" "$quoted_permission_dir/workflows/ci.yml"
+/bin/cp "$CODEOWNERS_FILE" "$quoted_permission_dir/CODEOWNERS"
+{
+  printf '%s\n' 'name: Quoted permission fixture' 'on: push'
+  printf '%s\n' 'permissions:' '  contents: "write"'
+  printf '%s\n' 'concurrency:' '  group: fixture' '  cancel-in-progress: true'
+  printf '%s\n' 'jobs: {}'
+} >"$quoted_permission_dir/workflows/quoted-write.yml"
+expect_failure "quoted-write.yml grants global contents: write" validate_workflow_policy \
+  "$quoted_permission_dir/workflows" "$quoted_permission_dir/workflows/ci.yml" "$quoted_permission_dir/CODEOWNERS"
+
+bracket_secret_dir="$fixture_root/workflow-policy-bracket-secret"
+/bin/mkdir -p "$bracket_secret_dir/workflows"
+/bin/cp "$CI_WORKFLOW" "$bracket_secret_dir/workflows/ci.yml"
+/bin/cp "$CODEOWNERS_FILE" "$bracket_secret_dir/CODEOWNERS"
+{
+  printf '%s\n' 'name: Bracket secret fixture' 'on: push' 'permissions: {}'
+  printf '%s\n' 'concurrency:' '  group: fixture' '  cancel-in-progress: true'
+  printf '%s\n' 'jobs:' '  validate:' '    runs-on: macos-15' '    env:'
+  printf '%s\n' '      TOKEN: ${{ secrets['"'"'TOKEN'"'"'] }}'
+} >"$bracket_secret_dir/workflows/bracket-secret.yml"
+expect_failure "bracket-secret.yml references a secret outside sign-candidate" validate_workflow_policy \
+  "$bracket_secret_dir/workflows" "$bracket_secret_dir/workflows/ci.yml" "$bracket_secret_dir/CODEOWNERS"
+
+inherited_secret_dir="$fixture_root/workflow-policy-inherited-secret"
+/bin/mkdir -p "$inherited_secret_dir/workflows"
+/bin/cp "$CI_WORKFLOW" "$inherited_secret_dir/workflows/ci.yml"
+/bin/cp "$CODEOWNERS_FILE" "$inherited_secret_dir/CODEOWNERS"
+{
+  printf '%s\n' 'name: Inherited secret fixture' 'on: push' 'permissions: {}'
+  printf '%s\n' 'concurrency:' '  group: fixture' '  cancel-in-progress: true'
+  printf '%s\n' 'jobs:' '  publish:' '    uses: ./.github/workflows/reusable.yml' '    secrets: inherit'
+} >"$inherited_secret_dir/workflows/inherited-secret.yml"
+expect_failure "inherited-secret.yml references a secret outside sign-candidate" validate_workflow_policy \
+  "$inherited_secret_dir/workflows" "$inherited_secret_dir/workflows/ci.yml" "$inherited_secret_dir/CODEOWNERS"
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
