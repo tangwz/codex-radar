@@ -84,3 +84,9 @@
 "X" = "X";
 "Bilibili" = "Bilibili";
 "Track Codex reset signals and local token usage." = "追踪 Codex 重置信号和本地 token 用量。";
+"Updates" = "更新";
+"Automatically check for updates" = "自动检查更新";
+"App Version" = "应用版本";
+"Check for Updates…" = "检查更新…";
+"Updates are available in release builds only." = "更新功能仅在发布版本中可用。";
+"Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates." = "退出 CodexRadar，然后将其移至 /Applications 或 ~/Applications，再检查更新。";

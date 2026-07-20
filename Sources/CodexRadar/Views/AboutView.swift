@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct AboutView: View {
+  @ObservedObject var updaterSettings: UpdaterSettingsModel
   let metadata: AppMetadata
 
-  init(metadata: AppMetadata = .current) {
+  init(updaterSettings: UpdaterSettingsModel, metadata: AppMetadata = .current) {
+    self.updaterSettings = updaterSettings
     self.metadata = metadata
   }
 
@@ -14,6 +16,8 @@ struct AboutView: View {
           .frame(maxWidth: .infinity)
           .listRowBackground(Color.clear)
       }
+
+      updateSection
 
       Section {
         ForEach(AboutLink.all) { link in
@@ -29,6 +33,49 @@ struct AboutView: View {
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+    .onAppear {
+      updaterSettings.refresh()
+    }
+  }
+
+  @ViewBuilder
+  private var updateSection: some View {
+    Section {
+      if updaterSettings.isAvailable {
+        Toggle("Automatically check for updates", isOn: automaticUpdatesBinding)
+          .accessibilityLabel(Text("Automatically check for updates"))
+
+        LabeledContent("App Version") {
+          HStack(spacing: 12) {
+            Text(metadata.versionString)
+              .foregroundStyle(.secondary)
+
+            Button("Check for Updates…") {
+              updaterSettings.checkForUpdates()
+            }
+            .disabled(!updaterSettings.canCheckForUpdates)
+            .accessibilityLabel(Text("Check for Updates…"))
+          }
+        }
+      } else {
+        Text(
+          LocalizedStringKey(
+            updaterSettings.unavailableReasonKey
+              ?? "Updates are available in release builds only."
+          )
+        )
+        .foregroundStyle(.secondary)
+      }
+    } header: {
+      Text("Updates")
+    }
+  }
+
+  private var automaticUpdatesBinding: Binding<Bool> {
+    Binding(
+      get: { updaterSettings.automaticUpdatesEnabled },
+      set: { updaterSettings.setAutomaticUpdatesEnabled($0) }
+    )
   }
 
   private var hero: some View {

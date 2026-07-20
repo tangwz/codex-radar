@@ -3,6 +3,9 @@ import SwiftUI
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+  @MainActor
+  let updaterSettings = UpdaterSettingsModel(provider: UpdaterFactory.make(bundle: .main))
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
     UNUserNotificationCenter.current().delegate = self
@@ -47,7 +50,11 @@ struct CodexRadarApp: App {
     .menuBarExtraStyle(.window)
 
     Settings {
-      SettingsView(store: store, selection: settingsSelection)
+      SettingsView(
+        store: store,
+        selection: settingsSelection,
+        updaterSettings: appDelegate.updaterSettings
+      )
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     }

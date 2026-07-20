@@ -84,3 +84,9 @@
 "X" = "X";
 "Bilibili" = "Bilibili";
 "Track Codex reset signals and local token usage." = "Track Codex reset signals and local token usage.";
+"Updates" = "Updates";
+"Automatically check for updates" = "Automatically check for updates";
+"App Version" = "App Version";
+"Check for Updates…" = "Check for Updates…";
+"Updates are available in release builds only." = "Updates are available in release builds only.";
+"Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates." = "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates.";
