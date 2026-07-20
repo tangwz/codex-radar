@@ -26,6 +26,11 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 [[ -n "$bundle" && -n "$previous_app" ]] || usage
+if [[ "$TEST_HARNESS" != true ]]; then
+  if /usr/bin/env | /usr/bin/awk -F= '$1 ~ /^QUALIFY_/' | /usr/bin/grep . >/dev/null; then
+    die "QUALIFY_* overrides are only available in the test harness"
+  fi
+fi
 real_dir "$bundle" "qualification bundle"; bundle="$(/bin/realpath "$bundle")"
 real_dir "$previous_app" "previous application"; previous_app="$(/bin/realpath "$previous_app")"
 
@@ -165,9 +170,15 @@ if [[ "$TEST_HARNESS" == true && -n "${QUALIFY_TEST_CLI:-}" ]]; then
 else
   /bin/mkdir -m 700 "$work/home" "$work/tmp"
   /usr/bin/env -i PATH=/usr/bin:/bin HOME="$work/home" TMPDIR="$work/tmp" SWIFTPM_DISABLE_SANDBOX=1 \
-    /usr/bin/xcodebuild -project "$source_tree_dir/Sparkle.xcodeproj" -scheme sparkle-cli -configuration Release \
+    /usr/bin/xcodebuild -disableAutomaticPackageResolution -project "$source_tree_dir/Sparkle.xcodeproj" -scheme sparkle-cli -configuration Release \
     SYMROOT="$work/build" OBJROOT="$work/obj" CODE_SIGNING_ALLOWED=NO build >/dev/null
-  /bin/cp "$work/build/Release/sparkle" "$cli"; /bin/chmod 755 "$cli"
+  built_cli="$work/build/Release/sparkle.app/Contents/MacOS/sparkle"
+  built_info="$work/build/Release/sparkle.app/Contents/Info.plist"
+  real_file "$built_cli" "built Sparkle CLI executable"
+  real_file "$built_info" "built Sparkle CLI Info.plist"
+  assert_plist "$built_info" CFBundleShortVersionString "$EXPECTED_SPARKLE_VERSION" "built Sparkle CLI version must equal $EXPECTED_SPARKLE_VERSION"
+  /usr/bin/file "$built_cli" | /usr/bin/grep -F 'Mach-O' >/dev/null || die "built Sparkle CLI must be Mach-O"
+  /bin/cp "$built_cli" "$cli"; /bin/chmod 755 "$cli"
 fi
 real_file "$cli" "verified Sparkle CLI"; [[ -x "$cli" ]] || die "verified Sparkle CLI must be executable"
 
