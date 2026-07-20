@@ -317,23 +317,40 @@ delivery_path=""
 destination_path=""
 output_lock_path=""
 output_lock_acquired=false
+lock_process_id=""
+lock_pipe_open=false
 committed=false
 cleanup() {
   set +e
-  if [[ -n "$delivery_path" && (-e "$delivery_path" || -L "$delivery_path") ]]; then
-    if [[ "$committed" == false || "${PACKAGE_APP_TEST_CLEANUP_FAILURE:-false}" != true ]]; then
-      /bin/rm -rf "$delivery_path" >/dev/null 2>&1 || true
-    fi
+  if [[ "$committed" == false && -n "$delivery_path" && \
+    (-e "$delivery_path" || -L "$delivery_path") && \
+    -n "${delivery_device:-}" && -n "${delivery_inode:-}" ]]; then
+    "$atomic_swap_executable" remove "$output_path" "$delivery_name" \
+      "$output_device" "$output_inode" "$delivery_device" "$delivery_inode" \
+      >/dev/null 2>&1 || true
   fi
-  if [[ "$output_lock_acquired" == true ]]; then
-    /bin/rmdir "$output_lock_path" >/dev/null 2>&1 || true
+  if [[ "$lock_pipe_open" == true ]]; then
+    exec 9>&-
+    lock_pipe_open=false
   fi
+  [[ -z "$lock_process_id" ]] || wait "$lock_process_id" >/dev/null 2>&1 || true
   /bin/rm -rf "$work_dir" >/dev/null 2>&1 || true
   return 0
 }
 handle_signal() {
   echo "packaging interrupted before commit" >&2
   exit 130
+}
+pause_for_test() {
+  local phase="$1" control_dir="${PACKAGE_APP_TEST_CONTROL_DIR:-}"
+
+  [[ "${PACKAGE_APP_TEST_PAUSE_PHASE:-}" == "$phase" ]] || return 0
+  [[ -n "$control_dir" && -d "$control_dir" && ! -L "$control_dir" ]] ||
+    die "invalid package test control directory" || return 1
+  : >"$control_dir/ready"
+  while [[ ! -e "$control_dir/continue" ]]; do
+    /bin/sleep 0.01
+  done
 }
 trap cleanup EXIT
 trap handle_signal HUP INT TERM
@@ -453,15 +470,47 @@ fi
 [[ -d "$normalized_output_path" && ! -L "$normalized_output_path" ]] ||
   die "output path must be a directory"
 output_path="$(/bin/realpath "$normalized_output_path")"
+output_owner="$(/usr/bin/stat -f '%u' "$output_path")"
+output_mode="$(/usr/bin/stat -f '%Lp' "$output_path")"
+output_device="$(/usr/bin/stat -f '%d' "$output_path")"
+output_inode="$(/usr/bin/stat -f '%i' "$output_path")"
+[[ "$output_owner" == "$(/usr/bin/id -u)" ]] || die "output parent must be owned by the effective user"
+(( (8#$output_mode & 022) == 0 )) || die "output parent must not be group or world writable"
+
 output_lock_path="$output_path/.$APP_NAME.package.lock"
-/bin/mkdir "$output_lock_path" 2>/dev/null || die "output path is locked by another packager"
+lock_fifo="$work_dir/package-lock.fifo"
+lock_ready="$work_dir/package-lock.ready"
+/usr/bin/mkfifo "$lock_fifo"
+"$atomic_swap_executable" lock "$output_path" "$(/usr/bin/basename "$output_lock_path")" \
+  "$output_device" "$output_inode" <"$lock_fifo" >"$lock_ready" 2>"$work_dir/package-lock.stderr" &
+lock_process_id=$!
+exec 9>"$lock_fifo"
+lock_pipe_open=true
+lock_attempt=0
+while [[ ! -s "$lock_ready" && "$lock_attempt" -lt 200 ]]; do
+  if ! /bin/kill -0 "$lock_process_id" 2>/dev/null; then
+    exec 9>&-
+    lock_pipe_open=false
+    wait "$lock_process_id" || true
+    /bin/cat "$work_dir/package-lock.stderr" >&2
+    die "failed to acquire package lock"
+  fi
+  /bin/sleep 0.01
+  lock_attempt=$((lock_attempt + 1))
+done
+[[ -s "$lock_ready" ]] || die "timed out acquiring package lock"
 output_lock_acquired=true
+pause_for_test after-lock
 
 destination_path="$output_path/$APP_NAME.app"
 [[ ! -L "$destination_path" ]] || die "destination application must not be a symlink"
 delivery_path="$(/usr/bin/mktemp -d "$output_path/.$APP_NAME.app.package.XXXXXX")"
 delivery_name="$(/usr/bin/basename "$delivery_path")"
 /usr/bin/ditto "$staged_app" "$delivery_path"
+staged_mode="$(/usr/bin/stat -f '%Lp' "$staged_app")"
+/bin/chmod "$staged_mode" "$delivery_path"
+delivery_device="$(/usr/bin/stat -f '%d' "$delivery_path")"
+delivery_inode="$(/usr/bin/stat -f '%i' "$delivery_path")"
 
 if [[ "${PACKAGE_APP_TEST_DESTINATION_SYMLINK_RACE:-false}" == true ]]; then
   /bin/ln -s /tmp "$destination_path"
@@ -470,8 +519,17 @@ if [[ "${PACKAGE_APP_TEST_SIGNAL_BEFORE_COMMIT:-false}" == true ]]; then
   /bin/kill -TERM "$$"
 fi
 
+pause_for_test before-commit
 trap '' HUP INT TERM
-"$atomic_swap_executable" "$output_path" "$delivery_name" "$APP_NAME.app"
+if [[ "${PACKAGE_APP_TEST_PAUSE_PHASE:-}" == before-rename ]]; then
+  PACKAGE_APP_TEST_HELPER_PAUSE_READY="$PACKAGE_APP_TEST_CONTROL_DIR/ready" \
+    PACKAGE_APP_TEST_HELPER_PAUSE_CONTINUE="$PACKAGE_APP_TEST_CONTROL_DIR/continue" \
+    "$atomic_swap_executable" swap "$output_path" "$delivery_name" "$APP_NAME.app" \
+      "$output_device" "$output_inode" "$delivery_device" "$delivery_inode"
+else
+  "$atomic_swap_executable" swap "$output_path" "$delivery_name" "$APP_NAME.app" \
+    "$output_device" "$output_inode" "$delivery_device" "$delivery_inode"
+fi
 committed=true
 printf 'Packaged %s\n' "$destination_path" || true
 exit 0

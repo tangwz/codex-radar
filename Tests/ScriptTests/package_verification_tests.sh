@@ -235,6 +235,58 @@ assert_succeeds() {
   [[ "$resolved_after" == "$resolved_before" ]] || fail "successful package fixture changed Package.resolved"
 }
 
+start_paused_package() {
+  local fixture_root="$1" phase="$2" control_dir
+
+  control_dir="$fixture_root/test-control-$phase"
+
+  mkdir -m 700 -p "$fixture_root/tmp" "$control_dir"
+  background_log="$control_dir/package.log"
+  background_continue="$control_dir/continue"
+  env \
+    PATH="$fixture_root/bin:$PATH" \
+    TMPDIR="$fixture_root/tmp" \
+    PACKAGE_APP_LIPO_EXECUTABLE="$fixture_root/bin/lipo" \
+    PACKAGE_APP_OTOOL_EXECUTABLE="$fixture_root/bin/otool" \
+    PACKAGE_APP_TEST_CONTROL_DIR="$control_dir" \
+    PACKAGE_APP_TEST_PAUSE_PHASE="$phase" \
+    "$fixture_root/script/package_app.sh" \
+      --output "$fixture_root/dist" --configuration debug \
+      --architectures arm64 --updates-enabled false \
+      >"$background_log" 2>&1 &
+  background_pid=$!
+
+  local attempt=0
+  while [[ ! -f "$control_dir/ready" && "$attempt" -lt 1000 ]]; do
+    if ! kill -0 "$background_pid" 2>/dev/null; then
+      wait "$background_pid" || true
+      cat "$background_log" >&2
+      fail "package fixture exited before $phase pause"
+    fi
+    sleep 0.01
+    attempt=$((attempt + 1))
+  done
+  if [[ ! -f "$control_dir/ready" ]]; then
+    kill -TERM "$background_pid" 2>/dev/null || true
+    wait "$background_pid" || true
+    fail "package fixture timed out before $phase pause"
+  fi
+}
+
+finish_paused_rejection() {
+  local expected_message="$1" output
+
+  : >"$background_continue"
+  if wait "$background_pid"; then
+    fail "paused package fixture unexpectedly succeeded: $expected_message"
+  fi
+  output="$(cat "$background_log")"
+  [[ "$output" == *"$expected_message"* ]] || {
+    echo "$output" >&2
+    fail "paused package fixture did not report: $expected_message"
+  }
+}
+
 architecture_fixture="$(setup_fixture architectures)"
 write_update_config "$architecture_fixture" "2.9.4" ""
 assert_rejected "duplicate architecture: arm64" "$architecture_fixture" \
@@ -365,43 +417,126 @@ assert_rejected "destination application must not be a symlink" "$symlink_output
   --architectures arm64 --updates-enabled false
 [[ -L "$symlink_output_fixture/dist/CodexRadar.app" ]] || fail "symlink destination was replaced"
 
-destination_race_fixture="$(setup_fixture destination-race)"
+parent_race_fixture="$(setup_fixture parent-identity-race)"
+write_update_config "$parent_race_fixture" "2.9.4" ""
+install_mock_swift "$parent_race_fixture"
+mkdir -p "$parent_race_fixture/dist/CodexRadar.app"
+printf 'old artifact\n' >"$parent_race_fixture/dist/CodexRadar.app/marker"
+start_paused_package "$parent_race_fixture" before-rename
+mv "$parent_race_fixture/dist" "$parent_race_fixture/original-dist"
+mkdir "$parent_race_fixture/dist"
+printf 'replacement parent\n' >"$parent_race_fixture/dist/marker"
+finish_paused_rejection "output parent identity changed before commit"
+[[ "$(cat "$parent_race_fixture/dist/marker")" == "replacement parent" ]] ||
+  fail "parent race fixture modified the replacement parent"
+[[ "$(cat "$parent_race_fixture/original-dist/CodexRadar.app/marker")" == "old artifact" ]] ||
+  fail "parent race fixture replaced the original destination"
+
+staging_race_fixture="$(setup_fixture staging-identity-race)"
+write_update_config "$staging_race_fixture" "2.9.4" ""
+install_mock_swift "$staging_race_fixture"
+mkdir -p "$staging_race_fixture/dist/CodexRadar.app"
+printf 'old artifact\n' >"$staging_race_fixture/dist/CodexRadar.app/marker"
+start_paused_package "$staging_race_fixture" before-rename
+staging_path="$(find "$staging_race_fixture/dist" -maxdepth 1 -type d -name '.CodexRadar.app.package.*' -print -quit)"
+[[ -n "$staging_path" ]] || fail "staging race fixture did not create staging"
+mv "$staging_path" "$staging_path.original"
+mkdir "$staging_path"
+printf 'replacement staging\n' >"$staging_path/marker"
+finish_paused_rejection "staged application identity changed before commit"
+[[ "$(cat "$staging_path/marker")" == "replacement staging" ]] ||
+  fail "staging race fixture deleted the replacement staging tree"
+[[ -d "$staging_path.original/Contents" ]] ||
+  fail "staging race fixture deleted the original staging tree"
+[[ "$(cat "$staging_race_fixture/dist/CodexRadar.app/marker")" == "old artifact" ]] ||
+  fail "staging race fixture replaced the destination"
+
+destination_race_fixture="$(setup_fixture destination-identity-race)"
 write_update_config "$destination_race_fixture" "2.9.4" ""
 install_mock_swift "$destination_race_fixture"
-export PACKAGE_APP_TEST_DESTINATION_SYMLINK_RACE=true
-assert_rejected "destination application must not be a symlink" "$destination_race_fixture" \
-  --output "$destination_race_fixture/dist" --configuration debug \
-  --architectures arm64 --updates-enabled false
-unset PACKAGE_APP_TEST_DESTINATION_SYMLINK_RACE
-[[ -L "$destination_race_fixture/dist/CodexRadar.app" ]] ||
-  fail "destination race fixture did not reach the atomic helper recheck"
+mkdir -p "$destination_race_fixture/dist/CodexRadar.app"
+printf 'old artifact\n' >"$destination_race_fixture/dist/CodexRadar.app/marker"
+start_paused_package "$destination_race_fixture" before-rename
+mv "$destination_race_fixture/dist/CodexRadar.app" \
+  "$destination_race_fixture/dist/CodexRadar.original.app"
+mkdir "$destination_race_fixture/dist/CodexRadar.app"
+printf 'replacement destination\n' >"$destination_race_fixture/dist/CodexRadar.app/marker"
+finish_paused_rejection "destination application identity changed before commit"
+[[ "$(cat "$destination_race_fixture/dist/CodexRadar.app/marker")" == "replacement destination" ]] ||
+  fail "destination race fixture modified the replacement destination"
+[[ "$(cat "$destination_race_fixture/dist/CodexRadar.original.app/marker")" == "old artifact" ]] ||
+  fail "destination race fixture deleted the original destination"
 
 signal_fixture="$(setup_fixture signal-before-commit)"
 write_update_config "$signal_fixture" "2.9.4" ""
 install_mock_swift "$signal_fixture"
 mkdir -p "$signal_fixture/dist/CodexRadar.app"
 printf 'old artifact\n' >"$signal_fixture/dist/CodexRadar.app/marker"
-export PACKAGE_APP_TEST_SIGNAL_BEFORE_COMMIT=true
-assert_rejected "packaging interrupted before commit" "$signal_fixture" \
-  --output "$signal_fixture/dist" --configuration debug \
-  --architectures arm64 --updates-enabled false
-unset PACKAGE_APP_TEST_SIGNAL_BEFORE_COMMIT
+start_paused_package "$signal_fixture" before-commit
+kill -TERM "$background_pid"
+if wait "$background_pid"; then
+  fail "signal before commit fixture unexpectedly succeeded"
+fi
+signal_output="$(cat "$background_log")"
+[[ "$signal_output" == *"packaging interrupted before commit"* ]] || {
+  echo "$signal_output" >&2
+  fail "signal before commit fixture did not report interruption"
+}
 [[ "$(cat "$signal_fixture/dist/CodexRadar.app/marker")" == "old artifact" ]] ||
   fail "signal before commit replaced the existing application"
+
+active_lock_fixture="$(setup_fixture active-lock)"
+write_update_config "$active_lock_fixture" "2.9.4" ""
+install_mock_swift "$active_lock_fixture"
+start_paused_package "$active_lock_fixture" after-lock
+lock_path="$active_lock_fixture/dist/.CodexRadar.package.lock"
+[[ -f "$lock_path" && ! -L "$lock_path" ]] || fail "active lock is not a real file"
+grep -Eq '^pid=[0-9]+$' "$lock_path" || fail "lock owner record is missing pid"
+grep -Eq '^start=[0-9]+\.[0-9]+$' "$lock_path" || fail "lock owner record is missing process start"
+assert_rejected "output path is locked by another packager" "$active_lock_fixture" \
+  --output "$active_lock_fixture/dist" --configuration debug \
+  --architectures arm64 --updates-enabled false
+: >"$background_continue"
+wait "$background_pid" || {
+  cat "$background_log" >&2
+  fail "active lock owner failed after release"
+}
+
+stale_lock_fixture="$(setup_fixture stale-lock)"
+write_update_config "$stale_lock_fixture" "2.9.4" ""
+install_mock_swift "$stale_lock_fixture"
+start_paused_package "$stale_lock_fixture" after-lock
+stale_lock_path="$stale_lock_fixture/dist/.CodexRadar.package.lock"
+[[ -f "$stale_lock_path" && ! -L "$stale_lock_path" ]] ||
+  fail "stale lock fixture did not create an advisory lock file"
+kill -KILL "$background_pid"
+if wait "$background_pid" 2>/dev/null; then
+  fail "stale lock owner unexpectedly survived SIGKILL"
+fi
+[[ -f "$stale_lock_path" && ! -L "$stale_lock_path" ]] ||
+  fail "SIGKILL removed the advisory lock file"
+assert_succeeds "$stale_lock_fixture" \
+  --output "$stale_lock_fixture/dist" --configuration debug \
+  --architectures arm64 --updates-enabled false
+[[ -f "$stale_lock_path" && ! -L "$stale_lock_path" ]] ||
+  fail "successful advisory lock recovery changed the stable lock file"
 
 cleanup_fixture="$(setup_fixture cleanup-failure)"
 write_update_config "$cleanup_fixture" "2.9.4" ""
 install_mock_swift "$cleanup_fixture"
 mkdir -p "$cleanup_fixture/dist/CodexRadar.app"
 printf 'old artifact\n' >"$cleanup_fixture/dist/CodexRadar.app/marker"
-export PACKAGE_APP_TEST_CLEANUP_FAILURE=true
+/bin/chmod 500 "$cleanup_fixture/dist/CodexRadar.app"
 assert_succeeds "$cleanup_fixture" \
   --output "$cleanup_fixture/dist" --configuration debug \
   --architectures arm64 --updates-enabled false
-unset PACKAGE_APP_TEST_CLEANUP_FAILURE
 [[ -f "$cleanup_fixture/dist/CodexRadar.app/Contents/MacOS/CodexRadar" ]] ||
   fail "cleanup failure did not leave the committed application"
+[[ "$(stat -f '%Lp' "$cleanup_fixture/dist/CodexRadar.app")" == 755 ]] ||
+  fail "committed application root mode is not 0755"
 old_staging_count="$(find "$cleanup_fixture/dist" -maxdepth 1 -name '.CodexRadar.app.package.*' | wc -l | tr -d ' ')"
 [[ "$old_staging_count" == 1 ]] || fail "cleanup failure fixture did not preserve old staging for later cleanup"
+old_staging_path="$(find "$cleanup_fixture/dist" -maxdepth 1 -name '.CodexRadar.app.package.*' -print -quit)"
+/bin/chmod 700 "$old_staging_path"
 
 echo "package verification fixtures passed"
