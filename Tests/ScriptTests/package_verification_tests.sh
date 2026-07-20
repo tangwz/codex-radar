@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PACKAGE_SCRIPT="$ROOT_DIR/script/package_app.sh"
+SIGN_SCRIPT="$ROOT_DIR/script/sign_app.sh"
+VERIFY_SCRIPT="$ROOT_DIR/script/verify_app.sh"
+RELEASE_SCRIPT="$ROOT_DIR/script/package_release.sh"
 
 fail() {
   echo "$*" >&2
@@ -10,6 +13,9 @@ fail() {
 }
 
 [[ -f "$PACKAGE_SCRIPT" ]] || fail "package_app.sh does not exist"
+[[ -f "$SIGN_SCRIPT" ]] || fail "sign_app.sh does not exist"
+[[ -f "$VERIFY_SCRIPT" ]] || fail "verify_app.sh does not exist"
+[[ -f "$RELEASE_SCRIPT" ]] || fail "package_release.sh does not exist"
 
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$fixture_dir"' EXIT
@@ -541,5 +547,359 @@ old_staging_count="$(find "$cleanup_fixture/dist" -maxdepth 1 -name '.CodexRadar
 [[ "$old_staging_count" == 1 ]] || fail "cleanup failure fixture did not preserve old staging for later cleanup"
 old_staging_path="$(find "$cleanup_fixture/dist" -maxdepth 1 -name '.CodexRadar.app.package.*' -print -quit)"
 /bin/chmod 700 "$old_staging_path"
+
+compile_fixture_executables() {
+  printf '%s\n' 'int main(void) { return 0; }' >"$fixture_dir/task6-main.c"
+  /usr/bin/xcrun --sdk macosx clang -arch arm64 -arch x86_64 \
+    -mmacosx-version-min=14.0 "$fixture_dir/task6-main.c" \
+    -o "$fixture_dir/task6-universal"
+  /usr/bin/lipo -thin arm64 "$fixture_dir/task6-universal" \
+    -output "$fixture_dir/task6-arm64"
+}
+
+write_bundle_plist() {
+  local plist_path="$1" bundle_id="$2" executable_name="$3" package_type="$4"
+
+  /usr/bin/plutil -create xml1 "$plist_path"
+  /usr/bin/plutil -insert CFBundleExecutable -string "$executable_name" "$plist_path"
+  /usr/bin/plutil -insert CFBundleIdentifier -string "$bundle_id" "$plist_path"
+  /usr/bin/plutil -insert CFBundlePackageType -string "$package_type" "$plist_path"
+  /usr/bin/plutil -insert CFBundleShortVersionString -string 2.9.4 "$plist_path"
+  /usr/bin/plutil -insert CFBundleVersion -string 2059 "$plist_path"
+  /usr/bin/plutil -insert LSMinimumSystemVersion -string 10.13 "$plist_path"
+}
+
+write_release_plist() {
+  local plist_path="$1"
+
+  /usr/bin/plutil -create xml1 "$plist_path"
+  /usr/bin/plutil -insert CFBundleExecutable -string CodexRadar "$plist_path"
+  /usr/bin/plutil -insert CFBundleIdentifier -string com.terence.codex-radar "$plist_path"
+  /usr/bin/plutil -insert CFBundlePackageType -string APPL "$plist_path"
+  /usr/bin/plutil -insert CFBundleShortVersionString -string 0.1.0 "$plist_path"
+  /usr/bin/plutil -insert CFBundleVersion -string 1 "$plist_path"
+  /usr/bin/plutil -insert LSMinimumSystemVersion -string 14.0 "$plist_path"
+  /usr/bin/plutil -insert SUFeedURL -string \
+    https://raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml "$plist_path"
+  /usr/bin/plutil -insert SUPublicEDKey -string \
+    sRHMX+P9of0173XYLQz0F4b8aZ9g5hiNVsJXe7pp6o4= "$plist_path"
+  /usr/bin/plutil -insert SUEnableAutomaticChecks -bool true "$plist_path"
+  /usr/bin/plutil -insert SUAutomaticallyUpdate -bool true "$plist_path"
+  /usr/bin/plutil -insert SUVerifyUpdateBeforeExtraction -bool true "$plist_path"
+  /usr/bin/plutil -insert SURequireSignedFeed -bool true "$plist_path"
+  /usr/bin/plutil -insert CodexRadarUpdatesEnabled -bool true "$plist_path"
+}
+
+setup_task6_app() {
+  local name="$1"
+  local task_root="$fixture_dir/task6-$name"
+  local app="$task_root/CodexRadar.app"
+  local framework="$app/Contents/Frameworks/Sparkle.framework"
+  local version_root="$framework/Versions/B"
+  local xpc_name executable_name bundle_id xpc_path
+
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/en.lproj" \
+    "$app/Contents/Resources/zh-hans.lproj" "$version_root/Resources" \
+    "$version_root/Headers" "$version_root/Modules" "$version_root/PrivateHeaders" \
+    "$version_root/Updater.app/Contents/MacOS" "$version_root/XPCServices"
+  printf 'preserve fixture root\n' >"$task_root/root-marker"
+  printf 'English\n' >"$app/Contents/Resources/en.lproj/Localizable.strings"
+  printf 'Chinese\n' >"$app/Contents/Resources/zh-hans.lproj/Localizable.strings"
+  printf 'newline-safe resource\n' >"$app/Contents/Resources/newline
+resource.txt"
+  printf 'tab-safe resource\n' >"$app/Contents/Resources/tab	resource.txt"
+  cp "$fixture_dir/task6-universal" "$app/Contents/MacOS/CodexRadar"
+  cp "$fixture_dir/task6-universal" "$version_root/Autoupdate"
+  cp "$fixture_dir/task6-universal" "$version_root/Sparkle"
+  cp "$fixture_dir/task6-universal" \
+    "$version_root/Updater.app/Contents/MacOS/Updater"
+  write_bundle_plist "$version_root/Updater.app/Contents/Info.plist" \
+    org.sparkle-project.Sparkle.Updater Updater APPL
+  write_bundle_plist "$version_root/Resources/Info.plist" \
+    org.sparkle-project.Sparkle Sparkle FMWK
+
+  for xpc_name in Downloader Installer; do
+    case "$xpc_name" in
+      Downloader) bundle_id=org.sparkle-project.DownloaderService ;;
+      Installer) bundle_id=org.sparkle-project.InstallerLauncher ;;
+    esac
+    executable_name="$xpc_name"
+    xpc_path="$version_root/XPCServices/$xpc_name.xpc"
+    mkdir -p "$xpc_path/Contents/MacOS"
+    cp "$fixture_dir/task6-universal" "$xpc_path/Contents/MacOS/$executable_name"
+    write_bundle_plist "$xpc_path/Contents/Info.plist" \
+      "$bundle_id" "$executable_name" 'XPC!'
+  done
+
+  ln -s B "$framework/Versions/Current"
+  ln -s Versions/Current/Headers "$framework/Headers"
+  ln -s Versions/Current/Modules "$framework/Modules"
+  ln -s Versions/Current/PrivateHeaders "$framework/PrivateHeaders"
+  ln -s Versions/Current/Resources "$framework/Resources"
+  ln -s Versions/Current/Autoupdate "$framework/Autoupdate"
+  ln -s Versions/Current/Updater.app "$framework/Updater.app"
+  ln -s Versions/Current/XPCServices "$framework/XPCServices"
+  ln -s Versions/Current/Sparkle "$framework/Sparkle"
+  write_release_plist "$app/Contents/Info.plist"
+  chmod 0755 "$app" "$app/Contents/MacOS/CodexRadar" \
+    "$version_root/Autoupdate" "$version_root/Sparkle" \
+    "$version_root/Updater.app/Contents/MacOS/Updater" \
+    "$version_root/XPCServices/Downloader.xpc/Contents/MacOS/Downloader" \
+    "$version_root/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+  /bin/realpath "$task_root"
+}
+
+assert_fixture_root_preserved() {
+  local task_root="$1"
+
+  [[ -f "$task_root/root-marker" ]] || fail "Task 6 fixture root was deleted"
+  [[ "$(cat "$task_root/root-marker")" == "preserve fixture root" ]] ||
+    fail "Task 6 fixture root marker was modified"
+}
+
+assert_task6_rejected() {
+  local expected_message="$1" task_root="$2"
+  shift 2
+
+  if output="$("$@" 2>&1)"; then
+    fail "Task 6 fixture unexpectedly succeeded: $expected_message"
+  fi
+  [[ "$output" == *"$expected_message"* ]] || {
+    echo "$output" >&2
+    fail "Task 6 fixture did not report: $expected_message"
+  }
+  assert_fixture_root_preserved "$task_root"
+}
+
+sign_task6_app() {
+  local task_root="$1"
+
+  "$SIGN_SCRIPT" --app "$task_root/CodexRadar.app" --signing-mode adhoc
+}
+
+verify_task6_app() {
+  local task_root="$1"
+
+  "$VERIFY_SCRIPT" --app "$task_root/CodexRadar.app" \
+    --architectures "arm64 x86_64" --updates-enabled true \
+    --signing-mode adhoc
+}
+
+compile_fixture_executables
+
+signing_order_fixture="$(setup_task6_app signing-order)"
+mkdir "$signing_order_fixture/bin"
+cat >"$signing_order_fixture/bin/codesign" <<'MOCK_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$#" -eq 4 && "$1" == --force && "$2" == --sign && "$3" == - ]] || {
+  echo "unexpected codesign arguments" >&2
+  exit 1
+}
+printf '%s\0' "$4" >>"$SIGN_APP_TEST_LOG"
+MOCK_CODESIGN
+chmod +x "$signing_order_fixture/bin/codesign"
+SIGN_APP_TEST_LOG="$signing_order_fixture/signing-order.log" \
+SIGN_APP_CODESIGN_EXECUTABLE="$signing_order_fixture/bin/codesign" \
+  "$SIGN_SCRIPT" --app "$signing_order_fixture/CodexRadar.app" --signing-mode adhoc
+actual_signing_order=()
+while IFS= read -r -d '' signed_path; do
+  actual_signing_order+=("$signed_path")
+done <"$signing_order_fixture/signing-order.log"
+framework="$signing_order_fixture/CodexRadar.app/Contents/Frameworks/Sparkle.framework"
+expected_signing_order=(
+  "$framework/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+  "$framework/Versions/B/XPCServices/Downloader.xpc"
+  "$framework/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+  "$framework/Versions/B/XPCServices/Installer.xpc"
+  "$framework/Versions/B/Autoupdate"
+  "$framework/Versions/B/Updater.app"
+  "$framework"
+  "$signing_order_fixture/CodexRadar.app/Contents/MacOS/CodexRadar"
+  "$signing_order_fixture/CodexRadar.app"
+)
+[[ "${#actual_signing_order[@]}" -eq "${#expected_signing_order[@]}" ]] ||
+  fail "sign_app.sh used an unexpected signing target count"
+for signing_index in "${!expected_signing_order[@]}"; do
+  [[ "${actual_signing_order[$signing_index]}" == \
+    "${expected_signing_order[$signing_index]}" ]] ||
+    fail "sign_app.sh used the wrong inside-out signing order"
+done
+assert_fixture_root_preserved "$signing_order_fixture"
+
+developer_id_fixture="$(setup_task6_app developer-id-inputs)"
+assert_task6_rejected "developer-id signing requires DEVELOPER_ID_APPLICATION" \
+  "$developer_id_fixture" env -u DEVELOPER_ID_APPLICATION \
+  -u APP_STORE_CONNECT_API_KEY_PATH -u APP_STORE_CONNECT_KEY_ID \
+  -u APP_STORE_CONNECT_ISSUER_ID "$SIGN_SCRIPT" \
+  --app "$developer_id_fixture/CodexRadar.app" --signing-mode developer-id
+
+valid_verify_fixture="$(setup_task6_app valid-verifier)"
+sign_task6_app "$valid_verify_fixture"
+verify_task6_app "$valid_verify_fixture"
+assert_fixture_root_preserved "$valid_verify_fixture"
+
+escaped_symlink_fixture="$(setup_task6_app escaped-app-symlink)"
+printf 'outside application\n' >"$escaped_symlink_fixture/outside"
+ln -s ../../../outside "$escaped_symlink_fixture/CodexRadar.app/Contents/Resources/escaped
+link"
+assert_task6_rejected "bundle symlink escapes application" "$escaped_symlink_fixture" \
+  "$VERIFY_SCRIPT" --app "$escaped_symlink_fixture/CodexRadar.app" \
+  --architectures "arm64 x86_64" --updates-enabled true --signing-mode adhoc
+
+missing_xpc_fixture="$(setup_task6_app missing-xpc)"
+mv "$missing_xpc_fixture/CodexRadar.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc" \
+  "$missing_xpc_fixture/removed-Installer.xpc"
+assert_task6_rejected "missing Sparkle XPC service: Installer.xpc" "$missing_xpc_fixture" \
+  "$VERIFY_SCRIPT" --app "$missing_xpc_fixture/CodexRadar.app" \
+  --architectures "arm64 x86_64" --updates-enabled true --signing-mode adhoc
+
+non_macho_fixture="$(setup_task6_app non-macho-executable)"
+printf 'not Mach-O\n' >"$non_macho_fixture/CodexRadar.app/Contents/MacOS/CodexRadar"
+chmod +x "$non_macho_fixture/CodexRadar.app/Contents/MacOS/CodexRadar"
+assert_task6_rejected "expected executable is not Mach-O" "$non_macho_fixture" \
+  "$VERIFY_SCRIPT" --app "$non_macho_fixture/CodexRadar.app" \
+  --architectures "arm64 x86_64" --updates-enabled true --signing-mode adhoc
+
+single_arch_fixture="$(setup_task6_app single-architecture-nested)"
+cp "$fixture_dir/task6-arm64" \
+  "$single_arch_fixture/CodexRadar.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+sign_task6_app "$single_arch_fixture"
+assert_task6_rejected "Mach-O architecture mismatch" "$single_arch_fixture" \
+  "$VERIFY_SCRIPT" --app "$single_arch_fixture/CodexRadar.app" \
+  --architectures "arm64 x86_64" --updates-enabled true --signing-mode adhoc
+
+mismatched_version_fixture="$(setup_task6_app mismatched-version)"
+/usr/bin/plutil -replace CFBundleShortVersionString -string 9.9.9 \
+  "$mismatched_version_fixture/CodexRadar.app/Contents/Info.plist"
+sign_task6_app "$mismatched_version_fixture"
+assert_task6_rejected "CFBundleShortVersionString does not match version.env" \
+  "$mismatched_version_fixture" "$VERIFY_SCRIPT" \
+  --app "$mismatched_version_fixture/CodexRadar.app" \
+  --architectures "arm64 x86_64" --updates-enabled true --signing-mode adhoc
+
+setup_release_fixture() {
+  local name="$1"
+  local release_root="$fixture_dir/task6-release-$name"
+
+  mkdir -p "$release_root/script/lib" "$release_root/config" "$release_root/bin"
+  cp "$RELEASE_SCRIPT" "$SIGN_SCRIPT" "$VERIFY_SCRIPT" "$release_root/script/"
+  cp "$ROOT_DIR/script/lib/release_common.sh" "$release_root/script/lib/"
+  cp "$ROOT_DIR/version.env" "$release_root/"
+  cp "$ROOT_DIR/config/update.env" "$release_root/config/"
+  cat >"$release_root/script/package_app.sh" <<'MOCK_PACKAGE_APP'
+#!/usr/bin/env bash
+set -euo pipefail
+
+output_path=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --output)
+      output_path="$2"
+      shift 2
+      ;;
+    --configuration|--architectures|--updates-enabled)
+      shift 2
+      ;;
+    *) exit 2 ;;
+  esac
+done
+[[ -n "$output_path" ]]
+mkdir -p "$output_path"
+/usr/bin/ditto "$PACKAGE_RELEASE_TEST_APP_SOURCE" "$output_path/CodexRadar.app"
+MOCK_PACKAGE_APP
+  chmod +x "$release_root/script/"*.sh
+  cat >"$release_root/bin/ditto" <<'MOCK_DITTO'
+#!/usr/bin/env bash
+set -euo pipefail
+
+creating=false
+for argument in "$@"; do
+  [[ "$argument" != -c ]] || creating=true
+done
+"$PACKAGE_RELEASE_REAL_DITTO" "$@"
+if [[ "$creating" == true && -n "${PACKAGE_RELEASE_ARCHIVE_INJECTION:-}" ]]; then
+  archive_path="${!#}"
+  /usr/bin/python3 - "$archive_path" "$PACKAGE_RELEASE_ARCHIVE_INJECTION" <<'PYTHON'
+import stat
+import sys
+import zipfile
+
+archive_path, injection = sys.argv[1:]
+with zipfile.ZipFile(archive_path, "a") as archive:
+    if injection == "extra-top-level":
+        archive.writestr("unexpected.txt", "unexpected\n")
+    elif injection == "apple-double":
+        archive.writestr("__MACOSX/._unexpected", "unexpected\n")
+    elif injection == "path-traversal":
+        archive.writestr("../escaped.txt", "unexpected\n")
+    elif injection == "escaped-symlink":
+        entry = zipfile.ZipInfo("CodexRadar.app/escaped-link")
+        entry.create_system = 3
+        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(entry, "../../escaped.txt")
+    else:
+        raise SystemExit("unknown archive injection")
+PYTHON
+elif [[ "$creating" == false && -n "${PACKAGE_RELEASE_EXTRACT_MARKER:-}" ]]; then
+  : >"$PACKAGE_RELEASE_EXTRACT_MARKER"
+fi
+MOCK_DITTO
+  chmod +x "$release_root/bin/ditto"
+  printf 'preserve fixture root\n' >"$release_root/root-marker"
+  /bin/realpath "$release_root"
+}
+
+run_release_fixture() {
+  local release_root="$1"
+  shift
+
+  env PACKAGE_RELEASE_TEST_APP_SOURCE="$valid_verify_fixture/CodexRadar.app" \
+    PACKAGE_RELEASE_DITTO_EXECUTABLE="$release_root/bin/ditto" \
+    PACKAGE_RELEASE_REAL_DITTO=/usr/bin/ditto "$@" \
+    "$release_root/script/package_release.sh" \
+    --output "$release_root/output" --signing-mode adhoc
+}
+
+for archive_injection in extra-top-level apple-double path-traversal escaped-symlink; do
+  archive_fixture="$(setup_release_fixture "$archive_injection")"
+  extract_marker="$archive_fixture/extraction-started"
+  case "$archive_injection" in
+    extra-top-level) archive_message="archive contains an unexpected top-level entry" ;;
+    apple-double) archive_message="archive contains AppleDouble metadata" ;;
+    path-traversal) archive_message="archive contains an unsafe path" ;;
+    escaped-symlink) archive_message="archive symlink escapes application" ;;
+  esac
+  assert_task6_rejected "$archive_message" "$archive_fixture" \
+    run_release_fixture "$archive_fixture" \
+    PACKAGE_RELEASE_ARCHIVE_INJECTION="$archive_injection" \
+    PACKAGE_RELEASE_EXTRACT_MARKER="$extract_marker"
+  [[ ! -e "$extract_marker" ]] ||
+    fail "unsafe archive was extracted before validation"
+done
+
+release_success_fixture="$(setup_release_fixture success)"
+release_output="$(run_release_fixture "$release_success_fixture" 2>&1)" || {
+  echo "$release_output" >&2
+  fail "valid package_release fixture failed"
+}
+[[ "$release_output" == *"locally signed with an ad-hoc identity"* ]] ||
+  fail "ad-hoc release disclosure is missing"
+release_archive="$release_success_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+release_checksum="$release_archive.sha256"
+release_manifest="$release_archive.manifest"
+[[ -f "$release_archive" && -f "$release_checksum" && -f "$release_manifest" ]] ||
+  fail "package_release did not write the complete release artifact set"
+/usr/bin/shasum -a 256 --check "$release_checksum" >/dev/null
+grep -Fx 'archive_name=CodexRadar-v0.1.0-macos-universal.zip' "$release_manifest" >/dev/null
+grep -Fx 'version=0.1.0' "$release_manifest" >/dev/null
+grep -Fx 'build=1' "$release_manifest" >/dev/null
+grep -Eq '^byte_length=[1-9][0-9]*$' "$release_manifest"
+grep -Eq '^sha256=[0-9a-f]{64}$' "$release_manifest"
+grep -Fx 'signing_mode=adhoc' "$release_manifest" >/dev/null
+grep -Fx 'distribution_trust=locally-signed-not-developer-id-not-notarized-not-gatekeeper-trusted' \
+  "$release_manifest" >/dev/null
+assert_fixture_root_preserved "$release_success_fixture"
 
 echo "package verification fixtures passed"
