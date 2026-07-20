@@ -217,8 +217,18 @@ app_parent="$(/usr/bin/dirname "$app_argument")"
 app_name="$(/usr/bin/basename "$app_argument")"
 [[ "$app_name" == "$APP_NAME.app" ]] || die "application must be named $APP_NAME.app"
 app_parent_real="$(/bin/realpath "$app_parent" 2>/dev/null)" || die "application parent does not exist"
+parent_owner="$(/usr/bin/stat -f '%u' "$app_parent_real")"
+parent_mode="$(/usr/bin/stat -f '%Lp' "$app_parent_real")"
+parent_device="$(/usr/bin/stat -f '%d' "$app_parent_real")"
+parent_inode="$(/usr/bin/stat -f '%i' "$app_parent_real")"
+[[ "$parent_owner" == "$(/usr/bin/id -u)" ]] ||
+  die "application parent must be owned by the effective user"
+(( (8#$parent_mode & 022) == 0 )) ||
+  die "application parent must not be group or world writable"
 app_path="$app_parent_real/$app_name"
 [[ -d "$app_path" && ! -L "$app_path" ]] || die "application must be a real directory"
+source_device="$(/usr/bin/stat -f '%d' "$app_path")"
+source_inode="$(/usr/bin/stat -f '%i' "$app_path")"
 
 CODESIGN_EXECUTABLE="${SIGN_APP_CODESIGN_EXECUTABLE:-/usr/bin/codesign}"
 SECURITY_EXECUTABLE="${SIGN_APP_SECURITY_EXECUTABLE:-/usr/bin/security}"
@@ -246,6 +256,8 @@ case "$signing_mode" in
     identity_output="$($SECURITY_EXECUTABLE find-identity -v -p codesigning)" ||
       die "unable to enumerate developer-id signing identities"
     identity_match_count=0
+    resolved_identity_hash=""
+    resolved_identity_name=""
     while IFS= read -r identity_line; do
       if [[ "$identity_line" =~ ^[[:space:]]*[0-9]+\)[[:space:]]+([0-9A-Fa-f]{40})[[:space:]]+\"(.*)\"$ ]]; then
         identity_hash="${BASH_REMATCH[1]}"
@@ -253,18 +265,24 @@ case "$signing_mode" in
         if [[ "$DEVELOPER_ID_APPLICATION" == "$identity_hash" || \
           "$DEVELOPER_ID_APPLICATION" == "$identity_name" ]]; then
           identity_match_count=$((identity_match_count + 1))
+          resolved_identity_hash="$identity_hash"
+          resolved_identity_name="$identity_name"
         fi
       fi
     done <<<"$identity_output"
     [[ "$identity_match_count" -ne 0 ]] || die "developer-id signing identity not found"
     [[ "$identity_match_count" -eq 1 ]] || die "developer-id signing identity is ambiguous"
+    case "$resolved_identity_name" in
+      'Developer ID Application:'*) ;;
+      *) die "resolved signing identity is not a Developer ID Application certificate" ;;
+    esac
     "$XCRUN_EXECUTABLE" notarytool history \
       --key "$APP_STORE_CONNECT_API_KEY_PATH" \
       --key-id "$APP_STORE_CONNECT_KEY_ID" \
       --issuer "$APP_STORE_CONNECT_ISSUER_ID" \
       --output-format json --no-progress >/dev/null ||
       die "developer-id notarization credential preflight failed"
-    signing_identity="$DEVELOPER_ID_APPLICATION"
+    signing_identity="$resolved_identity_hash"
     ;;
   *) die "signing-mode must be adhoc or developer-id" ;;
 esac
@@ -282,24 +300,20 @@ atomic_swap_source="$ROOT_DIR/script/helpers/atomic_swap.c"
   -mmacosx-version-min="$MIN_SYSTEM_VERSION" "$atomic_swap_source" \
   -o "$atomic_swap_executable"
 
-parent_device="$(/usr/bin/stat -f '%d' "$app_parent_real")"
-parent_inode="$(/usr/bin/stat -f '%i' "$app_parent_real")"
-staged_app="$(/usr/bin/mktemp -d "$app_parent_real/.$APP_NAME.app.sign.XXXXXX")"
-staged_name="$(/usr/bin/basename "$staged_app")"
-"$DITTO_EXECUTABLE" "$app_path" "$staged_app"
-/bin/chmod "$(/usr/bin/stat -f '%Lp' "$app_path")" "$staged_app"
-staged_device="$(/usr/bin/stat -f '%d' "$staged_app")"
-staged_inode="$(/usr/bin/stat -f '%i' "$staged_app")"
-
 lock_fifo="$work_dir/sign-lock.fifo"
 lock_ready="$work_dir/sign-lock.ready"
 /usr/bin/mkfifo "$lock_fifo"
 lock_process_id=""
 lock_pipe_open=false
+staged_app=""
+staged_name=""
+staged_device=""
+staged_inode=""
 committed=false
 cleanup() {
   set +e
-  if [[ "$committed" == false && -d "$staged_app" && ! -L "$staged_app" ]]; then
+  if [[ "$committed" == false && -n "$staged_app" && -n "$staged_device" && \
+    -n "$staged_inode" && -d "$staged_app" && ! -L "$staged_app" ]]; then
     "$atomic_swap_executable" remove "$app_parent_real" "$staged_name" \
       "$parent_device" "$parent_inode" "$staged_device" "$staged_inode" \
       >/dev/null 2>&1 || true
@@ -315,6 +329,29 @@ cleanup() {
 handle_signal() {
   echo "application signing interrupted before commit" >&2
   exit 130
+}
+pause_signing_for_test() {
+  local phase="$1" control_dir="${SIGN_APP_TEST_CONTROL_DIR:-}"
+
+  [[ "${SIGN_APP_TEST_PAUSE_PHASE:-}" == "$phase" ]] || return 0
+  [[ -n "$control_dir" && -d "$control_dir" && ! -L "$control_dir" ]] ||
+    die "invalid signing test control directory" || return 1
+  : >"$control_dir/ready"
+  while [[ ! -e "$control_dir/continue" ]]; do
+    /bin/sleep 0.01
+  done
+}
+assert_source_identity() {
+  local current_device current_inode
+
+  [[ -d "$app_path" && ! -L "$app_path" ]] ||
+    die "source application identity changed during staging" || return 1
+  current_device="$(/usr/bin/stat -f '%d' "$app_path")" ||
+    die "source application identity changed during staging" || return 1
+  current_inode="$(/usr/bin/stat -f '%i' "$app_path")" ||
+    die "source application identity changed during staging" || return 1
+  [[ "$current_device" == "$source_device" && "$current_inode" == "$source_inode" ]] ||
+    die "source application identity changed during staging" || return 1
 }
 trap cleanup EXIT
 trap handle_signal HUP INT TERM
@@ -338,6 +375,28 @@ while [[ ! -s "$lock_ready" && "$lock_attempt" -lt 200 ]]; do
 done
 [[ -s "$lock_ready" ]] || die "timed out acquiring application signing lock"
 
+assert_source_identity
+staged_app="$(/usr/bin/mktemp -d "$app_parent_real/.$APP_NAME.app.sign.XXXXXX")"
+/bin/chmod 700 "$staged_app"
+staged_name="$(/usr/bin/basename "$staged_app")"
+staged_device="$(/usr/bin/stat -f '%d' "$staged_app")"
+staged_inode="$(/usr/bin/stat -f '%i' "$staged_app")"
+staged_owner="$(/usr/bin/stat -f '%u' "$staged_app")"
+staged_mode="$(/usr/bin/stat -f '%Lp' "$staged_app")"
+[[ "$staged_device" == "$parent_device" && \
+  "$staged_owner" == "$(/usr/bin/id -u)" && "$staged_mode" == 700 ]] ||
+  die "private signing stage failed ownership or mode validation"
+while IFS= read -r -d '' source_entry; do
+  "$DITTO_EXECUTABLE" "$source_entry" "$staged_app/${source_entry##*/}"
+done < <(/usr/bin/find -s "$app_path" -mindepth 1 -maxdepth 1 -print0)
+pause_signing_for_test after-copy
+assert_source_identity
+[[ "$(/usr/bin/stat -f '%d' "$staged_app")" == "$staged_device" && \
+  "$(/usr/bin/stat -f '%i' "$staged_app")" == "$staged_inode" && \
+  "$(/usr/bin/stat -f '%u' "$staged_app")" == "$(/usr/bin/id -u)" && \
+  "$(/usr/bin/stat -f '%Lp' "$staged_app")" == 700 ]] ||
+  die "private signing stage identity or mode changed during copying"
+
 app_path="$staged_app"
 framework_path="$app_path/Contents/Frameworks/Sparkle.framework"
 version_root="$framework_path/Versions/B"
@@ -360,6 +419,7 @@ sign_target "$version_root/Updater.app"
 sign_target "$framework_path"
 sign_target "$app_path/Contents/MacOS/$APP_NAME"
 sign_target "$app_path"
+/bin/chmod 755 "$staged_app"
 "$CODESIGN_EXECUTABLE" --verify --deep --strict --verbose=2 "$app_path"
 
 trap '' HUP INT TERM

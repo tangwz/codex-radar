@@ -756,6 +756,143 @@ for signing_index in "${!expected_signing_order[@]}"; do
 done
 assert_fixture_root_preserved "$signing_order_fixture"
 
+stage_mode_fixture="$(setup_task6_app signing-stage-mode)"
+mkdir "$stage_mode_fixture/mode-bin"
+cat >"$stage_mode_fixture/mode-bin/ditto" <<'MOCK_MODE_DITTO'
+#!/usr/bin/env bash
+set -euo pipefail
+
+"$SIGN_APP_TEST_REAL_DITTO" "$@"
+destination="${!#}"
+case "$destination" in
+  */Contents) staged_root="${destination%/Contents}" ;;
+  *) staged_root="$destination" ;;
+esac
+printf 'copy:%s\n' "$(/usr/bin/stat -f '%Lp' "$staged_root")" \
+  >>"$SIGN_APP_TEST_MODE_LOG"
+MOCK_MODE_DITTO
+cat >"$stage_mode_fixture/mode-bin/codesign" <<'MOCK_MODE_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${!#}"
+case "$target" in
+  */Contents/*) staged_root="${target%%/Contents/*}" ;;
+  *) staged_root="$target" ;;
+esac
+if [[ "$1" == --verify ]]; then
+  phase=verify
+else
+  phase=sign
+fi
+printf '%s:%s\n' "$phase" "$(/usr/bin/stat -f '%Lp' "$staged_root")" \
+  >>"$SIGN_APP_TEST_MODE_LOG"
+MOCK_MODE_CODESIGN
+chmod +x "$stage_mode_fixture/mode-bin/"*
+SIGN_APP_TEST_REAL_DITTO=/usr/bin/ditto \
+SIGN_APP_TEST_MODE_LOG="$stage_mode_fixture/stage-modes.log" \
+SIGN_APP_DITTO_EXECUTABLE="$stage_mode_fixture/mode-bin/ditto" \
+SIGN_APP_CODESIGN_EXECUTABLE="$stage_mode_fixture/mode-bin/codesign" \
+  "$SIGN_SCRIPT" --app "$stage_mode_fixture/CodexRadar.app" --signing-mode adhoc
+[[ "$(grep -c '^copy:700$' "$stage_mode_fixture/stage-modes.log")" -eq 1 ]] ||
+  fail "private signing stage was not 0700 throughout copying"
+[[ "$(grep -c '^sign:700$' "$stage_mode_fixture/stage-modes.log")" -eq 9 ]] ||
+  fail "private signing stage was not 0700 throughout signing"
+[[ "$(grep -c '^verify:755$' "$stage_mode_fixture/stage-modes.log")" -eq 1 ]] ||
+  fail "private signing stage was not 0755 for final verification"
+[[ "$(/usr/bin/stat -f '%Lp' "$stage_mode_fixture/CodexRadar.app")" == 755 ]] ||
+  fail "committed application root does not satisfy the 0755 contract"
+
+signing_lifecycle_fixture="$(setup_task6_app signing-stage-lifecycle)"
+mkdir "$signing_lifecycle_fixture/lifecycle-bin" "$signing_lifecycle_fixture/control"
+cat >"$signing_lifecycle_fixture/lifecycle-bin/ditto" <<'MOCK_LIFECYCLE_DITTO'
+#!/usr/bin/env bash
+set -euo pipefail
+
+"$SIGN_APP_TEST_REAL_DITTO" "$@"
+destination="${!#}"
+case "$destination" in
+  */.CodexRadar.app.sign.*|*/.CodexRadar.app.sign.*/Contents)
+    printf '%s\n' "$destination" >>"$SIGN_APP_TEST_COPY_LOG"
+    ;;
+esac
+MOCK_LIFECYCLE_DITTO
+cat >"$signing_lifecycle_fixture/lifecycle-bin/codesign" <<'MOCK_LIFECYCLE_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+exit 0
+MOCK_LIFECYCLE_CODESIGN
+chmod +x "$signing_lifecycle_fixture/lifecycle-bin/"*
+lifecycle_environment=(
+  SIGN_APP_DITTO_EXECUTABLE="$signing_lifecycle_fixture/lifecycle-bin/ditto"
+  SIGN_APP_CODESIGN_EXECUTABLE="$signing_lifecycle_fixture/lifecycle-bin/codesign"
+  SIGN_APP_TEST_REAL_DITTO=/usr/bin/ditto
+  SIGN_APP_TEST_COPY_LOG="$signing_lifecycle_fixture/copy.log"
+)
+env "${lifecycle_environment[@]}" SIGN_APP_TEST_PAUSE_PHASE=after-copy \
+  SIGN_APP_TEST_CONTROL_DIR="$signing_lifecycle_fixture/control" \
+  "$SIGN_SCRIPT" --app "$signing_lifecycle_fixture/CodexRadar.app" \
+  --signing-mode adhoc >"$signing_lifecycle_fixture/first-signer.log" 2>&1 &
+first_signer_pid=$!
+signer_ready=false
+for _ in $(seq 1 300); do
+  if [[ -f "$signing_lifecycle_fixture/control/ready" ]]; then
+    signer_ready=true
+    break
+  fi
+  /bin/sleep 0.01
+done
+if [[ "$signer_ready" != true ]]; then
+  /bin/kill -TERM "$first_signer_pid" >/dev/null 2>&1 || true
+  wait "$first_signer_pid" >/dev/null 2>&1 || true
+  cat "$signing_lifecycle_fixture/first-signer.log" >&2
+  fail "signer did not pause after private staging copy"
+fi
+staged_during_copy=("$signing_lifecycle_fixture"/.CodexRadar.app.sign.*)
+[[ "${#staged_during_copy[@]}" -eq 1 && -d "${staged_during_copy[0]}" && \
+  ! -L "${staged_during_copy[0]}" ]] ||
+  fail "signer did not retain exactly one private stage while paused"
+[[ "$(/usr/bin/stat -f '%Lp' "${staged_during_copy[0]}")" == 700 ]] ||
+  fail "paused private signing stage was not 0700"
+assert_task6_rejected "output path is locked by another packager" \
+  "$signing_lifecycle_fixture" env "${lifecycle_environment[@]}" \
+  "$SIGN_SCRIPT" --app "$signing_lifecycle_fixture/CodexRadar.app" \
+  --signing-mode adhoc
+[[ "$(wc -l <"$signing_lifecycle_fixture/copy.log" | tr -d ' ')" -eq 1 ]] ||
+  fail "concurrent signer copied an application before acquiring the signing lock"
+mv "$signing_lifecycle_fixture/CodexRadar.app" \
+  "$signing_lifecycle_fixture/source-before-replacement.app"
+/usr/bin/ditto "$signing_lifecycle_fixture/source-before-replacement.app" \
+  "$signing_lifecycle_fixture/CodexRadar.app"
+replacement_inode="$(/usr/bin/stat -f '%i' \
+  "$signing_lifecycle_fixture/CodexRadar.app")"
+snapshot_task6_app "$signing_lifecycle_fixture/CodexRadar.app" \
+  "$signing_lifecycle_fixture/replacement-before.snapshot"
+: >"$signing_lifecycle_fixture/control/continue"
+if wait "$first_signer_pid"; then
+  fail "signer committed after source application identity replacement"
+fi
+grep -F "source application identity changed during staging" \
+  "$signing_lifecycle_fixture/first-signer.log" >/dev/null || {
+  cat "$signing_lifecycle_fixture/first-signer.log" >&2
+  fail "signer did not report source application identity replacement"
+}
+[[ "$(/usr/bin/stat -f '%i' "$signing_lifecycle_fixture/CodexRadar.app")" == \
+  "$replacement_inode" ]] ||
+  fail "failed signer replaced the new source application"
+snapshot_task6_app "$signing_lifecycle_fixture/CodexRadar.app" \
+  "$signing_lifecycle_fixture/replacement-after.snapshot"
+/usr/bin/cmp -s "$signing_lifecycle_fixture/replacement-before.snapshot" \
+  "$signing_lifecycle_fixture/replacement-after.snapshot" ||
+  fail "failed signer changed the replacement application tree"
+[[ -z "$(/usr/bin/find "$signing_lifecycle_fixture" -maxdepth 1 \
+  -name '.CodexRadar.app.sign.*' -print -quit)" ]] ||
+  fail "failed signer retained a private signing stage"
+env "${lifecycle_environment[@]}" \
+  "$SIGN_SCRIPT" --app "$signing_lifecycle_fixture/CodexRadar.app" \
+  --signing-mode adhoc || fail "signing lock was not released after staging failure"
+
 developer_id_fixture="$(setup_task6_app developer-id-inputs)"
 assert_task6_rejected "developer-id signing requires DEVELOPER_ID_APPLICATION" \
   "$developer_id_fixture" env -u DEVELOPER_ID_APPLICATION \
@@ -826,6 +963,20 @@ assert_task6_rejected "developer-id signing identity is ambiguous" \
   --signing-mode developer-id
 [[ ! -s "$developer_identity_fixture/codesign-calls" ]] ||
   fail "ambiguous Developer ID identity reached codesign or ad-hoc fallback"
+
+: >"$developer_identity_fixture/codesign-calls"
+development_identity_hash=3333333333333333333333333333333333333333
+development_identity_name='Apple Development: Test Example (TEAMID1234)'
+development_identity="     1) $development_identity_hash \"$development_identity_name\"
+     1 valid identities found"
+assert_task6_rejected "resolved signing identity is not a Developer ID Application certificate" \
+  "$developer_identity_fixture" env "${developer_identity_environment[@]}" \
+  DEVELOPER_ID_APPLICATION="$development_identity_hash" \
+  SIGN_APP_TEST_IDENTITIES="$development_identity" \
+  "$SIGN_SCRIPT" --app "$developer_identity_fixture/CodexRadar.app" \
+  --signing-mode developer-id
+[[ ! -s "$developer_identity_fixture/codesign-calls" ]] ||
+  fail "non-Developer ID identity reached codesign or ad-hoc fallback"
 
 : >"$developer_identity_fixture/codesign-calls"
 single_identity="     1) 1111111111111111111111111111111111111111 \"$developer_identity_name\"
@@ -1036,6 +1187,14 @@ with zipfile.ZipFile(archive_path, mode) as archive:
             with archive.open(entry, "w") as output:
                 for _ in range(45):
                     output.write(block)
+    elif injection == "oversized-compressed":
+        block = b"x" * (1024 * 1024)
+        for index in range(2):
+            entry = zipfile.ZipInfo("CodexRadar.app/compressed-{}.bin".format(index))
+            entry.compress_type = zipfile.ZIP_STORED
+            with archive.open(entry, "w") as output:
+                for _ in range(34):
+                    output.write(block)
     elif injection == "many-entries":
         for index in range(2050):
             archive.writestr("CodexRadar.app/many/{:04d}".format(index), b"")
@@ -1067,6 +1226,8 @@ with zipfile.ZipFile(archive_path, mode) as archive:
     elif injection == "overlapping-range":
         archive.writestr("CodexRadar.app/overlap-a", b"a")
         archive.writestr("CodexRadar.app/overlap-b", b"b")
+    elif injection == "oversized-archive":
+        pass
     else:
         raise SystemExit("unknown archive injection")
 
@@ -1093,6 +1254,9 @@ if injection == "overlapping-range":
     )
     with open(archive_path, "wb") as output:
         output.write(data)
+elif injection == "oversized-archive":
+    with open(archive_path, "ab") as output:
+        output.truncate(193 * 1024 * 1024)
 PYTHON
 fi
 MOCK_DITTO
@@ -1114,8 +1278,9 @@ run_release_fixture() {
 
 for archive_injection in extra-top-level apple-double path-traversal escaped-symlink \
   high-compression-symlink oversized-symlink oversized-regular oversized-total \
-  many-entries case-collision unicode-collision ancestry-conflict symlink-ancestor \
-  symlink-cycle root-not-directory overlapping-range; do
+  oversized-compressed oversized-archive many-entries case-collision \
+  unicode-collision ancestry-conflict symlink-ancestor symlink-cycle \
+  root-not-directory overlapping-range; do
   archive_fixture="$(setup_release_fixture "$archive_injection")"
   extract_marker="$archive_fixture/extraction-started"
   mkdir -m 700 "$archive_fixture/tmp"
@@ -1128,6 +1293,8 @@ for archive_injection in extra-top-level apple-double path-traversal escaped-sym
     oversized-symlink) archive_message="archive symlink payload is too large" ;;
     oversized-regular) archive_message="archive entry exceeds uncompressed size limit" ;;
     oversized-total) archive_message="archive exceeds total uncompressed size limit" ;;
+    oversized-compressed) archive_message="archive exceeds cumulative compressed size limit" ;;
+    oversized-archive) archive_message="release archive exceeds byte length limit" ;;
     many-entries) archive_message="archive contains too many entries" ;;
     case-collision|unicode-collision) archive_message="archive contains a macOS path collision" ;;
     ancestry-conflict) archive_message="archive contains a file-directory ancestry conflict" ;;
@@ -1222,6 +1389,61 @@ assert_task6_rejected "release publishing interrupted" "$signal_failure_fixture"
   run_release_fixture "$signal_failure_fixture" \
   PACKAGE_RELEASE_TEST_SIGNAL_AFTER_PUBLISH_COUNT=1
 assert_release_artifact_set_absent "$signal_failure_fixture"
+
+critical_signal_fixture="$(setup_release_fixture publish-critical-signal)"
+critical_signal_control="$critical_signal_fixture/control"
+mkdir "$critical_signal_control" "$critical_signal_fixture/output"
+printf 'prior archive\n' >"$critical_signal_fixture/output/Prior-v0.0.1.zip"
+printf 'prior checksum\n' >"$critical_signal_fixture/output/Prior-v0.0.1.zip.sha256"
+printf 'prior manifest\n' >"$critical_signal_fixture/output/Prior-v0.0.1.zip.manifest"
+/usr/bin/shasum -a 256 \
+  "$critical_signal_fixture/output/Prior-v0.0.1.zip" \
+  "$critical_signal_fixture/output/Prior-v0.0.1.zip.sha256" \
+  "$critical_signal_fixture/output/Prior-v0.0.1.zip.manifest" \
+  >"$critical_signal_fixture/prior-before.sha256"
+env PACKAGE_RELEASE_TEST_APP_SOURCE="$valid_verify_fixture/CodexRadar.app" \
+  PACKAGE_RELEASE_DITTO_EXECUTABLE="$critical_signal_fixture/bin/ditto" \
+  PACKAGE_RELEASE_REAL_DITTO=/usr/bin/ditto \
+  PACKAGE_RELEASE_TEST_HELPER_PAUSE_READY="$critical_signal_control/ready" \
+  PACKAGE_RELEASE_TEST_HELPER_PAUSE_CONTINUE="$critical_signal_control/continue" \
+  "$critical_signal_fixture/script/package_release.sh" \
+  --output "$critical_signal_fixture/output" --signing-mode adhoc \
+  >"$critical_signal_fixture/publisher.log" 2>&1 &
+critical_publisher_pid=$!
+critical_publisher_ready=false
+for _ in $(seq 1 1000); do
+  if [[ -f "$critical_signal_control/ready" ]]; then
+    critical_publisher_ready=true
+    break
+  fi
+  /bin/sleep 0.01
+done
+if [[ "$critical_publisher_ready" != true ]]; then
+  /bin/kill -TERM "$critical_publisher_pid" >/dev/null 2>&1 || true
+  wait "$critical_publisher_pid" >/dev/null 2>&1 || true
+  cat "$critical_signal_fixture/publisher.log" >&2
+  fail "release helper did not pause in the publish rename critical window"
+fi
+/bin/kill -TERM "$critical_publisher_pid"
+: >"$critical_signal_control/continue"
+critical_publisher_status=0
+wait "$critical_publisher_pid" || critical_publisher_status=$?
+[[ "$critical_publisher_status" -eq 130 ]] || {
+  cat "$critical_signal_fixture/publisher.log" >&2
+  fail "deferred publish signal did not exit with status 130"
+}
+grep -F "release publishing interrupted" \
+  "$critical_signal_fixture/publisher.log" >/dev/null ||
+  fail "deferred publish signal was not reported"
+assert_release_artifact_set_absent "$critical_signal_fixture"
+/usr/bin/shasum -a 256 --check \
+  "$critical_signal_fixture/prior-before.sha256" >/dev/null ||
+  fail "publish signal rollback changed a prior artifact set"
+run_release_fixture "$critical_signal_fixture" >/dev/null 2>&1 ||
+  fail "release output lock was not released after deferred signal rollback"
+/usr/bin/shasum -a 256 --check \
+  "$critical_signal_fixture/prior-before.sha256" >/dev/null ||
+  fail "successful retry changed a prior artifact set"
 
 existing_artifact_fixture="$(setup_release_fixture preserve-existing-release)"
 existing_archive="$existing_artifact_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"

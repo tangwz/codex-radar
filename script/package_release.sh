@@ -35,10 +35,12 @@ import zipfile
 
 
 APPLICATION_ROOT = "CodexRadar.app"
+MAX_ARCHIVE_BYTE_LENGTH = 192 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 100
 MAX_ENTRY_COUNT = 2048
 MAX_ENTRY_UNCOMPRESSED_SIZE = 64 * 1024 * 1024
 MAX_SYMLINK_PAYLOAD_SIZE = 4096
+MAX_TOTAL_COMPRESSED_SIZE = 64 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_SIZE = 128 * 1024 * 1024
 
 
@@ -222,6 +224,15 @@ def resolve_symlinks(components, entries_by_key, symlinks, seen=None):
 
 archive_path = sys.argv[1]
 try:
+    archive_status = os.stat(archive_path, follow_symlinks=False)
+except OSError as error:
+    reject("invalid release archive: {}".format(error))
+if not stat.S_ISREG(archive_status.st_mode):
+    reject("release archive must be a regular file")
+if archive_status.st_size > MAX_ARCHIVE_BYTE_LENGTH:
+    reject("release archive exceeds byte length limit")
+
+try:
     archive = zipfile.ZipFile(archive_path)
 except (OSError, zipfile.BadZipFile) as error:
     reject("invalid release archive: {}".format(error))
@@ -233,11 +244,13 @@ with archive:
     if len(entries) > MAX_ENTRY_COUNT:
         reject("archive contains too many entries")
 
+    total_compressed_size = 0
     total_uncompressed_size = 0
     for entry in entries:
         if entry.file_size > MAX_ENTRY_UNCOMPRESSED_SIZE:
             reject("archive entry exceeds uncompressed size limit")
         total_uncompressed_size += entry.file_size
+        total_compressed_size += entry.compress_size
         if total_uncompressed_size > MAX_TOTAL_UNCOMPRESSED_SIZE:
             reject("archive exceeds total uncompressed size limit")
         if entry.file_size > 0 and (
@@ -245,6 +258,8 @@ with archive:
             or entry.file_size > entry.compress_size * MAX_COMPRESSION_RATIO
         ):
             reject("archive entry exceeds compression ratio limit")
+    if total_compressed_size > MAX_TOTAL_COMPRESSED_SIZE:
+        reject("archive exceeds cumulative compressed size limit")
 
     validate_local_data_ranges(archive, entries)
 
@@ -351,6 +366,8 @@ publish_stage_inode=""
 lock_process_id=""
 lock_pipe_open=false
 publication_committed=false
+publication_in_flight=false
+pending_release_signal=""
 published_names=()
 published_devices=()
 published_inodes=()
@@ -383,9 +400,15 @@ cleanup() {
   /bin/rm -rf "$work_dir" >/dev/null 2>&1 || true
   return 0
 }
-handle_signal() {
-  echo "release publishing interrupted" >&2
-  exit 130
+handle_release_signal() {
+  local signal_name="$1"
+
+  [[ -n "$pending_release_signal" ]] || pending_release_signal="$signal_name"
+  if [[ "$publication_in_flight" != true ]]; then
+    echo "release publishing interrupted" >&2
+    exit 130
+  fi
+  return 0
 }
 pause_after_release_lock_for_test() {
   local control_dir="${PACKAGE_RELEASE_TEST_CONTROL_DIR:-}"
@@ -399,7 +422,9 @@ pause_after_release_lock_for_test() {
   done
 }
 trap cleanup EXIT
-trap handle_signal HUP INT TERM
+trap 'handle_release_signal HUP' HUP
+trap 'handle_release_signal INT' INT
+trap 'handle_release_signal TERM' TERM
 
 DITTO_EXECUTABLE="${PACKAGE_RELEASE_DITTO_EXECUTABLE:-/usr/bin/ditto}"
 PYTHON_EXECUTABLE="${PACKAGE_RELEASE_PYTHON_EXECUTABLE:-/usr/bin/python3}"
@@ -567,15 +592,23 @@ while [[ "$publish_index" -lt "${#publish_sources[@]}" ]]; do
   publish_destination="${publish_destinations[$publish_index]}"
   publish_device="$(/usr/bin/stat -f '%d' "$publish_source")"
   publish_inode="$(/usr/bin/stat -f '%i' "$publish_source")"
-  trap '' HUP INT TERM
+  publication_in_flight=true
+  publish_status=0
   "$atomic_swap_executable" publish "$output_path" "$publish_stage_name" \
     "$publish_destination" "$publish_destination" "$output_device" \
     "$output_inode" "$publish_stage_device" "$publish_stage_inode" \
-    "$publish_device" "$publish_inode"
-  published_names+=("$publish_destination")
-  published_devices+=("$publish_device")
-  published_inodes+=("$publish_inode")
-  trap handle_signal HUP INT TERM
+    "$publish_device" "$publish_inode" || publish_status=$?
+  if [[ "$publish_status" -eq 0 ]]; then
+    published_names+=("$publish_destination")
+    published_devices+=("$publish_device")
+    published_inodes+=("$publish_inode")
+  fi
+  publication_in_flight=false
+  if [[ -n "$pending_release_signal" ]]; then
+    echo "release publishing interrupted" >&2
+    exit 130
+  fi
+  [[ "$publish_status" -eq 0 ]] || die "release artifact publication failed"
   if [[ "${PACKAGE_RELEASE_TEST_SIGNAL_AFTER_PUBLISH_COUNT:-}" == "$artifact_number" ]]; then
     /bin/kill -TERM "$$"
   fi

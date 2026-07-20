@@ -112,6 +112,38 @@ static int pause_before_rename(void) {
   return -1;
 }
 
+static int pause_before_release_publish_rename(void) {
+  const char *ready_path =
+      getenv("PACKAGE_RELEASE_TEST_HELPER_PAUSE_READY");
+  const char *continue_path =
+      getenv("PACKAGE_RELEASE_TEST_HELPER_PAUSE_CONTINUE");
+  struct timespec delay = {.tv_sec = 0, .tv_nsec = 10000000};
+  int ready_fd;
+  int attempts;
+
+  if (ready_path == NULL && continue_path == NULL) {
+    return 0;
+  }
+  if (ready_path == NULL || continue_path == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  ready_fd = open(ready_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (ready_fd >= 0) {
+    close(ready_fd);
+  } else if (errno != EEXIST) {
+    return -1;
+  }
+  for (attempts = 0; attempts < 1000; attempts++) {
+    if (access(continue_path, F_OK) == 0) {
+      return 0;
+    }
+    nanosleep(&delay, NULL);
+  }
+  errno = ETIMEDOUT;
+  return -1;
+}
+
 static int remove_tree_contents(int directory_fd) {
   struct dirent *entry;
   DIR *directory = fdopendir(dup(directory_fd));
@@ -155,10 +187,16 @@ static int remove_tree_contents(int directory_fd) {
 
 static int remove_verified(int parent_fd, const char *name, uint64_t device,
                            uint64_t inode) {
+  struct stat before;
   struct stat after;
-  int directory_fd = verify_named_directory(parent_fd, name, device, inode, NULL);
+  int directory_fd =
+      verify_named_directory(parent_fd, name, device, inode, &before);
 
-  if (directory_fd < 0) {
+  if (directory_fd < 0 || !trusted_directory(&before)) {
+    if (directory_fd >= 0) {
+      close(directory_fd);
+    }
+    errno = ESTALE;
     return -1;
   }
   if (remove_tree_contents(directory_fd) != 0 ||
@@ -494,8 +532,19 @@ static int publish_file(int argc, char **argv) {
     return fail("release publication target changed before commit");
   }
   close(recheck_fd);
-  if (fsync(staged_file_fd) != 0 || fsync(staged_directory_fd) != 0 ||
-      renameatx_np(staged_directory_fd, argv[4], parent_fd, argv[5],
+  if (fsync(staged_file_fd) != 0 || fsync(staged_directory_fd) != 0) {
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    return fail("cannot atomically publish release artifact");
+  }
+  if (pause_before_release_publish_rename() != 0) {
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    return fail("release publish helper pause failed");
+  }
+  if (renameatx_np(staged_directory_fd, argv[4], parent_fd, argv[5],
                    kRenameSafetyFlags | RENAME_EXCL) != 0) {
     close(staged_file_fd);
     close(staged_directory_fd);
