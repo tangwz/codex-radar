@@ -9,7 +9,9 @@ SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
 CI_WORKFLOW="$WORKFLOW_DIR/ci.yml"
+CANDIDATE_WORKFLOW="$WORKFLOW_DIR/prepare-candidate.yml"
 CODEOWNERS_FILE="$ROOT_DIR/.github/CODEOWNERS"
+RELEASING_DOC="$ROOT_DIR/docs/releasing.md"
 
 [[ -x "$PREPARE_SCRIPT" ]] || {
   echo "prepare_appcast_inputs.sh does not exist" >&2
@@ -45,11 +47,14 @@ validate_workflow_policy() {
   local workflow_dir="${1:-$WORKFLOW_DIR}"
   local ci_workflow="${2:-$CI_WORKFLOW}"
   local codeowners_file="${3:-$CODEOWNERS_FILE}"
+  local candidate_workflow="${4:-$CANDIDATE_WORKFLOW}"
+  local releasing_doc="${5:-$RELEASING_DOC}"
 
-  /usr/bin/ruby - "$workflow_dir" "$ci_workflow" "$codeowners_file" <<'RUBY'
+  /usr/bin/ruby - "$workflow_dir" "$ci_workflow" "$codeowners_file" \
+    "$candidate_workflow" "$releasing_doc" <<'RUBY'
 require "yaml"
 
-workflow_dir, ci_path, codeowners_path = ARGV
+workflow_dir, ci_path, codeowners_path, candidate_path, releasing_path = ARGV
 
 def reject(message)
   warn(message)
@@ -59,7 +64,9 @@ end
 def fetch_key(mapping, name)
   return nil unless mapping.is_a?(Hash)
 
-  pair = mapping.find { |key, _value| key.to_s == name }
+  pair = mapping.find do |key, _value|
+    key.to_s == name || (name == "on" && key == true)
+  end
   pair&.last
 end
 
@@ -166,6 +173,155 @@ required_ci_snippets = [
 ]
 required_ci_snippets.each do |snippet|
   reject("ci.yml lacks required content: #{snippet}") unless ci.include?(snippet)
+end
+
+reject("prepare-candidate.yml does not exist") unless File.file?(candidate_path)
+candidate_source = File.read(candidate_path, encoding: "UTF-8")
+begin
+  candidate = YAML.safe_load(
+    candidate_source,
+    permitted_classes: [],
+    permitted_symbols: [],
+    aliases: true,
+    filename: candidate_path
+  ) || {}
+rescue Psych::Exception => error
+  reject("prepare-candidate.yml is invalid YAML: #{error.message}")
+end
+
+trigger = fetch_key(candidate, "on")
+push = fetch_key(trigger, "push")
+tags = fetch_key(push, "tags")
+dispatch = fetch_key(trigger, "workflow_dispatch")
+reject("prepare-candidate.yml must run for v* tags") unless tags == ["v*"]
+reject("prepare-candidate.yml must provide a manual dry run") unless dispatch.is_a?(Hash)
+
+candidate_permissions = fetch_key(candidate, "permissions")
+unless fetch_key(candidate_permissions, "contents").to_s == "read"
+  reject("prepare-candidate.yml must be read-only by default")
+end
+candidate_concurrency = fetch_key(candidate, "concurrency")
+unless fetch_key(candidate_concurrency, "group").to_s == "update-${{ github.repository }}-${{ github.ref_name }}" &&
+    fetch_key(candidate_concurrency, "cancel-in-progress") == true
+  reject("prepare-candidate.yml must use shared update concurrency")
+end
+
+candidate_jobs = fetch_key(candidate, "jobs")
+build_job = fetch_key(candidate_jobs, "build-test-package")
+sign_job = fetch_key(candidate_jobs, "sign-candidate")
+reject("prepare-candidate.yml must define build-test-package") unless build_job.is_a?(Hash)
+reject("prepare-candidate.yml must define sign-candidate") unless sign_job.is_a?(Hash)
+unless fetch_key(fetch_key(build_job, "permissions"), "contents").to_s == "read"
+  reject("build-test-package must grant only contents: read")
+end
+reject("build-test-package must not use an Environment") unless fetch_key(build_job, "environment").nil?
+unless fetch_key(sign_job, "environment").to_s == "release"
+  reject("sign-candidate must use the release Environment")
+end
+unless fetch_key(fetch_key(sign_job, "permissions"), "contents").to_s == "write"
+  reject("sign-candidate must grant contents: write")
+end
+sign_condition = fetch_key(sign_job, "if").to_s
+unless sign_condition.include?("github.event_name == 'push'") &&
+  sign_condition.include?("startsWith(github.ref, 'refs/tags/v')")
+  reject("manual dry runs must not enter sign-candidate")
+end
+
+secret_references = candidate_source.scan(/\$\{\{[^}]*\bsecrets(?:\.|\[)[^}]*\}\}/m)
+unless secret_references == ["${{ secrets.SPARKLE_ED_PRIVATE_KEY }}"]
+  reject("prepare-candidate.yml must contain exactly one private-key secret reference")
+end
+
+sign_steps = fetch_key(sign_job, "steps")
+reject("sign-candidate must contain steps") unless sign_steps.is_a?(Array)
+secret_step_indexes = []
+sign_steps.each_with_index do |step, index|
+  secret_step_indexes << index if secret_reference?(step)
+end
+unless secret_step_indexes.length == 1
+  reject("sign-candidate must expose the private key in exactly one step")
+end
+secret_index = secret_step_indexes.first
+secret_step = sign_steps.fetch(secret_index)
+secret_run = fetch_key(secret_step, "run").to_s
+unless secret_run.lines.grep(/generate_appcast/).length == 2 &&
+  secret_run.scan(/--maximum-versions 1/).length == 2 &&
+  secret_run.scan(/--ed-key-file -/).length == 2 &&
+  secret_run.include?("set +x") &&
+  !secret_run.match?(/\.\/script\/|swift |xcodebuild|gh |curl /)
+  reject("private-key step must only sign the two prepared appcasts through stdin")
+end
+
+before_secret = sign_steps[0...secret_index].to_s
+after_secret = sign_steps[(secret_index + 1)..].to_s
+[
+  "Sparkle-2.9.4.tar.xz",
+  "ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9",
+  "prepare_appcast_inputs.sh",
+  "production-download-url-prefix",
+  "qualification-download-url-prefix"
+].each do |snippet|
+  reject("sign-candidate must prepare tools and inputs before secret exposure") unless before_secret.include?(snippet)
+end
+[
+  "verify_update_artifacts.sh",
+  "gh release create",
+  "--draft",
+  "gh release download",
+  "/usr/bin/cmp",
+  "Draft"
+].each do |snippet|
+  reject("sign-candidate must validate and preserve a Draft after signing") unless after_secret.include?(snippet)
+end
+
+all_uses = []
+each_mapping(candidate) do |mapping|
+  mapping.each { |key, value| all_uses << value.to_s if key.to_s == "uses" }
+end
+[
+  "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+].each do |action|
+  reject("prepare-candidate.yml lacks required pinned action: #{action}") unless all_uses.include?(action)
+end
+
+qualification_upload = sign_steps.find do |step|
+  fetch_key(step, "uses").to_s == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+end
+qualification_with = fetch_key(qualification_upload, "with")
+unless fetch_key(qualification_with, "retention-days") == 7 &&
+  fetch_key(qualification_with, "name").to_s.include?("qualification")
+  reject("qualification Artifact must be retained for seven days")
+end
+
+[
+  "validate_release_tag",
+  "origin/main",
+  "merge-base --is-ancestor",
+  "MARKETING_VERSION",
+  "BUILD_NUMBER",
+  "package_release.sh --output",
+  "--signing-mode adhoc"
+].each do |snippet|
+  reject("prepare-candidate.yml lacks release validation: #{snippet}") unless candidate_source.include?(snippet)
+end
+if candidate_source.include?("--draft=false") || candidate_source.include?("--draft false")
+  reject("prepare-candidate.yml must leave the Candidate Release as Draft")
+end
+
+reject("docs/releasing.md does not exist") unless File.file?(releasing_path)
+releasing = File.read(releasing_path, encoding: "UTF-8")
+[
+  "./bin/generate_keys --account com.terence.codex-radar -p",
+  "gh secret set SPARKLE_ED_PRIVATE_KEY --env release",
+  "chmod 600",
+  "trap",
+  "best-effort",
+  "encrypted offline backup",
+  "burned"
+].each do |snippet|
+  reject("docs/releasing.md lacks required guidance: #{snippet}") unless releasing.include?(snippet)
 end
 
 checksum_index = ci.index("shasum -a 256 -c -")
