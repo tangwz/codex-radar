@@ -408,12 +408,51 @@ done < <(/usr/bin/find -s "$app_path" -type f -print0)
   die "application does not contain the exact expected Mach-O set"
 
 "$CODESIGN_EXECUTABLE" --verify --deep --strict --verbose=2 "$app_path"
-if [[ "$signing_mode" == adhoc ]]; then
-  signature_details="$("$CODESIGN_EXECUTABLE" -d --verbose=4 "$app_path" 2>&1)" ||
+known_code_objects=(
+  "$version_root/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+  "$version_root/XPCServices/Downloader.xpc"
+  "$version_root/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+  "$version_root/XPCServices/Installer.xpc"
+  "$version_root/Autoupdate"
+  "$version_root/Updater.app/Contents/MacOS/Updater"
+  "$version_root/Updater.app"
+  "$version_root/Sparkle"
+  "$framework_path"
+  "$app_path/Contents/MacOS/$APP_NAME"
+  "$app_path"
+)
+outer_authorities=""
+outer_team_identifier=""
+if [[ "$signing_mode" == developer-id ]]; then
+  outer_signature_details="$("$CODESIGN_EXECUTABLE" -d --verbose=4 "$app_path" 2>&1)" ||
     die "unable to inspect application signature"
-  [[ "$signature_details" == *"Signature=adhoc"* ]] ||
-    die "application is not signed with an ad-hoc identity"
-else
+  outer_authorities="$(printf '%s\n' "$outer_signature_details" | \
+    /usr/bin/awk '/^Authority=/{print}')"
+  outer_team_identifier="$(printf '%s\n' "$outer_signature_details" | \
+    /usr/bin/awk -F= '$1 == "TeamIdentifier" {print substr($0, index($0, "=") + 1); exit}')"
+  [[ -n "$outer_authorities" && -n "$outer_team_identifier" && \
+    "$outer_team_identifier" != "not set" ]] ||
+    die "application does not have a usable developer-id identity"
+fi
+for code_object in "${known_code_objects[@]}"; do
+  signature_details="$("$CODESIGN_EXECUTABLE" -d --verbose=4 "$code_object" 2>&1)" ||
+    die "unable to inspect code object signature: $code_object"
+  signature_kind="$(printf '%s\n' "$signature_details" | \
+    /usr/bin/awk -F= '$1 == "Signature" {print substr($0, index($0, "=") + 1); exit}')"
+  if [[ "$signing_mode" == adhoc ]]; then
+    [[ "$signature_kind" == adhoc ]] ||
+      die "code object is not signed with an ad-hoc identity: $code_object"
+  else
+    code_authorities="$(printf '%s\n' "$signature_details" | \
+      /usr/bin/awk '/^Authority=/{print}')"
+    code_team_identifier="$(printf '%s\n' "$signature_details" | \
+      /usr/bin/awk -F= '$1 == "TeamIdentifier" {print substr($0, index($0, "=") + 1); exit}')"
+    [[ "$signature_kind" != adhoc && "$code_authorities" == "$outer_authorities" && \
+      "$code_team_identifier" == "$outer_team_identifier" ]] ||
+      die "developer-id identity mismatch for code object: $code_object"
+  fi
+done
+if [[ "$signing_mode" == developer-id ]]; then
   /usr/sbin/spctl --assess --type execute --verbose=2 "$app_path"
   /usr/bin/xcrun stapler validate "$app_path"
 fi

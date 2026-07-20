@@ -221,12 +221,14 @@ app_path="$app_parent_real/$app_name"
 [[ -d "$app_path" && ! -L "$app_path" ]] || die "application must be a real directory"
 
 CODESIGN_EXECUTABLE="${SIGN_APP_CODESIGN_EXECUTABLE:-/usr/bin/codesign}"
+SECURITY_EXECUTABLE="${SIGN_APP_SECURITY_EXECUTABLE:-/usr/bin/security}"
+XCRUN_EXECUTABLE="${SIGN_APP_XCRUN_EXECUTABLE:-/usr/bin/xcrun}"
+DITTO_EXECUTABLE="${SIGN_APP_DITTO_EXECUTABLE:-/usr/bin/ditto}"
 [[ -x "$CODESIGN_EXECUTABLE" ]] || die "codesign is required"
+[[ -x "$DITTO_EXECUTABLE" ]] || die "ditto is required"
 case "$signing_mode" in
   adhoc)
-    sign_target() {
-      "$CODESIGN_EXECUTABLE" --force --sign - "$1"
-    }
+    signing_identity=-
     ;;
   developer-id)
     [[ -n "${DEVELOPER_ID_APPLICATION:-}" ]] ||
@@ -239,10 +241,30 @@ case "$signing_mode" in
       die "developer-id signing requires APP_STORE_CONNECT_KEY_ID"
     [[ -n "${APP_STORE_CONNECT_ISSUER_ID:-}" ]] ||
       die "developer-id signing requires APP_STORE_CONNECT_ISSUER_ID"
-    sign_target() {
-      "$CODESIGN_EXECUTABLE" --force --options runtime --timestamp \
-        --sign "$DEVELOPER_ID_APPLICATION" "$1"
-    }
+    [[ -x "$SECURITY_EXECUTABLE" ]] || die "security is required for developer-id signing"
+    [[ -x "$XCRUN_EXECUTABLE" ]] || die "xcrun is required for developer-id signing"
+    identity_output="$($SECURITY_EXECUTABLE find-identity -v -p codesigning)" ||
+      die "unable to enumerate developer-id signing identities"
+    identity_match_count=0
+    while IFS= read -r identity_line; do
+      if [[ "$identity_line" =~ ^[[:space:]]*[0-9]+\)[[:space:]]+([0-9A-Fa-f]{40})[[:space:]]+\"(.*)\"$ ]]; then
+        identity_hash="${BASH_REMATCH[1]}"
+        identity_name="${BASH_REMATCH[2]}"
+        if [[ "$DEVELOPER_ID_APPLICATION" == "$identity_hash" || \
+          "$DEVELOPER_ID_APPLICATION" == "$identity_name" ]]; then
+          identity_match_count=$((identity_match_count + 1))
+        fi
+      fi
+    done <<<"$identity_output"
+    [[ "$identity_match_count" -ne 0 ]] || die "developer-id signing identity not found"
+    [[ "$identity_match_count" -eq 1 ]] || die "developer-id signing identity is ambiguous"
+    "$XCRUN_EXECUTABLE" notarytool history \
+      --key "$APP_STORE_CONNECT_API_KEY_PATH" \
+      --key-id "$APP_STORE_CONNECT_KEY_ID" \
+      --issuer "$APP_STORE_CONNECT_ISSUER_ID" \
+      --output-format json --no-progress >/dev/null ||
+      die "developer-id notarization credential preflight failed"
+    signing_identity="$DEVELOPER_ID_APPLICATION"
     ;;
   *) die "signing-mode must be adhoc or developer-id" ;;
 esac
@@ -251,6 +273,82 @@ validate_bundle_symlinks "$app_path"
 framework_path="$app_path/Contents/Frameworks/Sparkle.framework"
 version_root="$framework_path/Versions/B"
 validate_sparkle_layout "$app_path" "$framework_path" "$version_root"
+
+work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-sign.XXXXXX")"
+atomic_swap_executable="$work_dir/atomic-swap"
+atomic_swap_source="$ROOT_DIR/script/helpers/atomic_swap.c"
+[[ -f "$atomic_swap_source" ]] || die "missing atomic swap helper source"
+/usr/bin/xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
+  -mmacosx-version-min="$MIN_SYSTEM_VERSION" "$atomic_swap_source" \
+  -o "$atomic_swap_executable"
+
+parent_device="$(/usr/bin/stat -f '%d' "$app_parent_real")"
+parent_inode="$(/usr/bin/stat -f '%i' "$app_parent_real")"
+staged_app="$(/usr/bin/mktemp -d "$app_parent_real/.$APP_NAME.app.sign.XXXXXX")"
+staged_name="$(/usr/bin/basename "$staged_app")"
+"$DITTO_EXECUTABLE" "$app_path" "$staged_app"
+/bin/chmod "$(/usr/bin/stat -f '%Lp' "$app_path")" "$staged_app"
+staged_device="$(/usr/bin/stat -f '%d' "$staged_app")"
+staged_inode="$(/usr/bin/stat -f '%i' "$staged_app")"
+
+lock_fifo="$work_dir/sign-lock.fifo"
+lock_ready="$work_dir/sign-lock.ready"
+/usr/bin/mkfifo "$lock_fifo"
+lock_process_id=""
+lock_pipe_open=false
+committed=false
+cleanup() {
+  set +e
+  if [[ "$committed" == false && -d "$staged_app" && ! -L "$staged_app" ]]; then
+    "$atomic_swap_executable" remove "$app_parent_real" "$staged_name" \
+      "$parent_device" "$parent_inode" "$staged_device" "$staged_inode" \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ "$lock_pipe_open" == true ]]; then
+    exec 9>&-
+    lock_pipe_open=false
+  fi
+  [[ -z "$lock_process_id" ]] || wait "$lock_process_id" >/dev/null 2>&1 || true
+  /bin/rm -rf "$work_dir" >/dev/null 2>&1 || true
+  return 0
+}
+handle_signal() {
+  echo "application signing interrupted before commit" >&2
+  exit 130
+}
+trap cleanup EXIT
+trap handle_signal HUP INT TERM
+
+"$atomic_swap_executable" lock "$app_parent_real" ".$APP_NAME.sign.lock" \
+  "$parent_device" "$parent_inode" <"$lock_fifo" >"$lock_ready" 2>"$work_dir/sign-lock.stderr" &
+lock_process_id=$!
+exec 9>"$lock_fifo"
+lock_pipe_open=true
+lock_attempt=0
+while [[ ! -s "$lock_ready" && "$lock_attempt" -lt 200 ]]; do
+  if ! /bin/kill -0 "$lock_process_id" 2>/dev/null; then
+    exec 9>&-
+    lock_pipe_open=false
+    wait "$lock_process_id" || true
+    /bin/cat "$work_dir/sign-lock.stderr" >&2
+    die "failed to acquire application signing lock"
+  fi
+  /bin/sleep 0.01
+  lock_attempt=$((lock_attempt + 1))
+done
+[[ -s "$lock_ready" ]] || die "timed out acquiring application signing lock"
+
+app_path="$staged_app"
+framework_path="$app_path/Contents/Frameworks/Sparkle.framework"
+version_root="$framework_path/Versions/B"
+sign_target() {
+  if [[ "$signing_mode" == adhoc ]]; then
+    "$CODESIGN_EXECUTABLE" --force --sign - "$1"
+  else
+    "$CODESIGN_EXECUTABLE" --force --options runtime --timestamp \
+      --sign "$signing_identity" "$1"
+  fi
+}
 
 for xpc_name in Downloader Installer; do
   xpc_path="$version_root/XPCServices/$xpc_name.xpc"
@@ -262,3 +360,14 @@ sign_target "$version_root/Updater.app"
 sign_target "$framework_path"
 sign_target "$app_path/Contents/MacOS/$APP_NAME"
 sign_target "$app_path"
+"$CODESIGN_EXECUTABLE" --verify --deep --strict --verbose=2 "$app_path"
+
+trap '' HUP INT TERM
+"$atomic_swap_executable" swap "$app_parent_real" "$staged_name" "$app_name" \
+  "$parent_device" "$parent_inode" "$staged_device" "$staged_inode"
+committed=true
+exec 9>&-
+lock_pipe_open=false
+wait "$lock_process_id"
+lock_process_id=""
+trap - HUP INT TERM

@@ -397,9 +397,167 @@ static int remove_application(int argc, char **argv) {
   return result == 0 ? 0 : fail("refused to remove changed staging application");
 }
 
+static int publish_file(int argc, char **argv) {
+  struct stat staged_directory_status;
+  struct stat staged_file_status;
+  struct stat named_status;
+  uint64_t parent_device;
+  uint64_t parent_inode;
+  uint64_t staged_directory_device;
+  uint64_t staged_directory_inode;
+  uint64_t staged_file_device;
+  uint64_t staged_file_inode;
+  int parent_fd;
+  int staged_directory_fd;
+  int staged_file_fd;
+  int recheck_fd;
+
+  if (argc != 12 || !valid_name(argv[3]) || !valid_name(argv[4]) ||
+      !valid_name(argv[5]) ||
+      parse_identity(argv[6], &parent_device) != 0 ||
+      parse_identity(argv[7], &parent_inode) != 0 ||
+      parse_identity(argv[8], &staged_directory_device) != 0 ||
+      parse_identity(argv[9], &staged_directory_inode) != 0 ||
+      parse_identity(argv[10], &staged_file_device) != 0 ||
+      parse_identity(argv[11], &staged_file_inode) != 0) {
+    fprintf(stderr,
+            "usage: atomic_swap publish PARENT STAGE_DIR STAGED_FILE DEST "
+            "PARENT_DEV PARENT_INO STAGE_DEV STAGE_INO FILE_DEV FILE_INO\n");
+    return 2;
+  }
+  parent_fd = open_verified_parent(argv[2], parent_device, parent_inode);
+  if (parent_fd < 0) {
+    return fail("release output directory identity changed");
+  }
+  staged_directory_fd = verify_named_directory(
+      parent_fd, argv[3], staged_directory_device, staged_directory_inode,
+      &staged_directory_status);
+  if (staged_directory_fd < 0 ||
+      !trusted_directory(&staged_directory_status) ||
+      (uint64_t)staged_directory_status.st_dev != parent_device) {
+    if (staged_directory_fd >= 0) {
+      close(staged_directory_fd);
+    }
+    close(parent_fd);
+    errno = ESTALE;
+    return fail("release staging directory identity changed");
+  }
+  staged_file_fd = openat(staged_directory_fd, argv[4],
+                          O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY);
+  if (staged_file_fd < 0 || fstat(staged_file_fd, &staged_file_status) != 0 ||
+      !same_identity(&staged_file_status, staged_file_device,
+                     staged_file_inode) ||
+      !S_ISREG(staged_file_status.st_mode) ||
+      staged_file_status.st_uid != geteuid() ||
+      staged_file_status.st_nlink != 1 ||
+      (uint64_t)staged_file_status.st_dev != parent_device) {
+    if (staged_file_fd >= 0) {
+      close(staged_file_fd);
+    }
+    close(staged_directory_fd);
+    close(parent_fd);
+    errno = ESTALE;
+    return fail("release staging file identity changed");
+  }
+  if (fstatat(parent_fd, argv[5], &named_status, AT_SYMLINK_NOFOLLOW) == 0 ||
+      errno != ENOENT) {
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    fprintf(stderr, "release artifact already exists: %s\n", argv[5]);
+    return 1;
+  }
+  recheck_fd = open_verified_parent(argv[2], parent_device, parent_inode);
+  if (recheck_fd < 0) {
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    return fail("release output directory identity changed before publish");
+  }
+  close(recheck_fd);
+  recheck_fd = verify_named_directory(parent_fd, argv[3],
+                                      staged_directory_device,
+                                      staged_directory_inode, NULL);
+  if (recheck_fd < 0 ||
+      fstatat(staged_directory_fd, argv[4], &named_status,
+              AT_SYMLINK_NOFOLLOW) != 0 ||
+      !same_identity(&named_status, staged_file_device, staged_file_inode) ||
+      fstatat(parent_fd, argv[5], &named_status, AT_SYMLINK_NOFOLLOW) == 0 ||
+      errno != ENOENT) {
+    if (recheck_fd >= 0) {
+      close(recheck_fd);
+    }
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    errno = ESTALE;
+    return fail("release publication target changed before commit");
+  }
+  close(recheck_fd);
+  if (fsync(staged_file_fd) != 0 || fsync(staged_directory_fd) != 0 ||
+      renameatx_np(staged_directory_fd, argv[4], parent_fd, argv[5],
+                   kRenameSafetyFlags | RENAME_EXCL) != 0) {
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    return fail("cannot atomically publish release artifact");
+  }
+  if (fstatat(parent_fd, argv[5], &named_status, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !same_identity(&named_status, staged_file_device, staged_file_inode) ||
+      fsync(parent_fd) != 0) {
+    (void)renameatx_np(parent_fd, argv[5], staged_directory_fd, argv[4],
+                       kRenameSafetyFlags | RENAME_EXCL);
+    (void)fsync(parent_fd);
+    close(staged_file_fd);
+    close(staged_directory_fd);
+    close(parent_fd);
+    errno = ESTALE;
+    return fail("published release artifact identity mismatch");
+  }
+  close(staged_file_fd);
+  close(staged_directory_fd);
+  close(parent_fd);
+  return 0;
+}
+
+static int remove_published_file(int argc, char **argv) {
+  struct stat status;
+  uint64_t parent_device;
+  uint64_t parent_inode;
+  uint64_t file_device;
+  uint64_t file_inode;
+  int parent_fd;
+
+  if (argc != 8 || !valid_name(argv[3]) ||
+      parse_identity(argv[4], &parent_device) != 0 ||
+      parse_identity(argv[5], &parent_inode) != 0 ||
+      parse_identity(argv[6], &file_device) != 0 ||
+      parse_identity(argv[7], &file_inode) != 0) {
+    fprintf(stderr,
+            "usage: atomic_swap remove-file PARENT NAME PARENT_DEV PARENT_INO "
+            "FILE_DEV FILE_INO\n");
+    return 2;
+  }
+  parent_fd = open_verified_parent(argv[2], parent_device, parent_inode);
+  if (parent_fd < 0) {
+    return fail("release output directory identity changed");
+  }
+  if (fstatat(parent_fd, argv[3], &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !same_identity(&status, file_device, file_inode) ||
+      !S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+      status.st_nlink != 1 || unlinkat(parent_fd, argv[3], 0) != 0 ||
+      fsync(parent_fd) != 0) {
+    close(parent_fd);
+    return fail("refused to remove changed release artifact");
+  }
+  close(parent_fd);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: atomic_swap lock|swap|remove ...\n");
+    fprintf(stderr,
+            "usage: atomic_swap lock|swap|remove|publish|remove-file ...\n");
     return 2;
   }
   if (strcmp(argv[1], "lock") == 0) {
@@ -410,6 +568,12 @@ int main(int argc, char **argv) {
   }
   if (strcmp(argv[1], "remove") == 0) {
     return remove_application(argc, argv);
+  }
+  if (strcmp(argv[1], "publish") == 0) {
+    return publish_file(argc, argv);
+  }
+  if (strcmp(argv[1], "remove-file") == 0) {
+    return remove_published_file(argc, argv);
   }
   fprintf(stderr, "unknown atomic_swap command\n");
   return 2;

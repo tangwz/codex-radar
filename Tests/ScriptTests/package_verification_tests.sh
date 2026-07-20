@@ -677,6 +677,29 @@ sign_task6_app() {
   "$SIGN_SCRIPT" --app "$task_root/CodexRadar.app" --signing-mode adhoc
 }
 
+snapshot_task6_app() {
+  local app_path="$1" output_path="$2" entry_path relative_path mode digest
+
+  : >"$output_path"
+  while IFS= read -r -d '' entry_path; do
+    relative_path="${entry_path#"$app_path"/}"
+    mode="$(/usr/bin/stat -f '%Lp' "$entry_path")"
+    if [[ -L "$entry_path" ]]; then
+      printf 'path\0%s\0type\0link\0mode\0%s\0target\0%s\0' \
+        "$relative_path" "$mode" "$(/usr/bin/readlink "$entry_path")" >>"$output_path"
+    elif [[ -d "$entry_path" ]]; then
+      printf 'path\0%s\0type\0directory\0mode\0%s\0' \
+        "$relative_path" "$mode" >>"$output_path"
+    elif [[ -f "$entry_path" ]]; then
+      digest="$(/usr/bin/shasum -a 256 "$entry_path" | /usr/bin/awk '{print $1}')"
+      printf 'path\0%s\0type\0file\0mode\0%s\0sha256\0%s\0' \
+        "$relative_path" "$mode" "$digest" >>"$output_path"
+    else
+      fail "unsupported Task 6 snapshot entry"
+    fi
+  done < <(/usr/bin/find -s "$app_path" -mindepth 1 -print0)
+}
+
 verify_task6_app() {
   local task_root="$1"
 
@@ -693,6 +716,9 @@ cat >"$signing_order_fixture/bin/codesign" <<'MOCK_CODESIGN'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$1" == --verify ]]; then
+  exit 0
+fi
 [[ "$#" -eq 4 && "$1" == --force && "$2" == --sign && "$3" == - ]] || {
   echo "unexpected codesign arguments" >&2
   exit 1
@@ -708,6 +734,8 @@ while IFS= read -r -d '' signed_path; do
   actual_signing_order+=("$signed_path")
 done <"$signing_order_fixture/signing-order.log"
 framework="$signing_order_fixture/CodexRadar.app/Contents/Frameworks/Sparkle.framework"
+staged_app="${actual_signing_order[0]%%/Contents/*}"
+framework="$staged_app/Contents/Frameworks/Sparkle.framework"
 expected_signing_order=(
   "$framework/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
   "$framework/Versions/B/XPCServices/Downloader.xpc"
@@ -716,8 +744,8 @@ expected_signing_order=(
   "$framework/Versions/B/Autoupdate"
   "$framework/Versions/B/Updater.app"
   "$framework"
-  "$signing_order_fixture/CodexRadar.app/Contents/MacOS/CodexRadar"
-  "$signing_order_fixture/CodexRadar.app"
+  "$staged_app/Contents/MacOS/CodexRadar"
+  "$staged_app"
 )
 [[ "${#actual_signing_order[@]}" -eq "${#expected_signing_order[@]}" ]] ||
   fail "sign_app.sh used an unexpected signing target count"
@@ -735,10 +763,144 @@ assert_task6_rejected "developer-id signing requires DEVELOPER_ID_APPLICATION" \
   -u APP_STORE_CONNECT_ISSUER_ID "$SIGN_SCRIPT" \
   --app "$developer_id_fixture/CodexRadar.app" --signing-mode developer-id
 
+setup_developer_id_mocks() {
+  local task_root="$1"
+
+  mkdir -p "$task_root/developer-bin"
+  : >"$task_root/codesign-calls"
+  printf 'mock private key\n' >"$task_root/AuthKey_TEST.p8"
+  cat >"$task_root/developer-bin/security" <<'MOCK_SECURITY'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$*" == "find-identity -v -p codesigning" ]]
+printf '%s\n' "$SIGN_APP_TEST_IDENTITIES"
+MOCK_SECURITY
+  cat >"$task_root/developer-bin/xcrun" <<'MOCK_XCRUN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\0' "$@" >>"$SIGN_APP_TEST_NOTARY_LOG"
+[[ "${SIGN_APP_TEST_NOTARY_VALID:-true}" == true ]]
+MOCK_XCRUN
+  cat >"$task_root/developer-bin/codesign" <<'MOCK_DEVELOPER_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\0' "$@" >>"$SIGN_APP_TEST_CODESIGN_LOG"
+exit 99
+MOCK_DEVELOPER_CODESIGN
+  chmod +x "$task_root/developer-bin/"*
+}
+
+developer_identity_fixture="$(setup_task6_app developer-identity-preflight)"
+setup_developer_id_mocks "$developer_identity_fixture"
+developer_identity_name='Developer ID Application: Test Example (TEAMID1234)'
+developer_identity_environment=(
+  DEVELOPER_ID_APPLICATION="$developer_identity_name"
+  APP_STORE_CONNECT_API_KEY_PATH="$developer_identity_fixture/AuthKey_TEST.p8"
+  APP_STORE_CONNECT_KEY_ID=TESTKEY123
+  APP_STORE_CONNECT_ISSUER_ID=00000000-0000-0000-0000-000000000000
+  SIGN_APP_SECURITY_EXECUTABLE="$developer_identity_fixture/developer-bin/security"
+  SIGN_APP_XCRUN_EXECUTABLE="$developer_identity_fixture/developer-bin/xcrun"
+  SIGN_APP_CODESIGN_EXECUTABLE="$developer_identity_fixture/developer-bin/codesign"
+  SIGN_APP_TEST_NOTARY_LOG="$developer_identity_fixture/notary-calls"
+  SIGN_APP_TEST_CODESIGN_LOG="$developer_identity_fixture/codesign-calls"
+)
+assert_task6_rejected "developer-id signing identity not found" \
+  "$developer_identity_fixture" env "${developer_identity_environment[@]}" \
+  SIGN_APP_TEST_IDENTITIES='     0 valid identities found' \
+  "$SIGN_SCRIPT" --app "$developer_identity_fixture/CodexRadar.app" \
+  --signing-mode developer-id
+[[ ! -s "$developer_identity_fixture/codesign-calls" ]] ||
+  fail "missing Developer ID identity reached codesign or ad-hoc fallback"
+
+: >"$developer_identity_fixture/codesign-calls"
+duplicate_identities="     1) 1111111111111111111111111111111111111111 \"$developer_identity_name\"
+     2) 2222222222222222222222222222222222222222 \"$developer_identity_name\"
+     2 valid identities found"
+assert_task6_rejected "developer-id signing identity is ambiguous" \
+  "$developer_identity_fixture" env "${developer_identity_environment[@]}" \
+  SIGN_APP_TEST_IDENTITIES="$duplicate_identities" \
+  "$SIGN_SCRIPT" --app "$developer_identity_fixture/CodexRadar.app" \
+  --signing-mode developer-id
+[[ ! -s "$developer_identity_fixture/codesign-calls" ]] ||
+  fail "ambiguous Developer ID identity reached codesign or ad-hoc fallback"
+
+: >"$developer_identity_fixture/codesign-calls"
+single_identity="     1) 1111111111111111111111111111111111111111 \"$developer_identity_name\"
+     1 valid identities found"
+assert_task6_rejected "developer-id notarization credential preflight failed" \
+  "$developer_identity_fixture" env "${developer_identity_environment[@]}" \
+  SIGN_APP_TEST_IDENTITIES="$single_identity" SIGN_APP_TEST_NOTARY_VALID=false \
+  "$SIGN_SCRIPT" --app "$developer_identity_fixture/CodexRadar.app" \
+  --signing-mode developer-id
+[[ ! -s "$developer_identity_fixture/codesign-calls" ]] ||
+  fail "invalid notarization credentials reached codesign or ad-hoc fallback"
+
+signing_failure_fixture="$(setup_task6_app signing-failure-atomicity)"
+mkdir "$signing_failure_fixture/failure-bin"
+cat >"$signing_failure_fixture/failure-bin/codesign" <<'MOCK_FAILING_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == --verify ]]; then
+  exit 0
+fi
+count=0
+[[ ! -f "$SIGN_APP_TEST_COUNT" ]] || count="$(cat "$SIGN_APP_TEST_COUNT")"
+count=$((count + 1))
+printf '%s\n' "$count" >"$SIGN_APP_TEST_COUNT"
+[[ "$count" -ne "$SIGN_APP_TEST_FAIL_AT" ]] || {
+  echo "injected codesign failure" >&2
+  exit 98
+}
+MOCK_FAILING_CODESIGN
+chmod +x "$signing_failure_fixture/failure-bin/codesign"
+snapshot_task6_app "$signing_failure_fixture/CodexRadar.app" \
+  "$signing_failure_fixture/before-signing.snapshot"
+assert_task6_rejected "injected codesign failure" "$signing_failure_fixture" \
+  env SIGN_APP_CODESIGN_EXECUTABLE="$signing_failure_fixture/failure-bin/codesign" \
+  SIGN_APP_TEST_COUNT="$signing_failure_fixture/codesign-count" \
+  SIGN_APP_TEST_FAIL_AT=4 "$SIGN_SCRIPT" \
+  --app "$signing_failure_fixture/CodexRadar.app" --signing-mode adhoc
+snapshot_task6_app "$signing_failure_fixture/CodexRadar.app" \
+  "$signing_failure_fixture/after-signing.snapshot"
+/usr/bin/cmp -s "$signing_failure_fixture/before-signing.snapshot" \
+  "$signing_failure_fixture/after-signing.snapshot" ||
+  fail "codesign failure changed the original application tree"
+[[ -z "$(/usr/bin/find "$signing_failure_fixture" -maxdepth 1 \
+  -name '.CodexRadar.app.sign.*' -print -quit)" ]] ||
+  fail "codesign failure retained a private signing stage"
+
 valid_verify_fixture="$(setup_task6_app valid-verifier)"
 sign_task6_app "$valid_verify_fixture"
 verify_task6_app "$valid_verify_fixture"
 assert_fixture_root_preserved "$valid_verify_fixture"
+
+nested_signature_fixture="$(setup_task6_app nested-signature-verification)"
+mkdir "$nested_signature_fixture/verify-bin"
+cat >"$nested_signature_fixture/verify-bin/codesign" <<'MOCK_VERIFY_CODESIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == --verify ]]; then
+  exit 0
+fi
+[[ "$1" == -d ]]
+target="${!#}"
+if [[ "$target" == */Installer.xpc/Contents/MacOS/Installer ]]; then
+  echo 'Signature=not-adhoc' >&2
+else
+  echo 'Signature=adhoc' >&2
+fi
+MOCK_VERIFY_CODESIGN
+chmod +x "$nested_signature_fixture/verify-bin/codesign"
+assert_task6_rejected "code object is not signed with an ad-hoc identity" \
+  "$nested_signature_fixture" env \
+  VERIFY_APP_CODESIGN_EXECUTABLE="$nested_signature_fixture/verify-bin/codesign" \
+  "$VERIFY_SCRIPT" --app "$nested_signature_fixture/CodexRadar.app" \
+  --architectures "arm64 x86_64" --updates-enabled true --signing-mode adhoc
 
 escaped_symlink_fixture="$(setup_task6_app escaped-app-symlink)"
 printf 'outside application\n' >"$escaped_symlink_fixture/outside"
@@ -783,9 +945,11 @@ setup_release_fixture() {
   local name="$1"
   local release_root="$fixture_dir/task6-release-$name"
 
-  mkdir -p "$release_root/script/lib" "$release_root/config" "$release_root/bin"
+  mkdir -p "$release_root/script/lib" "$release_root/script/helpers" \
+    "$release_root/config" "$release_root/bin"
   cp "$RELEASE_SCRIPT" "$SIGN_SCRIPT" "$VERIFY_SCRIPT" "$release_root/script/"
   cp "$ROOT_DIR/script/lib/release_common.sh" "$release_root/script/lib/"
+  cp "$ROOT_DIR/script/helpers/atomic_swap.c" "$release_root/script/helpers/"
   cp "$ROOT_DIR/version.env" "$release_root/"
   cp "$ROOT_DIR/config/update.env" "$release_root/config/"
   cat >"$release_root/script/package_app.sh" <<'MOCK_PACKAGE_APP'
@@ -818,16 +982,23 @@ creating=false
 for argument in "$@"; do
   [[ "$argument" != -c ]] || creating=true
 done
+if [[ "$creating" == false && "${PACKAGE_RELEASE_FAIL_EXTRACTION:-false}" == true ]]; then
+  echo "injected extraction failure" >&2
+  exit 97
+fi
 "$PACKAGE_RELEASE_REAL_DITTO" "$@"
 if [[ "$creating" == true && -n "${PACKAGE_RELEASE_ARCHIVE_INJECTION:-}" ]]; then
   archive_path="${!#}"
   /usr/bin/python3 - "$archive_path" "$PACKAGE_RELEASE_ARCHIVE_INJECTION" <<'PYTHON'
 import stat
+import struct
 import sys
+import unicodedata
 import zipfile
 
 archive_path, injection = sys.argv[1:]
-with zipfile.ZipFile(archive_path, "a") as archive:
+mode = "w" if injection == "root-not-directory" else "a"
+with zipfile.ZipFile(archive_path, mode) as archive:
     if injection == "extra-top-level":
         archive.writestr("unexpected.txt", "unexpected\n")
     elif injection == "apple-double":
@@ -839,11 +1010,90 @@ with zipfile.ZipFile(archive_path, "a") as archive:
         entry.create_system = 3
         entry.external_attr = (stat.S_IFLNK | 0o777) << 16
         archive.writestr(entry, "../../escaped.txt")
+    elif injection == "high-compression-symlink":
+        entry = zipfile.ZipInfo("CodexRadar.app/high-ratio-link")
+        entry.create_system = 3
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(entry, "a" * (1024 * 1024))
+    elif injection == "oversized-symlink":
+        entry = zipfile.ZipInfo("CodexRadar.app/oversized-link")
+        entry.create_system = 3
+        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(entry, "a" * 4097)
+    elif injection == "oversized-regular":
+        entry = zipfile.ZipInfo("CodexRadar.app/oversized.bin")
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        with archive.open(entry, "w") as output:
+            block = b"\0" * (1024 * 1024)
+            for _ in range(65):
+                output.write(block)
+    elif injection == "oversized-total":
+        block = b"x" * (1024 * 1024)
+        for index in range(3):
+            entry = zipfile.ZipInfo("CodexRadar.app/total-{}.bin".format(index))
+            entry.compress_type = zipfile.ZIP_STORED
+            with archive.open(entry, "w") as output:
+                for _ in range(45):
+                    output.write(block)
+    elif injection == "many-entries":
+        for index in range(2050):
+            archive.writestr("CodexRadar.app/many/{:04d}".format(index), b"")
+    elif injection == "case-collision":
+        archive.writestr("CodexRadar.app/Contents/Resources/Collision", b"A")
+        archive.writestr("CodexRadar.app/Contents/Resources/collision", b"a")
+    elif injection == "unicode-collision":
+        composed = unicodedata.normalize("NFC", "Cafe\u0301")
+        decomposed = unicodedata.normalize("NFD", composed)
+        archive.writestr("CodexRadar.app/Contents/Resources/" + composed, b"NFC")
+        archive.writestr("CodexRadar.app/Contents/Resources/" + decomposed, b"NFD")
+    elif injection == "ancestry-conflict":
+        archive.writestr("CodexRadar.app/Contents/Resources/conflict", b"file")
+        archive.writestr("CodexRadar.app/Contents/Resources/conflict/child", b"child")
+    elif injection == "symlink-ancestor":
+        entry = zipfile.ZipInfo("CodexRadar.app/resource-alias")
+        entry.create_system = 3
+        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(entry, "Contents/Resources")
+        archive.writestr("CodexRadar.app/resource-alias/overwrite", b"overwrite")
+    elif injection == "symlink-cycle":
+        for name, target in (("cycle-a", "cycle-b"), ("cycle-b", "cycle-a")):
+            entry = zipfile.ZipInfo("CodexRadar.app/" + name)
+            entry.create_system = 3
+            entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(entry, target)
+    elif injection == "root-not-directory":
+        archive.writestr("CodexRadar.app", b"not a directory")
+    elif injection == "overlapping-range":
+        archive.writestr("CodexRadar.app/overlap-a", b"a")
+        archive.writestr("CodexRadar.app/overlap-b", b"b")
     else:
         raise SystemExit("unknown archive injection")
+
+if injection == "overlapping-range":
+    data = bytearray(open(archive_path, "rb").read())
+    eocd = data.rfind(b"PK\x05\x06")
+    entry_count = struct.unpack_from("<H", data, eocd + 10)[0]
+    offset = struct.unpack_from("<I", data, eocd + 16)[0]
+    central_entries = {}
+    for _ in range(entry_count):
+        if data[offset:offset + 4] != b"PK\x01\x02":
+            raise SystemExit("invalid fixture central directory")
+        name_length, extra_length, comment_length = struct.unpack_from(
+            "<HHH", data, offset + 28
+        )
+        name = bytes(data[offset + 46:offset + 46 + name_length]).decode("utf-8")
+        central_entries[name] = offset
+        offset += 46 + name_length + extra_length + comment_length
+    first_offset = struct.unpack_from(
+        "<I", data, central_entries["CodexRadar.app/overlap-a"] + 42
+    )[0]
+    struct.pack_into(
+        "<I", data, central_entries["CodexRadar.app/overlap-b"] + 42, first_offset
+    )
+    with open(archive_path, "wb") as output:
+        output.write(data)
 PYTHON
-elif [[ "$creating" == false && -n "${PACKAGE_RELEASE_EXTRACT_MARKER:-}" ]]; then
-  : >"$PACKAGE_RELEASE_EXTRACT_MARKER"
 fi
 MOCK_DITTO
   chmod +x "$release_root/bin/ditto"
@@ -862,22 +1112,52 @@ run_release_fixture() {
     --output "$release_root/output" --signing-mode adhoc
 }
 
-for archive_injection in extra-top-level apple-double path-traversal escaped-symlink; do
+for archive_injection in extra-top-level apple-double path-traversal escaped-symlink \
+  high-compression-symlink oversized-symlink oversized-regular oversized-total \
+  many-entries case-collision unicode-collision ancestry-conflict symlink-ancestor \
+  symlink-cycle root-not-directory overlapping-range; do
   archive_fixture="$(setup_release_fixture "$archive_injection")"
   extract_marker="$archive_fixture/extraction-started"
+  mkdir -m 700 "$archive_fixture/tmp"
   case "$archive_injection" in
     extra-top-level) archive_message="archive contains an unexpected top-level entry" ;;
     apple-double) archive_message="archive contains AppleDouble metadata" ;;
     path-traversal) archive_message="archive contains an unsafe path" ;;
     escaped-symlink) archive_message="archive symlink escapes application" ;;
+    high-compression-symlink) archive_message="archive entry exceeds compression ratio limit" ;;
+    oversized-symlink) archive_message="archive symlink payload is too large" ;;
+    oversized-regular) archive_message="archive entry exceeds uncompressed size limit" ;;
+    oversized-total) archive_message="archive exceeds total uncompressed size limit" ;;
+    many-entries) archive_message="archive contains too many entries" ;;
+    case-collision|unicode-collision) archive_message="archive contains a macOS path collision" ;;
+    ancestry-conflict) archive_message="archive contains a file-directory ancestry conflict" ;;
+    symlink-ancestor) archive_message="archive entry is nested beneath a symlink" ;;
+    symlink-cycle) archive_message="archive contains an unsafe symlink cycle" ;;
+    root-not-directory) archive_message="archive application root must be a directory" ;;
+    overlapping-range) archive_message="archive contains overlapping local data ranges" ;;
   esac
   assert_task6_rejected "$archive_message" "$archive_fixture" \
     run_release_fixture "$archive_fixture" \
     PACKAGE_RELEASE_ARCHIVE_INJECTION="$archive_injection" \
-    PACKAGE_RELEASE_EXTRACT_MARKER="$extract_marker"
+    PACKAGE_RELEASE_EXTRACT_MARKER="$extract_marker" TMPDIR="$archive_fixture/tmp"
   [[ ! -e "$extract_marker" ]] ||
     fail "unsafe archive was extracted before validation"
+  [[ -z "$(/usr/bin/find "$archive_fixture/tmp" -mindepth 1 -print -quit)" ]] ||
+    fail "rejected archive retained temporary release state"
 done
+
+extraction_failure_fixture="$(setup_release_fixture extraction-failure-marker)"
+extraction_marker="$extraction_failure_fixture/extraction-started"
+mkdir -m 700 "$extraction_failure_fixture/tmp"
+assert_task6_rejected "injected extraction failure" "$extraction_failure_fixture" \
+  run_release_fixture "$extraction_failure_fixture" \
+  PACKAGE_RELEASE_FAIL_EXTRACTION=true \
+  PACKAGE_RELEASE_EXTRACT_MARKER="$extraction_marker" \
+  TMPDIR="$extraction_failure_fixture/tmp"
+[[ -f "$extraction_marker" ]] ||
+  fail "extraction marker was not recorded before invoking ditto"
+[[ -z "$(/usr/bin/find "$extraction_failure_fixture/tmp" -mindepth 1 -print -quit)" ]] ||
+  fail "failed extraction retained temporary release state"
 
 release_success_fixture="$(setup_release_fixture success)"
 release_output="$(run_release_fixture "$release_success_fixture" 2>&1)" || {
@@ -891,7 +1171,21 @@ release_checksum="$release_archive.sha256"
 release_manifest="$release_archive.manifest"
 [[ -f "$release_archive" && -f "$release_checksum" && -f "$release_manifest" ]] ||
   fail "package_release did not write the complete release artifact set"
-/usr/bin/shasum -a 256 --check "$release_checksum" >/dev/null
+checksum_basename="$(/usr/bin/basename "$release_checksum")"
+archive_basename="$(/usr/bin/basename "$release_archive")"
+grep -Eq "^[0-9a-f]{64}  ${archive_basename}$" "$release_checksum" ||
+  fail "release checksum does not contain an artifact-relative basename"
+(
+  cd "$(/usr/bin/dirname "$release_checksum")"
+  /usr/bin/shasum -a 256 --check "$checksum_basename" >/dev/null
+) || fail "release checksum failed in its artifact directory"
+portable_checksum_dir="$release_success_fixture/portable-checksum"
+mkdir "$portable_checksum_dir"
+cp "$release_archive" "$release_checksum" "$release_manifest" "$portable_checksum_dir/"
+(
+  cd "$portable_checksum_dir"
+  /usr/bin/shasum -a 256 --check "$checksum_basename" >/dev/null
+) || fail "release checksum is not portable with the artifact set"
 grep -Fx 'archive_name=CodexRadar-v0.1.0-macos-universal.zip' "$release_manifest" >/dev/null
 grep -Fx 'version=0.1.0' "$release_manifest" >/dev/null
 grep -Fx 'build=1' "$release_manifest" >/dev/null
@@ -901,5 +1195,85 @@ grep -Fx 'signing_mode=adhoc' "$release_manifest" >/dev/null
 grep -Fx 'distribution_trust=locally-signed-not-developer-id-not-notarized-not-gatekeeper-trusted' \
   "$release_manifest" >/dev/null
 assert_fixture_root_preserved "$release_success_fixture"
+
+assert_release_artifact_set_absent() {
+  local release_root="$1"
+  local archive="$release_root/output/CodexRadar-v0.1.0-macos-universal.zip"
+
+  for artifact in "$archive" "$archive.sha256" "$archive.manifest"; do
+    [[ ! -e "$artifact" && ! -L "$artifact" ]] ||
+      fail "failed publication retained a release artifact: $artifact"
+  done
+  if [[ -d "$release_root/output" ]]; then
+    [[ -z "$(/usr/bin/find "$release_root/output" -mindepth 1 -maxdepth 1 \
+      -name '.CodexRadar.release.stage.*' -print -quit)" ]] ||
+      fail "failed publication retained a hidden release stage"
+  fi
+}
+
+publish_failure_fixture="$(setup_release_fixture publish-failure)"
+assert_task6_rejected "injected release publish failure at artifact 2" \
+  "$publish_failure_fixture" run_release_fixture "$publish_failure_fixture" \
+  PACKAGE_RELEASE_TEST_FAIL_PUBLISH_INDEX=2
+assert_release_artifact_set_absent "$publish_failure_fixture"
+
+signal_failure_fixture="$(setup_release_fixture publish-signal)"
+assert_task6_rejected "release publishing interrupted" "$signal_failure_fixture" \
+  run_release_fixture "$signal_failure_fixture" \
+  PACKAGE_RELEASE_TEST_SIGNAL_AFTER_PUBLISH_COUNT=1
+assert_release_artifact_set_absent "$signal_failure_fixture"
+
+existing_artifact_fixture="$(setup_release_fixture preserve-existing-release)"
+existing_archive="$existing_artifact_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+mkdir "$existing_artifact_fixture/output"
+printf 'existing archive\n' >"$existing_archive"
+printf 'existing checksum\n' >"$existing_archive.sha256"
+printf 'existing manifest\n' >"$existing_archive.manifest"
+/usr/bin/shasum -a 256 "$existing_archive" "$existing_archive.sha256" \
+  "$existing_archive.manifest" >"$existing_artifact_fixture/before-existing.sha256"
+assert_task6_rejected "release artifact already exists" "$existing_artifact_fixture" \
+  run_release_fixture "$existing_artifact_fixture"
+/usr/bin/shasum -a 256 --check \
+  "$existing_artifact_fixture/before-existing.sha256" >/dev/null ||
+  fail "failed publication changed a pre-existing release artifact"
+
+concurrent_fixture="$(setup_release_fixture concurrent-publish)"
+concurrent_control="$concurrent_fixture/control"
+mkdir "$concurrent_control"
+run_release_fixture "$concurrent_fixture" \
+  PACKAGE_RELEASE_TEST_PAUSE_AFTER_LOCK=true \
+  PACKAGE_RELEASE_TEST_CONTROL_DIR="$concurrent_control" \
+  >"$concurrent_fixture/first-publisher.log" 2>&1 &
+first_publisher_pid=$!
+publisher_ready=false
+for _ in $(seq 1 1000); do
+  if [[ -f "$concurrent_control/ready" ]]; then
+    publisher_ready=true
+    break
+  fi
+  /bin/sleep 0.01
+done
+if [[ "$publisher_ready" != true ]]; then
+  /bin/kill -TERM "$first_publisher_pid" >/dev/null 2>&1 || true
+  wait "$first_publisher_pid" >/dev/null 2>&1 || true
+  cat "$concurrent_fixture/first-publisher.log" >&2
+  fail "first release publisher did not acquire the stable output lock"
+fi
+assert_task6_rejected "output path is locked by another packager" \
+  "$concurrent_fixture" run_release_fixture "$concurrent_fixture"
+: >"$concurrent_control/continue"
+wait "$first_publisher_pid" || {
+  cat "$concurrent_fixture/first-publisher.log" >&2
+  fail "first release publisher failed after concurrent rejection"
+}
+concurrent_archive="$concurrent_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+[[ -f "$concurrent_archive" && -f "$concurrent_archive.sha256" && \
+  -f "$concurrent_archive.manifest" ]] ||
+  fail "concurrent publication did not leave one complete artifact set"
+(
+  cd "$concurrent_fixture/output"
+  /usr/bin/shasum -a 256 --check \
+    "$(/usr/bin/basename "$concurrent_archive.sha256")" >/dev/null
+) || fail "concurrent publication produced an invalid checksum"
 
 echo "package verification fixtures passed"
