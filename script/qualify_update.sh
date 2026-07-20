@@ -59,6 +59,9 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-qualify.XXXXXX")"; /bin/chmod 700 "$work"
+if [[ "$TEST_HARNESS" == true && -n "${QUALIFY_TEST_HARNESS_PID_FILE:-}" ]]; then
+  printf '%s\n' "$$" >"$QUALIFY_TEST_HARNESS_PID_FILE"
+fi
 
 # Keep the source bundle out of every later trust decision. The verifier runs again
 # on this private, immutable-at-use snapshot.
@@ -134,7 +137,13 @@ assert_plist "$previous_info" CFBundleIdentifier com.terence.codex-radar "previo
 assert_plist "$previous_info" CFBundleShortVersionString "$previous_version" "previous application version is not the immediately previous Production Update"
 assert_plist "$previous_info" CFBundleVersion "$previous_build" "previous application build is not the immediately previous Production Update"
 
-copied_app="$work/CodexRadar.app"; /usr/bin/ditto "$previous_app" "$copied_app"
+previous_app_ditto="/usr/bin/ditto"
+if [[ "$TEST_HARNESS" == true && -n "${QUALIFY_TEST_DITTO:-}" ]]; then
+  real_file "$QUALIFY_TEST_DITTO" "test ditto executable"
+  [[ -x "$QUALIFY_TEST_DITTO" ]] || die "test ditto executable must be executable"
+  previous_app_ditto="$QUALIFY_TEST_DITTO"
+fi
+copied_app="$work/CodexRadar.app"; "$previous_app_ditto" "$previous_app" "$copied_app"
 [[ "$source_identity" == "$(/usr/bin/stat -f '%d:%i' "$previous_app")" ]] || die "previous application directory changed while being copied"
 tree_manifest "$previous_app" "$source_after"; /usr/bin/cmp -s "$source_tree" "$source_after" || die "previous application changed while being copied"
 tree_manifest "$copied_app" "$copied_tree"; /usr/bin/cmp -s "$source_tree" "$copied_tree" || die "copied previous application differs from source"
@@ -194,7 +203,10 @@ with open(port_file, 'w') as handle: handle.write(str(server.server_address[1]))
 while not os.path.exists(stop): server.handle_request()
 server.server_close()
 PYTHON
-server_pid="$!"; [[ -n "${QUALIFY_TEST_SERVER_PID_FILE:-}" ]] && printf '%s\n' "$server_pid" >"$QUALIFY_TEST_SERVER_PID_FILE"
+server_pid="$!"
+if [[ "$TEST_HARNESS" == true && -n "${QUALIFY_TEST_SERVER_PID_FILE:-}" ]]; then
+  printf '%s\n' "$server_pid" >"$QUALIFY_TEST_SERVER_PID_FILE"
+fi
 port=""; for attempt in {1..50}; do [[ -s "$port_file" ]] && { IFS= read -r port <"$port_file" || true; break; }; /bin/sleep .1; done
 [[ "$port" =~ ^[1-9][0-9]*$ && "$port" -le 65535 ]] || die "qualification HTTP server did not select a valid port"
 /bin/kill -0 "$server_pid" 2>/dev/null || die "qualification HTTP server exited after publishing its port"

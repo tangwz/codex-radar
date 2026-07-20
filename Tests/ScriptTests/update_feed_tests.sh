@@ -776,20 +776,6 @@ qualification_tools_sha="$(/usr/bin/shasum -a 256 "$qualification_tools_archive"
   -e "s/^EXPECTED_TOOLS_SHA256=.*/EXPECTED_TOOLS_SHA256=\"$qualification_tools_sha\"/" \
   -e 's/^TEST_HARNESS=false/TEST_HARNESS=true/' \
   "$QUALIFY_SCRIPT" >"$qualification_harness"
-/usr/bin/sed -i '' \
-  's@copied_app="$work/CodexRadar.app"; /usr/bin/ditto "$previous_app" "$copied_app"@copied_app="$work/CodexRadar.app"; "${QUALIFY_TEST_DITTO:-/usr/bin/ditto}" "$previous_app" "$copied_app"@' \
-  "$qualification_harness"
-/usr/bin/python3 - "$qualification_harness" <<'PYTHON'
-import pathlib, sys
-
-path = pathlib.Path(sys.argv[1])
-source = path.read_text()
-needle = 'TEST_HARNESS=true\n'
-replacement = needle + '[[ -z "${QUALIFY_TEST_HARNESS_PID_FILE:-}" ]] || printf \'%s\\n\' "$$" >"$QUALIFY_TEST_HARNESS_PID_FILE"\n'
-if source.count(needle) != 1:
-    raise SystemExit('fixture harness marker is missing or ambiguous')
-path.write_text(source.replace(needle, replacement))
-PYTHON
 /bin/chmod 755 "$qualification_harness"
 
 run_qualification() {
