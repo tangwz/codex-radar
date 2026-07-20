@@ -10,6 +10,7 @@ SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
 CI_WORKFLOW="$WORKFLOW_DIR/ci.yml"
 CANDIDATE_WORKFLOW="$WORKFLOW_DIR/prepare-candidate.yml"
+PUBLISH_WORKFLOW="$WORKFLOW_DIR/publish-update.yml"
 CODEOWNERS_FILE="$ROOT_DIR/.github/CODEOWNERS"
 RELEASING_DOC="$ROOT_DIR/docs/releasing.md"
 
@@ -49,12 +50,13 @@ validate_workflow_policy() {
   local codeowners_file="${3:-$CODEOWNERS_FILE}"
   local candidate_workflow="${4:-$CANDIDATE_WORKFLOW}"
   local releasing_doc="${5:-$RELEASING_DOC}"
+  local publish_workflow="${6:-$PUBLISH_WORKFLOW}"
 
   /usr/bin/ruby - "$workflow_dir" "$ci_workflow" "$codeowners_file" \
-    "$candidate_workflow" "$releasing_doc" <<'RUBY'
+    "$candidate_workflow" "$releasing_doc" "$publish_workflow" <<'RUBY'
 require "yaml"
 
-workflow_dir, ci_path, codeowners_path, candidate_path, releasing_path = ARGV
+workflow_dir, ci_path, codeowners_path, candidate_path, releasing_path, publish_path = ARGV
 
 def reject(message)
   warn(message)
@@ -328,6 +330,147 @@ if candidate_source.include?("--draft=false") || candidate_source.include?("--dr
   reject("prepare-candidate.yml must leave the Candidate Release as Draft")
 end
 
+reject("publish-update.yml does not exist") unless File.file?(publish_path)
+publish_source = File.read(publish_path, encoding: "UTF-8")
+begin
+  publish = YAML.safe_load(
+    publish_source,
+    permitted_classes: [],
+    permitted_symbols: [],
+    aliases: true,
+    filename: publish_path
+  ) || {}
+rescue Psych::Exception => error
+  reject("publish-update.yml is invalid YAML: #{error.message}")
+end
+
+publish_trigger = fetch_key(publish, "on")
+reject("publish-update.yml must only use workflow_dispatch") unless
+  publish_trigger.is_a?(Hash) && publish_trigger.keys.map(&:to_s) == ["workflow_dispatch"]
+dispatch_inputs = fetch_key(fetch_key(publish_trigger, "workflow_dispatch"), "inputs")
+reject("publish-update.yml must define exactly one tag input") unless
+  dispatch_inputs.is_a?(Hash) && dispatch_inputs.keys.map(&:to_s) == ["tag"]
+tag_input = fetch_key(dispatch_inputs, "tag")
+unless fetch_key(tag_input, "required") == true && fetch_key(tag_input, "type").to_s == "string"
+  reject("publish-update.yml tag input must be a required string")
+end
+reject("publish-update.yml must not reference secrets") if secret_reference?(publish)
+
+publish_permissions = fetch_key(publish, "permissions")
+unless fetch_key(publish_permissions, "contents").to_s == "read"
+  reject("publish-update.yml must be read-only by default")
+end
+publish_concurrency = fetch_key(publish, "concurrency")
+unless fetch_key(publish_concurrency, "group").to_s == "update-${{ github.repository }}-${{ inputs.tag }}" &&
+    fetch_key(publish_concurrency, "cancel-in-progress") == true
+  reject("publish-update.yml must use shared update concurrency")
+end
+
+publish_jobs = fetch_key(publish, "jobs")
+verify_job = fetch_key(publish_jobs, "publish-and-verify")
+activate_job = fetch_key(publish_jobs, "activate-production-feed")
+reject("publish-update.yml must define publish-and-verify") unless verify_job.is_a?(Hash)
+reject("publish-update.yml must define activate-production-feed") unless activate_job.is_a?(Hash)
+unless fetch_key(fetch_key(verify_job, "permissions"), "contents").to_s == "write"
+  reject("publish-and-verify must grant contents: write")
+end
+unless fetch_key(fetch_key(activate_job, "permissions"), "contents").to_s == "write"
+  reject("activate-production-feed must grant contents: write")
+end
+unless fetch_key(activate_job, "needs").to_s == "publish-and-verify"
+  reject("feed activation must depend on public verification")
+end
+
+publish_steps = fetch_key(verify_job, "steps")
+activate_steps = fetch_key(activate_job, "steps")
+reject("publish-and-verify must contain steps") unless publish_steps.is_a?(Array)
+reject("activate-production-feed must contain steps") unless activate_steps.is_a?(Array)
+publish_run = publish_steps.map { |step| fetch_key(step, "run").to_s }.join("\n")
+activate_run = activate_steps.map { |step| fetch_key(step, "run").to_s }.join("\n")
+
+[
+  "validate_release_tag \"$TAG\"",
+  "git merge-base --is-ancestor",
+  "gh release view \"$TAG\"",
+  "isDraft",
+  "targetCommitish",
+  "gh release download \"$TAG\"",
+  "--pattern",
+  "verify_update_artifacts.sh",
+  "gh release edit \"$TAG\" --draft=false --prerelease",
+  "releases/download/$TAG",
+  "gh release verify \"$TAG\"",
+  "release_is_draft=",
+  "gh release delete \"$TAG\" --yes --cleanup-tag"
+].each do |snippet|
+  reject("publish-update.yml lacks publish verification: #{snippet}") unless publish_run.include?(snippet)
+end
+draft_download = publish_run.index("gh release download \"$TAG\"")
+draft_verify = publish_run.index("verify_update_artifacts.sh")
+publish_release = publish_run.index("gh release edit \"$TAG\" --draft=false --prerelease")
+public_download = publish_run.index("releases/download/$TAG")
+public_verify = publish_run.rindex("verify_update_artifacts.sh")
+unless [draft_download, draft_verify, publish_release, public_download, public_verify].all? &&
+    draft_download < draft_verify && draft_verify < publish_release &&
+    publish_release < public_download && public_download < public_verify
+  reject("publish-update.yml must verify Draft and public bytes in order")
+end
+activation_upload = publish_steps.index do |step|
+  fetch_key(step, "uses").to_s ==
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+end
+unless activation_upload && activation_upload < publish_steps.index { |step|
+  fetch_key(step, "run").to_s.include?("gh release edit \"$TAG\" --draft=false --prerelease")
+}
+  reject("activation inputs must upload while the Release is still Draft")
+end
+
+[
+  "--mode cas",
+  "--current-feed",
+  "--current-absent",
+  "--expected-previous-feed",
+  "--expected-previous-absent",
+  "cas_state=already-active",
+  "cas_state=ready-bootstrap",
+  "cas_state=ready",
+  "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=main",
+  "current_blob_sha",
+  'sha:$sha',
+  'branch:"main"',
+  "409",
+  "422",
+  "0.1.0",
+  "BUILD_NUMBER",
+  "releases?per_page=100",
+  "releases/download/$TAG",
+  "--mode published",
+  "gh release verify \"$TAG\"",
+  "Activation Pending",
+  "raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml",
+  "unknown Production Feed bytes"
+].each do |snippet|
+  reject("publish-update.yml lacks feed activation policy: #{snippet}") unless activate_run.include?(snippet)
+end
+if activate_run.include?("gh release delete") || activate_run.include?("git push --delete")
+  reject("feed activation must never delete a public Release or tag")
+end
+if publish_run.include?("ditto -x") || activate_run.include?("ditto -x")
+  reject("publish workflow must not extract an archive before Ed25519 verification")
+end
+
+publish_uses = []
+each_mapping(publish) do |mapping|
+  mapping.each { |key, value| publish_uses << value.to_s if key.to_s == "uses" }
+end
+[
+  "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+].each do |action|
+  reject("publish-update.yml lacks required pinned action: #{action}") unless publish_uses.include?(action)
+end
+
 reject("docs/releasing.md does not exist") unless File.file?(releasing_path)
 releasing = File.read(releasing_path, encoding: "UTF-8")
 [
@@ -461,6 +604,54 @@ pathlib.Path(sys.argv[2]).write_text(source.replace(marker, marker + "          
 PYTHON
 expect_failure "private-key step must match the approved signing template" validate_workflow_policy \
   "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" "$leaking_candidate" "$RELEASING_DOC"
+
+publish_secret="$fixture_root/publish-secret.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_secret" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+marker = "permissions:\n  contents: read\n"
+if source.count(marker) != 1:
+    raise SystemExit("publish permissions marker is missing or ambiguous")
+pathlib.Path(sys.argv[2]).write_text(
+    source.replace(marker, marker + "env:\n  LEAK: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}\n")
+)
+PYTHON
+expect_failure "publish-update.yml must not reference secrets" validate_workflow_policy \
+  "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" "$CANDIDATE_WORKFLOW" \
+  "$RELEASING_DOC" "$publish_secret"
+
+publish_extra_input="$fixture_root/publish-extra-input.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_extra_input" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+marker = "      tag:\n"
+if source.count(marker) != 1:
+    raise SystemExit("publish tag marker is missing or ambiguous")
+replacement = "      confirmation:\n        required: true\n        type: string\n" + marker
+pathlib.Path(sys.argv[2]).write_text(source.replace(marker, replacement))
+PYTHON
+expect_failure "publish-update.yml must define exactly one tag input" validate_workflow_policy \
+  "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" "$CANDIDATE_WORKFLOW" \
+  "$RELEASING_DOC" "$publish_extra_input"
+
+publish_without_draft_download="$fixture_root/publish-without-draft-download.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_without_draft_download" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release download "$TAG"'
+if source.count(needle) != 1:
+    raise SystemExit("Draft download marker is missing or ambiguous")
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, 'echo "Draft download disabled"'))
+PYTHON
+expect_failure 'publish-update.yml lacks publish verification: gh release download "$TAG"' \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_without_draft_download"
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
@@ -695,6 +886,19 @@ verify_artifacts_with_sparkle() {
     --sparkle-source "$sparkle_source"
 }
 
+verify_published() {
+  local feed_path="$1" archive_path="$2" manifest_path="$3"
+  local version_config="$4" update_config="$5"
+
+  "$VERIFY_SCRIPT" --mode published \
+    --feed "$feed_path" \
+    --archive "$archive_path" \
+    --manifest "$manifest_path" \
+    --version-config "$version_config" \
+    --update-config "$update_config" \
+    --sparkle-source "$SPARKLE_SOURCE"
+}
+
 printf '01234567890123456789012345678901' >"$fixture_root/test-seed"
 build_test_signer
 : >"$fixture_root/empty"
@@ -817,6 +1021,16 @@ make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
 production_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')"
 qualification_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/qualification/appcast.xml" | /usr/bin/awk '{print $1}')"
 verify_artifacts "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+verify_published "$inputs_dir/production/appcast.xml" "$candidate_archive" \
+  "$candidate_manifest" "$candidate_dir/version.env" \
+  "$candidate_dir/update.env"
+published_wrong_archive_feed="$fixture_root/published-wrong-archive.xml"
+published_wrong_signature="$(sign_file "$fixture_root/empty")"
+make_feed "$published_wrong_archive_feed" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$published_wrong_signature"
+expect_failure "published archive failed Ed25519 verification" verify_published \
+  "$published_wrong_archive_feed" "$candidate_archive" "$candidate_manifest" \
   "$candidate_dir/version.env" "$candidate_dir/update.env"
 [[ "$production_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||
   fail "verification changed signed production feed bytes"

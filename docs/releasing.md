@@ -51,6 +51,18 @@ bootstrap 0.1.0 (1) 是例外：它没有上一 Production Update，不能也不
 
 手动触发 `prepare-candidate` 只执行无 secret dry run：它生成构建 Artifact，但不创建 Release，也不读取发布私钥。
 
+## 公开与激活 Production Update
+
+本地资格测试通过后，Release Operator 手动触发 `Publish Update`，且只填写已经通过测试的 Draft tag。触发记录就是当次真实 Mac 资格测试通过的发布声明。此 workflow 不读取 Ed25519 私钥，也不重新生成、编辑或签名任何资产。
+
+workflow 会重新下载 Draft 的四个资产，独立复验 tag、版本、commit、checksum、manifest、最终 `Info.plist`、signed appcast 和 ZIP 的 Ed25519 archive signature。验证通过后，它把 Release 公开为 Immutable Pre-release，再从版本固定的公开 URL 重新下载相同资产并执行同一组验证以及 GitHub Release integrity 验证。首次公开自动更新前必须已经在仓库设置中启用 Immutable Releases。
+
+公开资产复验失败时，workflow 会尝试删除刚公开的 Release 和 tag；对应的 App Version、build number 和 tag 随即 burned，不能重新使用。如果自动清理失败，停止发布并由 Release Operator 介入，Production Feed 不得推进。
+
+公开复验通过后，workflow 读取 `main/appcast.xml` 的精确字节和当前 blob SHA。只有当前字节仍与预期上一份 signed feed 完全一致时，才通过 GitHub Contents API compare-and-swap 写入候选 feed；HTTP 409、422 或任何第三种字节状态都立即终止，禁止强制覆盖。bootstrap `0.1.0 (1)` 是唯一允许在 feed 返回 404 时无 blob SHA 创建的版本，并且写入前会再次确认没有其他 Release 历史且 feed 仍不存在。
+
+CAS 成功后，公开 Release 和 tag 永远不得自动删除或回滚。workflow 会有限次轮询固定 raw URL：旧 feed 字节只表示缓存尚未收敛；候选精确字节表示发布完成；任何其他字节必须由 Release Operator 调查。轮询超时进入 `Activation Pending`，不代表发布失败，也不允许回滚。此时只在原 workflow run 中选择重新运行失败的 job，使它确认仓库 blob 已经是同一候选并继续只读复验 raw URL；不要新建一次 workflow dispatch，也不要重新写 feed。
+
 ## 失败与密钥事件
 
 Candidate 资格测试失败后，由 operator 删除不可见 Draft Release 和 tag。对应的 App Version、build number 和 tag 均视为 burned；修复必须使用更高且从未使用的标识重新发布，不得替换同名资产或复用版本。

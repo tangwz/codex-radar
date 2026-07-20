@@ -14,6 +14,7 @@ usage() {
 usage:
   $0 --mode previous --feed PATH --version-config PATH --update-config PATH --sparkle-source PATH
   $0 --mode artifacts --inputs PATH --archive PATH --manifest PATH --final-info-plist PATH --version-config PATH --update-config PATH --sparkle-source PATH
+  $0 --mode published --feed PATH --archive PATH --manifest PATH --version-config PATH --update-config PATH --sparkle-source PATH
   $0 --mode cas (--current-feed PATH|--current-absent) (--expected-previous-feed PATH|--expected-previous-absent) --candidate-feed PATH
 EOF
   return 2
@@ -633,6 +634,55 @@ validate_artifacts_mode() {
   verify_ed25519_signature "$archive_path" "$qualification_signature" "qualification archive"
 }
 
+validate_published_mode() {
+  local feed_path="$1" archive_path="$2" manifest_path="$3"
+  local version_config="$4" update_config="$5" sparkle_source="$6"
+  local archive_name archive_length archive_sha extracted_plist expected_url
+
+  assert_real_file "$feed_path" "published signed feed"
+  assert_real_file "$archive_path" "published release archive"
+  assert_real_file "$manifest_path" "published release manifest"
+  assert_real_file "$version_config" "version config"
+  assert_real_file "$update_config" "update config"
+  load_version_config "$version_config"
+  load_update_config "$update_config"
+  load_manifest "$manifest_path"
+  compile_sparkle_verifier "$sparkle_source"
+
+  archive_name="$(/usr/bin/basename "$archive_path")"
+  [[ "$archive_name" == "$MANIFEST_ARCHIVE_NAME" && \
+    "$archive_name" == "$(release_asset_basename).zip" ]] ||
+    die "archive name does not match manifest and version.env" || return 1
+  [[ "$MANIFEST_VERSION" == "$MARKETING_VERSION" ]] ||
+    die "manifest version does not match version.env" || return 1
+  [[ "$MANIFEST_BUILD" == "$BUILD_NUMBER" ]] ||
+    die "manifest build does not match version.env" || return 1
+  archive_length="$(/usr/bin/stat -f '%z' "$archive_path")"
+  archive_sha="$(/usr/bin/shasum -a 256 "$archive_path" | /usr/bin/awk '{print $1}')"
+  [[ "$archive_length" == "$MANIFEST_BYTE_LENGTH" ]] ||
+    die "manifest byte_length does not match archive" || return 1
+  [[ "$archive_sha" == "$MANIFEST_SHA256" ]] ||
+    die "manifest sha256 does not match archive" || return 1
+
+  validate_feed_shape "$feed_path" "published signed feed"
+  [[ "$FEED_BUILD" == "$BUILD_NUMBER" ]] ||
+    die "sparkle:version does not match version.env" || return 1
+  [[ "$FEED_VERSION" == "$MARKETING_VERSION" ]] ||
+    die "sparkle:shortVersionString does not match version.env" || return 1
+  [[ "$FEED_MINIMUM_SYSTEM" == "$MIN_SYSTEM_VERSION" ]] ||
+    die "minimum system version does not match final Info.plist" || return 1
+  [[ "$FEED_ENCLOSURE_LENGTH" == "$archive_length" ]] ||
+    die "enclosure length does not match archive" || return 1
+  expected_url="https://github.com/tangwz/codex-radar/releases/download/v${MARKETING_VERSION}/${archive_name}"
+  [[ "$FEED_ENCLOSURE_URL" == "$expected_url" ]] ||
+    die "published enclosure URL must be version-fixed" || return 1
+  verify_ed25519_signature "$archive_path" "$FEED_ARCHIVE_SIGNATURE" "published archive"
+
+  extracted_plist="$work_dir/published-archive-Info.plist"
+  extract_archive_info_plist "$archive_path" "$extracted_plist"
+  validate_info_plist "$extracted_plist"
+}
+
 validate_cas_mode() {
   local current_feed="$1" current_absent="$2" expected_feed="$3"
   local expected_absent="$4" candidate_feed="$5"
@@ -763,6 +813,13 @@ case "$mode" in
     work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-update-verify.XXXXXX")"
     validate_artifacts_mode "$inputs_path" "$archive_path" "$manifest_path" \
       "$info_plist" "$version_config" "$update_config" "$sparkle_source"
+    ;;
+  published)
+    [[ -n "$feed_path" && -n "$archive_path" && -n "$manifest_path" && \
+      -n "$version_config" && -n "$update_config" && -n "$sparkle_source" ]] || usage
+    work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-update-verify.XXXXXX")"
+    validate_published_mode "$feed_path" "$archive_path" "$manifest_path" \
+      "$version_config" "$update_config" "$sparkle_source"
     ;;
   cas)
     [[ -n "$candidate_feed" && ( -n "$current_feed" || "$current_absent" == true ) && \
