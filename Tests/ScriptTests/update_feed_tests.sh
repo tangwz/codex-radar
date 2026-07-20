@@ -148,8 +148,8 @@ workflows.each do |workflow_path|
   concurrency = fetch_key(document, "concurrency")
   cancellation = fetch_key(concurrency, "cancel-in-progress")
   group = fetch_key(concurrency, "group")
-  unless cancellation == true && !group.to_s.strip.empty?
-    reject("#{File.basename(workflow_path)} lacks cancellable concurrency")
+  unless [true, false].include?(cancellation) && !group.to_s.strip.empty?
+    reject("#{File.basename(workflow_path)} lacks explicit concurrency")
   end
 
   top_level = document.reject { |key, _value| key.to_s == "jobs" }
@@ -215,7 +215,7 @@ unless fetch_key(candidate_permissions, "contents").to_s == "read"
 end
 candidate_concurrency = fetch_key(candidate, "concurrency")
 unless fetch_key(candidate_concurrency, "group").to_s == "update-${{ github.repository }}-${{ github.ref_name }}" &&
-    fetch_key(candidate_concurrency, "cancel-in-progress") == true
+    fetch_key(candidate_concurrency, "cancel-in-progress") == false
   reject("prepare-candidate.yml must use shared update concurrency")
 end
 
@@ -362,7 +362,7 @@ unless fetch_key(publish_permissions, "contents").to_s == "read"
 end
 publish_concurrency = fetch_key(publish, "concurrency")
 unless fetch_key(publish_concurrency, "group").to_s == "update-${{ github.repository }}-${{ inputs.tag }}" &&
-    fetch_key(publish_concurrency, "cancel-in-progress") == true
+    fetch_key(publish_concurrency, "cancel-in-progress") == false
   reject("publish-update.yml must use shared update concurrency")
 end
 
@@ -387,6 +387,52 @@ reject("publish-and-verify must contain steps") unless publish_steps.is_a?(Array
 reject("activate-production-feed must contain steps") unless activate_steps.is_a?(Array)
 publish_run = publish_steps.map { |step| fetch_key(step, "run").to_s }.join("\n")
 activate_run = activate_steps.map { |step| fetch_key(step, "run").to_s }.join("\n")
+publish_checkout = publish_steps.find do |step|
+  fetch_key(step, "uses").to_s ==
+    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+end
+activate_checkout = activate_steps.find do |step|
+  fetch_key(step, "uses").to_s ==
+    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+end
+unless fetch_key(fetch_key(publish_checkout, "with"), "ref").to_s == "main"
+  reject("publish job must initially check out trusted main")
+end
+unless fetch_key(fetch_key(activate_checkout, "with"), "ref").to_s == "main"
+  reject("activation job must initially check out trusted main")
+end
+
+publish_validation = publish_steps.map { |step| fetch_key(step, "run").to_s }
+  .find { |run| run.include?("tag_commit=") }.to_s
+publish_ancestor = publish_validation.index("git merge-base --is-ancestor")
+publish_checkout_tag = publish_validation.index("git checkout --detach")
+publish_source = publish_validation.index("source script/lib/release_common.sh")
+publish_tag_regex = publish_validation.index('[[ "$TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]')
+unless [publish_tag_regex, publish_ancestor, publish_checkout_tag, publish_source].all? &&
+    publish_tag_regex < publish_ancestor && publish_ancestor < publish_checkout_tag &&
+    publish_checkout_tag < publish_source
+  reject("publish job must trust tag ancestry before executing tag code")
+end
+
+activate_validation_index = activate_steps.index do |step|
+  fetch_key(step, "run").to_s.include?("tag_commit=")
+end
+activate_validation = fetch_key(activate_steps.fetch(activate_validation_index), "run").to_s
+activate_ancestor = activate_validation.index("git merge-base --is-ancestor")
+activate_release = activate_validation.index("gh release view \"$TAG\"")
+activate_integrity = activate_validation.index("gh release verify \"$TAG\"")
+activate_checkout_tag = activate_validation.index("git checkout --detach")
+activate_tag_regex = activate_validation.index('[[ "$TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]')
+activate_source_index = activate_steps.index do |step|
+  fetch_key(step, "run").to_s.include?("source script/lib/release_common.sh")
+end
+unless [activate_tag_regex, activate_ancestor, activate_release, activate_integrity,
+    activate_checkout_tag, activate_source_index].all? &&
+    activate_tag_regex < activate_ancestor &&
+    [activate_ancestor, activate_release, activate_integrity].all? { |index| index < activate_checkout_tag } &&
+    activate_validation_index < activate_source_index
+  reject("activation job must trust the public Release and tag before executing tag code")
+end
 
 [
   "validate_release_tag \"$TAG\"",
@@ -418,6 +464,11 @@ end
 activation_upload = publish_steps.index do |step|
   fetch_key(step, "uses").to_s ==
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+end
+reject("publish-update.yml must upload activation inputs") unless activation_upload
+activation_upload_step = publish_steps.fetch(activation_upload)
+unless fetch_key(fetch_key(activation_upload_step, "with"), "overwrite") == true
+  reject("activation input upload must overwrite a prior retry artifact")
 end
 unless activation_upload && activation_upload < publish_steps.index { |step|
   fetch_key(step, "run").to_s.include?("gh release edit \"$TAG\" --draft=false --prerelease")
@@ -1032,6 +1083,28 @@ make_feed "$published_wrong_archive_feed" 0.2.0 2 14.0 \
 expect_failure "published archive failed Ed25519 verification" verify_published \
   "$published_wrong_archive_feed" "$candidate_archive" "$candidate_manifest" \
   "$candidate_dir/version.env" "$candidate_dir/update.env"
+corrupt_published_dir="$fixture_root/corrupt-published"
+/bin/mkdir -p "$corrupt_published_dir"
+corrupt_published_archive="$corrupt_published_dir/$archive_name"
+printf 'not a zip archive\n' >"$corrupt_published_archive"
+corrupt_published_length="$(/usr/bin/stat -f '%z' "$corrupt_published_archive")"
+corrupt_published_sha="$(/usr/bin/shasum -a 256 "$corrupt_published_archive" | /usr/bin/awk '{print $1}')"
+{
+  printf 'archive_name=%s\n' "$archive_name"
+  printf 'version=0.2.0\n'
+  printf 'build=2\n'
+  printf 'byte_length=%s\n' "$corrupt_published_length"
+  printf 'sha256=%s\n' "$corrupt_published_sha"
+  printf 'signing_mode=adhoc\n'
+  printf 'distribution_trust=locally-signed-not-developer-id-not-notarized-not-gatekeeper-trusted\n'
+} >"$corrupt_published_archive.manifest"
+corrupt_published_feed="$corrupt_published_dir/appcast.xml"
+make_feed "$corrupt_published_feed" 0.2.0 2 14.0 \
+  "$production_url" "$corrupt_published_length" "$published_wrong_signature"
+expect_failure "published archive failed Ed25519 verification" verify_published \
+  "$corrupt_published_feed" "$corrupt_published_archive" \
+  "$corrupt_published_archive.manifest" "$candidate_dir/version.env" \
+  "$candidate_dir/update.env"
 [[ "$production_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||
   fail "verification changed signed production feed bytes"
 [[ "$qualification_feed_sha" == "$(/usr/bin/shasum -a 256 "$inputs_dir/qualification/appcast.xml" | /usr/bin/awk '{print $1}')" ]] ||

@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: update-${{ github.repository }}-${{ inputs.tag }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish-and-verify:
@@ -25,24 +25,26 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
     steps:
-      - name: Check out qualified tag
+      - name: Check out trusted main
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
+          ref: main
 
       - name: Validate tag, version, commit, and Draft
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin main
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          tag_commit="$(git rev-parse --verify "$TAG^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          git checkout --detach "$tag_commit"
           source script/lib/release_common.sh
           load_version_config version.env
           validate_release_tag "$TAG"
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          git fetch --no-tags origin main
-          tag_commit="$(git rev-parse "$TAG^{commit}")"
           [[ "$tag_commit" == "$(git rev-parse HEAD)" ]]
-          git merge-base --is-ancestor "$tag_commit" origin/main
 
           gh release view "$TAG" \
             --json isDraft,isPrerelease,tagName,targetCommitish >dist-release.json
@@ -141,6 +143,7 @@ jobs:
           path: dist/activation-inputs
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
       - name: Publish Immutable Pre-release and publicly reverify
         shell: bash
@@ -211,11 +214,27 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
     steps:
-      - name: Check out published tag
+      - name: Check out trusted main
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
+          ref: main
+
+      - name: Validate public Release and tag ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin main
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          tag_commit="$(git rev-parse --verify "$TAG^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          gh release view "$TAG" --json isDraft,isPrerelease,tagName >dist-release.json
+          [[ "$(jq -r .isDraft dist-release.json)" == false ]]
+          [[ "$(jq -r .isPrerelease dist-release.json)" == true ]]
+          [[ "$(jq -r .tagName dist-release.json)" == "$TAG" ]]
+          gh release verify "$TAG"
+          git checkout --detach "$tag_commit"
 
       - name: Download publicly verified activation inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
