@@ -90,12 +90,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          /usr/bin/git fetch --no-tags origin main
+          tag_commit="$(/usr/bin/git rev-parse --verify "$GITHUB_REF^{commit}")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]]
+          /usr/bin/git merge-base --is-ancestor "$tag_commit" origin/main
           source script/lib/release_common.sh
           load_version_config version.env
           validate_release_tag "$GITHUB_REF_NAME"
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-          [[ "$(git rev-parse "$GITHUB_REF^{commit}")" == "$GITHUB_SHA" ]]
           archive_name="$(release_asset_basename).zip"
           archive="dist/downloaded/candidate/$archive_name"
           checksum="$archive.sha256"

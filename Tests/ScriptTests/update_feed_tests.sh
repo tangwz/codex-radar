@@ -254,6 +254,22 @@ end
 
 sign_steps = fetch_key(sign_job, "steps")
 reject("sign-candidate must contain steps") unless sign_steps.is_a?(Array)
+candidate_validation = sign_steps.map { |step| fetch_key(step, "run").to_s }
+  .find { |run| run.include?("git merge-base --is-ancestor") }.to_s
+candidate_tag_regex = candidate_validation.index(
+  '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]'
+)
+candidate_fetch_main = candidate_validation.index("/usr/bin/git fetch --no-tags origin main")
+candidate_tag_commit = candidate_validation.index('tag_commit="$(/usr/bin/git rev-parse --verify')
+candidate_sha_match = candidate_validation.index('[[ "$tag_commit" == "$GITHUB_SHA" ]]')
+candidate_ancestor = candidate_validation.index("/usr/bin/git merge-base --is-ancestor")
+candidate_source_index = candidate_validation.index("source script/lib/release_common.sh")
+unless [candidate_tag_regex, candidate_fetch_main, candidate_tag_commit, candidate_sha_match,
+    candidate_ancestor, candidate_source_index].all? &&
+    [candidate_tag_regex, candidate_fetch_main, candidate_tag_commit, candidate_sha_match,
+      candidate_ancestor].all? { |index| index < candidate_source_index }
+  reject("sign-candidate must trust tag ancestry before executing tag code")
+end
 secret_step_indexes = []
 sign_steps.each_with_index do |step, index|
   secret_step_indexes << index if secret_reference?(step)
