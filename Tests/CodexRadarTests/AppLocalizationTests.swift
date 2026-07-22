@@ -29,6 +29,14 @@ struct AppLocalizationTests {
         == "Updates are available in release builds only."
     )
     #expect(
+      localized("A new CodexRadar update is available", language: .english)
+        == "A new CodexRadar update is available"
+    )
+    #expect(
+      localized("Version %@ is now available.", language: .english)
+        == "Version %@ is now available."
+    )
+    #expect(
       localized(
         "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates.",
         language: .english
@@ -50,6 +58,14 @@ struct AppLocalizationTests {
     #expect(
       localized("Updates are available in release builds only.", language: .simplifiedChinese)
         == "更新功能仅在发布版本中可用。"
+    )
+    #expect(
+      localized("A new CodexRadar update is available", language: .simplifiedChinese)
+        == "CodexRadar \u{6709}\u{65B0}\u{7248}\u{672C}\u{53EF}\u{7528}"
+    )
+    #expect(
+      localized("Version %@ is now available.", language: .simplifiedChinese)
+        == "\u{7248}\u{672C} %@ \u{73B0}\u{5DF2}\u{53EF}\u{7528}\u{3002}"
     )
     #expect(
       localized(

@@ -92,3 +92,5 @@
 "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates." = "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates.";
 "CodexRadar cannot install updates from its current location." = "CodexRadar cannot install updates from its current location.";
 "OK" = "OK";
+"A new CodexRadar update is available" = "A new CodexRadar update is available";
+"Version %@ is now available." = "Version %@ is now available.";
