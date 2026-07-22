@@ -28,9 +28,37 @@ struct UpdateInstallationAlertContent: Equatable {
   }
 }
 
+enum UpdateReminderPolicy {
+  static func shouldPost(userInitiated: Bool) -> Bool {
+    !userInitiated
+  }
+}
+
+struct UpdateReminderLifecycle {
+  struct Session: Equatable {
+    fileprivate let id = UUID()
+  }
+
+  private var activeSession: Session?
+
+  mutating func beginSession() -> Session {
+    let session = Session()
+    activeSession = session
+    return session
+  }
+
+  mutating func finishSession() {
+    activeSession = nil
+  }
+
+  func shouldClearAfterPost(for session: Session) -> Bool {
+    activeSession != session
+  }
+}
+
 @MainActor
 final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateChangeNotifying,
-  SPUUpdaterDelegate
+  SPUUpdaterDelegate, @preconcurrency SPUStandardUserDriverDelegate
 {
   private static let logger = Logger(
     subsystem: "com.terence.codex-radar",
@@ -58,12 +86,15 @@ final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateCh
   private let bundleURL: URL
   private let homeURL: URL
   private let isWritable: (URL) -> Bool
+  private let updateReminderNotifications: UpdateReminderNotificationService
+  private var updateReminderLifecycle = UpdateReminderLifecycle()
+  private var updateReminderPostTask: Task<Void, Never>?
   private var isShowingInstallationAlert = false
   private var canCheckForUpdatesObservation: NSKeyValueObservation?
   private lazy var standardUpdaterController = SPUStandardUpdaterController(
     startingUpdater: true,
     updaterDelegate: self,
-    userDriverDelegate: nil
+    userDriverDelegate: self
   )
 
   init(
@@ -78,11 +109,14 @@ final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateCh
       }
 
       return !isReadOnly
-    }
+    },
+    updateReminderNotifications: UpdateReminderNotificationService =
+      UpdateReminderNotificationService()
   ) {
     self.bundleURL = bundleURL
     self.homeURL = homeURL
     self.isWritable = isWritable
+    self.updateReminderNotifications = updateReminderNotifications
     super.init()
     _ = standardUpdaterController
     canCheckForUpdatesObservation = standardUpdaterController.updater.observe(
@@ -108,6 +142,52 @@ final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateCh
     }
 
     standardUpdaterController.checkForUpdates(nil)
+  }
+
+  var supportsGentleScheduledUpdateReminders: Bool {
+    true
+  }
+
+  func standardUserDriverShouldHandleShowingScheduledUpdate(
+    _ update: SUAppcastItem,
+    andInImmediateFocus immediateFocus: Bool
+  ) -> Bool {
+    true
+  }
+
+  func standardUserDriverWillHandleShowingUpdate(
+    _ handleShowingUpdate: Bool,
+    forUpdate update: SUAppcastItem,
+    state: SPUUserUpdateState
+  ) {
+    guard UpdateReminderPolicy.shouldPost(userInitiated: state.userInitiated) else {
+      return
+    }
+
+    let reminderSession = updateReminderLifecycle.beginSession()
+    let displayVersion = update.displayVersionString
+    let previousPostTask = updateReminderPostTask
+    updateReminderPostTask = Task { @MainActor [weak self] in
+      await previousPostTask?.value
+      guard let self else { return }
+
+      await self.updateReminderNotifications.post(displayVersion: displayVersion)
+      guard self.updateReminderLifecycle.shouldClearAfterPost(for: reminderSession) else {
+        return
+      }
+
+      self.updateReminderNotifications.clear()
+    }
+  }
+
+  func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+    updateReminderLifecycle.finishSession()
+    updateReminderNotifications.clear()
+  }
+
+  func standardUserDriverWillFinishUpdateSession() {
+    updateReminderLifecycle.finishSession()
+    updateReminderNotifications.clear()
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {
