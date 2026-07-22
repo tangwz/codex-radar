@@ -55,6 +55,9 @@ jobs:
           find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
             xargs -0 "$RUNNER_TEMP/actionlint/actionlint"
 
+      - name: Build with strict concurrency
+        run: swift build -c release -Xswiftc -strict-concurrency=complete
+
       - name: Run validation suite
         shell: bash
         run: |

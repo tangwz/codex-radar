@@ -177,6 +177,7 @@ ci = File.read(ci_path, encoding: "UTF-8")
 required_ci_snippets = [
   "permissions:\n  contents: read",
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "swift build -c release -Xswiftc -strict-concurrency=complete",
   "swift test",
   "bash Tests/ScriptTests/release_common_tests.sh",
   "bash Tests/ScriptTests/package_verification_tests.sh",

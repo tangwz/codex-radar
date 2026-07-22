@@ -11,7 +11,7 @@
 - 按日、月、年聚合 input、output、cached input 和 total token。
 - 参考 CodexBar 的累计快照、interleaved counter 与稳定 session identity 处理；统计为本地日志推算值，不依赖 CodexBar 运行时。
 - 支持跟随系统、English 和简体中文。
-- 支持 Light/Dark Mode，不需要额外 Swift package 依赖。
+- 支持 Light/Dark Mode，并使用 Sparkle 2.9.4 提供签名自动更新。
 
 ## 运行
 
@@ -52,3 +52,9 @@ swift test
 ```
 
 仅安装当前 Command Line Tools 时，`Testing.framework` 可能不在默认搜索路径，需要为测试命令补充 framework 和 runtime 路径。
+
+## 发布
+
+发布链分为 Candidate 准备和 Production Update 激活两个阶段。修改并提交 `version.env` 后，从 `main` 创建匹配的 `v<MARKETING_VERSION>` tag；`Prepare Update Candidate` 负责生成并签名 Draft Release。真实 Mac 资格测试通过后，再手动运行 `Publish Update` 公开不可变资产并以 compare-and-swap 激活 signed appcast。
+
+完整的环境配置、密钥迁移、资格测试、失败恢复和 Distribution Halt 操作见 [`docs/releasing.md`](docs/releasing.md)。

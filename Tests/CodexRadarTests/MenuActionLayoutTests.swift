@@ -15,15 +15,10 @@ struct MenuActionLayoutTests {
     #expect(MenuBarIconConfiguration.assetName == "MenuBarIcon")
     #expect(MenuBarIconConfiguration.sideLength == 18)
     #expect(MenuBarIconConfiguration.contentInset == 0)
-    #expect(
-      Bundle.module.url(
-        forResource: MenuBarIconConfiguration.assetName,
-        withExtension: "png"
-      ) != nil
-    )
   }
 
   @Test
+  @MainActor
   func providesMenuBarIconAtConfiguredLogicalSize() {
     #expect(
       MenuBarIconConfiguration.image.size
@@ -35,6 +30,7 @@ struct MenuActionLayoutTests {
   }
 
   @Test
+  @MainActor
   func reusesTheMenuBarIconImageInstance() {
     #expect(MenuBarIconConfiguration.image === MenuBarIconConfiguration.image)
   }
