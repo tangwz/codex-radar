@@ -57,6 +57,49 @@ struct UpdateReminderLifecycle {
 }
 
 @MainActor
+final class UpdateReminderCoordinator {
+  typealias PostReminder = @MainActor (String) async -> Void
+  typealias ClearReminder = @MainActor () -> Void
+
+  private let postReminder: PostReminder
+  private let clearReminder: ClearReminder
+  private var lifecycle = UpdateReminderLifecycle()
+  private var postTask: Task<Void, Never>?
+
+  init(
+    postReminder: @escaping PostReminder,
+    clearReminder: @escaping ClearReminder
+  ) {
+    self.postReminder = postReminder
+    self.clearReminder = clearReminder
+  }
+
+  @discardableResult
+  func schedulePost(displayVersion: String) -> Task<Void, Never> {
+    let reminderSession = lifecycle.beginSession()
+    let previousPostTask = postTask
+    let task = Task { @MainActor [weak self] in
+      await previousPostTask?.value
+      guard let self else { return }
+
+      await self.postReminder(displayVersion)
+      guard self.lifecycle.shouldClearAfterPost(for: reminderSession) else {
+        return
+      }
+
+      self.clearReminder()
+    }
+    postTask = task
+    return task
+  }
+
+  func finishSession() {
+    lifecycle.finishSession()
+    clearReminder()
+  }
+}
+
+@MainActor
 final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateChangeNotifying,
   SPUUpdaterDelegate, @preconcurrency SPUStandardUserDriverDelegate
 {
@@ -87,10 +130,16 @@ final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateCh
   private let homeURL: URL
   private let isWritable: (URL) -> Bool
   private let updateReminderNotifications: UpdateReminderNotificationService
-  private var updateReminderLifecycle = UpdateReminderLifecycle()
-  private var updateReminderPostTask: Task<Void, Never>?
   private var isShowingInstallationAlert = false
   private var canCheckForUpdatesObservation: NSKeyValueObservation?
+  private lazy var updateReminderCoordinator = UpdateReminderCoordinator(
+    postReminder: { [weak self] displayVersion in
+      await self?.updateReminderNotifications.post(displayVersion: displayVersion)
+    },
+    clearReminder: { [weak self] in
+      self?.updateReminderNotifications.clear()
+    }
+  )
   private lazy var standardUpdaterController = SPUStandardUpdaterController(
     startingUpdater: true,
     updaterDelegate: self,
@@ -164,30 +213,16 @@ final class SparkleUpdaterController: NSObject, UpdaterProviding, UpdaterStateCh
       return
     }
 
-    let reminderSession = updateReminderLifecycle.beginSession()
     let displayVersion = update.displayVersionString
-    let previousPostTask = updateReminderPostTask
-    updateReminderPostTask = Task { @MainActor [weak self] in
-      await previousPostTask?.value
-      guard let self else { return }
-
-      await self.updateReminderNotifications.post(displayVersion: displayVersion)
-      guard self.updateReminderLifecycle.shouldClearAfterPost(for: reminderSession) else {
-        return
-      }
-
-      self.updateReminderNotifications.clear()
-    }
+    updateReminderCoordinator.schedulePost(displayVersion: displayVersion)
   }
 
   func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
-    updateReminderLifecycle.finishSession()
-    updateReminderNotifications.clear()
+    updateReminderCoordinator.finishSession()
   }
 
   func standardUserDriverWillFinishUpdateSession() {
-    updateReminderLifecycle.finishSession()
-    updateReminderNotifications.clear()
+    updateReminderCoordinator.finishSession()
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {
