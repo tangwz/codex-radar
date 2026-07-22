@@ -7,6 +7,28 @@ import Testing
 @MainActor
 struct UpdateReminderNotificationServiceTests {
   @Test
+  func matchesOnlyTheUpdateReminderDefaultAction() {
+    #expect(
+      UpdateReminderNotification.isDefaultAction(
+        identifier: UpdateReminderNotification.identifier,
+        actionIdentifier: UNNotificationDefaultActionIdentifier
+      )
+    )
+    #expect(
+      UpdateReminderNotification.isDefaultAction(
+        identifier: "reset-signal",
+        actionIdentifier: UNNotificationDefaultActionIdentifier
+      ) == false
+    )
+    #expect(
+      UpdateReminderNotification.isDefaultAction(
+        identifier: UpdateReminderNotification.identifier,
+        actionIdentifier: UNNotificationDismissActionIdentifier
+      ) == false
+    )
+  }
+
+  @Test
   func buildsLocalizedPresentation() {
     #expect(
       UpdateReminderNotificationPresentation.localized(

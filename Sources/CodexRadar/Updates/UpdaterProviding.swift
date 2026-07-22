@@ -53,6 +53,12 @@ final class UpdaterSettingsModel: ObservableObject {
     refresh()
   }
 
+  func showUpdateFromReminder() {
+    guard provider.isAvailable else { return }
+    provider.checkForUpdates()
+    refresh()
+  }
+
   func refresh() {
     isAvailable = provider.isAvailable
     unavailableReasonKey = provider.unavailableReasonKey

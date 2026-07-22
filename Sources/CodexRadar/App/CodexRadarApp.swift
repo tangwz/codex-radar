@@ -17,6 +17,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   ) async -> UNNotificationPresentationOptions {
     [.banner, .sound]
   }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse
+  ) async {
+    guard UpdateReminderNotification.isDefaultAction(
+      identifier: response.notification.request.identifier,
+      actionIdentifier: response.actionIdentifier
+    ) else {
+      return
+    }
+
+    await updaterSettings.showUpdateFromReminder()
+  }
 }
 
 @main

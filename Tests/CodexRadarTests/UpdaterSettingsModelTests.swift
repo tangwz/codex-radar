@@ -77,6 +77,32 @@ struct UpdaterSettingsModelTests {
     #expect(provider.checkForUpdatesCallCount == 0)
   }
 
+  @Test("notification reminder reopens an existing updater session")
+  func reopensUpdaterSessionFromReminder() {
+    let provider = FakeUpdaterProvider(
+      isAvailable: true,
+      canCheckForUpdates: false
+    )
+    let model = UpdaterSettingsModel(provider: provider)
+
+    model.showUpdateFromReminder()
+
+    #expect(provider.checkForUpdatesCallCount == 1)
+  }
+
+  @Test("notification reminder does not invoke a disabled provider")
+  func ignoresReminderForDisabledProvider() {
+    let provider = FakeUpdaterProvider(
+      isAvailable: false,
+      canCheckForUpdates: false
+    )
+    let model = UpdaterSettingsModel(provider: provider)
+
+    model.showUpdateFromReminder()
+
+    #expect(provider.checkForUpdatesCallCount == 0)
+  }
+
   @Test("disabled controller exposes no interactive update path")
   func disablesUpdatesWithoutAFeedPath() {
     let controller = DisabledUpdaterController()
