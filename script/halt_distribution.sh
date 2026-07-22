@@ -132,8 +132,58 @@ parent_path.write_text(parent_sha + "\n", encoding="ascii")
 PYTHON
 }
 
+validate_previous_commit_ancestry() {
+  local response_path="$1" expected_base="$2"
+
+  /usr/bin/python3 - "$response_path" "$expected_base" <<'PYTHON'
+import json
+import pathlib
+import re
+import sys
+
+response_path = pathlib.Path(sys.argv[1])
+expected_base = sys.argv[2]
+try:
+    response = json.loads(response_path.read_bytes())
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    raise SystemExit("invalid commit ancestry response: {}".format(error))
+
+if not isinstance(response, dict):
+    raise SystemExit("invalid commit ancestry response: expected an object")
+
+status = response.get("status")
+base_commit = response.get("base_commit")
+merge_base_commit = response.get("merge_base_commit")
+if not all(isinstance(commit, dict) for commit in (base_commit, merge_base_commit)):
+    raise SystemExit("invalid commit ancestry response: missing commit metadata")
+
+base_sha = base_commit.get("sha")
+merge_base_sha = merge_base_commit.get("sha")
+if not all(
+    isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) is not None
+    for sha in (base_sha, merge_base_sha)
+):
+    raise SystemExit("invalid commit ancestry response: invalid commit SHA")
+
+is_ancestor = (
+    status in ("ahead", "identical")
+    and base_sha == expected_base
+    and merge_base_sha == expected_base
+)
+if not is_ancestor:
+    raise SystemExit("previous commit is not an ancestor of current main")
+PYTHON
+}
+
 "$GH_EXECUTABLE" auth status >/dev/null 2>&1 ||
   die "an authenticated operator gh session is required" || exit 1
+
+ancestry_response="$work_dir/previous-commit-ancestry.json"
+# Repository rules reject non-fast-forward main updates; concurrent fast-forwards preserve ancestry.
+"$GH_EXECUTABLE" api --method GET \
+  "repos/$REPOSITORY/compare/$previous_commit...$BRANCH" >"$ancestry_response" ||
+  die "unable to verify previous commit ancestry" || exit 1
+validate_previous_commit_ancestry "$ancestry_response" "$previous_commit"
 
 current_response="$work_dir/current-response.json"
 current_feed="$work_dir/current-appcast.xml"

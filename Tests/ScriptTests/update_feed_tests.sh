@@ -1316,6 +1316,27 @@ if [[ "$method" == GET && "$target" == *"?ref=$HALT_FIXTURE_PREVIOUS_COMMIT" ]];
 fi
 
 if [[ "$method" == GET && "$target" == \
+  "repos/tangwz/codex-radar/compare/$HALT_FIXTURE_PREVIOUS_COMMIT...main" ]]; then
+  case "$HALT_FIXTURE_MODE" in
+    ancestry-read-failure)
+      exit 1
+      ;;
+    ancestry-malformed)
+      printf '{"status":"ahead"}\n'
+      ;;
+    non-ancestor)
+      printf '{"status":"diverged","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"7777777777777777777777777777777777777777"}}\n' \
+        "$HALT_FIXTURE_PREVIOUS_COMMIT"
+      ;;
+    *)
+      printf '{"status":"ahead","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' \
+        "$HALT_FIXTURE_PREVIOUS_COMMIT" "$HALT_FIXTURE_PREVIOUS_COMMIT"
+      ;;
+  esac
+  exit 0
+fi
+
+if [[ "$method" == GET && "$target" == \
   "repos/tangwz/codex-radar/commits?sha=main&path=appcast.xml&per_page=1" ]]; then
   case "$HALT_FIXTURE_MODE" in
     provenance-read-failure)
@@ -1476,6 +1497,23 @@ run_halt_fixture() {
 }
 
 expect_failure "unable to fetch current Production Feed" run_halt_fixture current-read-failure
+for ancestry_mode in ancestry-read-failure ancestry-malformed non-ancestor; do
+  case "$ancestry_mode" in
+    ancestry-read-failure)
+      expected_ancestry_error="unable to verify previous commit ancestry"
+      ;;
+    ancestry-malformed)
+      expected_ancestry_error="invalid commit ancestry response"
+      ;;
+    non-ancestor)
+      expected_ancestry_error="previous commit is not an ancestor of current main"
+      ;;
+  esac
+  expect_failure "$expected_ancestry_error" run_halt_fixture "$ancestry_mode"
+  if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
+    fail "halt command performed PUT after rejecting commit ancestry: $ancestry_mode"
+  fi
+done
 expect_failure "previous Production Feed failed Ed25519 verification" run_halt_fixture \
   default "$halt_invalid_signature"
 expect_failure "previous Production Feed build must be lower than current Production Feed build" \
