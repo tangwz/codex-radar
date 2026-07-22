@@ -6,6 +6,7 @@ REPOSITORY="tangwz/codex-radar"
 BRANCH="main"
 FEED_PATH="appcast.xml"
 RAW_FEED_URL="https://raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml"
+TEST_HARNESS=false
 VERIFY_SCRIPT="$ROOT_DIR/script/verify_update_artifacts.sh"
 UPDATE_CONFIG="${HALT_TEST_UPDATE_CONFIG:-$ROOT_DIR/config/update.env}"
 SPARKLE_SOURCE="${HALT_TEST_SPARKLE_SOURCE:-$ROOT_DIR/.build/checkouts/Sparkle}"
@@ -23,6 +24,12 @@ die() {
   echo "$*" >&2
   return 1
 }
+
+if [[ "$TEST_HARNESS" != true ]]; then
+  if /usr/bin/env | /usr/bin/awk -F= '$1 ~ /^HALT_/' | /usr/bin/grep . >/dev/null; then
+    die "HALT_* overrides are only available in the test harness" || exit 1
+  fi
+fi
 
 previous_commit=""
 if [[ "$#" -eq 2 && "$1" == --previous-commit ]]; then

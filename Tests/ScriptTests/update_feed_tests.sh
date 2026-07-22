@@ -1398,6 +1398,41 @@ make_feed "$halt_unknown_feed" 9.9.9 999 14.0 \
   "https://github.com/tangwz/codex-radar/releases/download/v9.9.9/CodexRadar-v9.9.9-macos-universal.zip" \
   99 "$archive_signature"
 
+production_halt_script="$HALT_SCRIPT"
+halt_harness_root="$fixture_root/halt-harness"
+halt_harness_script="$halt_harness_root/script/halt_distribution.sh"
+/bin/mkdir -p "$halt_harness_root/script/lib"
+/usr/bin/sed -e 's/^TEST_HARNESS=false/TEST_HARNESS=true/' \
+  "$production_halt_script" >"$halt_harness_script"
+/bin/cp "$VERIFY_SCRIPT" "$halt_harness_root/script/verify_update_artifacts.sh"
+/bin/cp "$ROOT_DIR/script/lib/release_common.sh" \
+  "$halt_harness_root/script/lib/release_common.sh"
+/bin/chmod 755 "$halt_harness_script" \
+  "$halt_harness_root/script/verify_update_artifacts.sh"
+
+run_production_halt_with_test_overrides() {
+  printf '%s\n' v0.2.0 | env \
+    HALT_GH_EXECUTABLE="$halt_fake_gh" \
+    HALT_HTTP_EXECUTABLE="$halt_fake_http" \
+    HALT_TEST_UPDATE_CONFIG="$candidate_dir/update.env" \
+    HALT_TEST_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+    HALT_TEST_POLL_ATTEMPTS=3 \
+    HALT_TEST_POLL_INTERVAL_SECONDS=0 \
+    HALT_FIXTURE_DIR="$halt_fixture_dir" \
+    HALT_FIXTURE_MODE=default \
+    HALT_FIXTURE_CURRENT_FEED="$halt_current_feed" \
+    HALT_FIXTURE_PREVIOUS_FEED="$halt_previous_feed" \
+    HALT_FIXTURE_LOWER_FEED="$halt_previous_feed" \
+    HALT_FIXTURE_UNKNOWN_FEED="$halt_unknown_feed" \
+    HALT_FIXTURE_PREVIOUS_COMMIT="$halt_previous_commit" \
+    "$production_halt_script" --previous-commit "$halt_previous_commit"
+}
+
+expect_failure "HALT_* overrides are only available in the test harness" \
+  run_production_halt_with_test_overrides
+
+HALT_SCRIPT="$halt_harness_script"
+
 run_halt_fixture() {
   local mode="$1" previous_feed="${2:-$halt_previous_feed}" confirmation="${3:-v0.2.0}"
   local preserve_server_state="${4:-false}"
