@@ -12,8 +12,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef RENAME_RESOLVE_BENEATH
 static const unsigned int kRenameSafetyFlags =
     RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH;
+#else
+static const unsigned int kRenameSafetyFlags = RENAME_NOFOLLOW_ANY;
+#endif
 
 static int valid_name(const char *name) {
   return name[0] != '\0' && strcmp(name, ".") != 0 && strcmp(name, "..") != 0 &&

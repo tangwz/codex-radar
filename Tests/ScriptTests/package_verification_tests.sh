@@ -21,6 +21,13 @@ fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$fixture_dir"' EXIT
 swift package dump-package >"$fixture_dir/base-package-dump.json"
 
+atomic_swap_compat_source="$fixture_dir/atomic-swap-without-resolve-beneath.c"
+/usr/bin/sed '/^#include <unistd.h>$/a\
+#undef RENAME_RESOLVE_BENEATH
+' "$ROOT_DIR/script/helpers/atomic_swap.c" >"$atomic_swap_compat_source"
+/usr/bin/xcrun --sdk macosx clang -fsyntax-only \
+  -mmacosx-version-min=14.0 "$atomic_swap_compat_source"
+
 setup_fixture() {
   local name="$1" fixture_root="$fixture_dir/$1"
 
