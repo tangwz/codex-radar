@@ -69,6 +69,28 @@ struct UpdateReminderPolicyTests {
     #expect(events == ["old post", "old clear", "new post"])
     #expect(currentReminder == "new")
   }
+
+  @Test
+  func clearsCurrentReminderWhenTheSessionFinishesAfterPosting() async {
+    var currentReminder: String?
+    let coordinator = UpdateReminderCoordinator(
+      postReminder: { displayVersion in
+        currentReminder = displayVersion
+      },
+      clearReminder: {
+        currentReminder = nil
+      }
+    )
+
+    let postTask = coordinator.schedulePost(displayVersion: "1.2.3")
+    await postTask.value
+
+    #expect(currentReminder == "1.2.3")
+
+    coordinator.finishSession()
+
+    #expect(currentReminder == nil)
+  }
 }
 
 @MainActor
