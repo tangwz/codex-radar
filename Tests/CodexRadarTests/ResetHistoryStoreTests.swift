@@ -404,7 +404,7 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
-  func resetIntentTransfersToReplacementExpansionAndRetriggersOnce() async {
+  func resetIntentTransfersAcrossReplacementWithoutLaterReset() async {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
     context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
@@ -420,30 +420,91 @@ struct ResetHistoryStoreTests {
     )
     context.store.selectRange(.all, timeZone: context.zone)
     await expectCallCount(3, fetcher: context.fetcher)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_200),
-      timeZone: context.zone
-    )
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_300),
-      timeZone: context.zone
-    )
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    await expectCallCount(4, fetcher: context.fetcher)
 
     await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
     await settle()
     await context.fetcher.completeNext(with: .success(history(range: .all)))
-    await expectCallCount(4, fetcher: context.fetcher)
+    await settle()
 
     #expect(
       await context.fetcher.requests.map(\.range)
-        == [.sixMonths, .twelveMonths, .all, .all])
+        == [.sixMonths, .twelveMonths, .all, .sixMonths])
 
-    await context.fetcher.completeNext(with: .success(history(range: .all)))
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await expectStoreIdle(context.store)
     await settle()
 
-    #expect(context.store.selectedRange == .all)
+    #expect(context.store.selectedRange == .threeMonths)
     #expect(await context.fetcher.callCount == 4)
+  }
+
+  @MainActor
+  @Test
+  func resetFreshnessSurvivesArbitraryReplacementChain() async {
+    let context = makeContext()
+    let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
+    let finalGeneratedAt = Date(timeIntervalSince1970: 1_700_000_500)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(
+        history(range: .sixMonths, generatedAt: initialReset)
+      ))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_100),
+      timeZone: context.zone
+    )
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(4, fetcher: context.fetcher)
+    context.store.selectRange(.sixMonths, timeZone: context.zone)
+    await expectCallCount(5, fetcher: context.fetcher)
+
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .twelveMonths, .sixMonths, .all, .sixMonths])
+    #expect(context.store.selectedRange == .sixMonths)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .twelveMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_200)
+        )))
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_300)
+        )))
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .all,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_400)
+        )))
+    await settle()
+
+    #expect(context.store.history?.generatedAt == initialReset)
+    #expect(context.store.isLoading)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(range: .sixMonths, generatedAt: finalGeneratedAt)
+      ))
+    await expectStoreIdle(context.store)
+    await settle()
+
+    #expect(context.store.history?.generatedAt == finalGeneratedAt)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(await context.fetcher.callCount == 5)
   }
 
   @MainActor
@@ -597,6 +658,72 @@ struct ResetHistoryStoreTests {
           generatedAt: Date(timeIntervalSince1970: 1_700_604_800)
         )))
     await expectStoreIdle(context.store)
+  }
+
+  @MainActor
+  @Test
+  func boundaryFreshnessSurvivesArbitraryReplacementChain() async {
+    let context = makeContext()
+    let initialGeneratedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let finalGeneratedAt = Date(timeIntervalSince1970: 1_700_000_500)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(
+        history(range: .sixMonths, generatedAt: initialGeneratedAt)
+      ))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.waiter.fireNext()
+    await settle()
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(4, fetcher: context.fetcher)
+    context.store.selectRange(.sixMonths, timeZone: context.zone)
+    await expectCallCount(5, fetcher: context.fetcher)
+
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .twelveMonths, .sixMonths, .all, .sixMonths])
+    #expect(context.store.selectedRange == .sixMonths)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .twelveMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_200)
+        )))
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_300)
+        )))
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .all,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_400)
+        )))
+    await settle()
+
+    #expect(context.store.history?.generatedAt == initialGeneratedAt)
+    #expect(context.store.isLoading)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(range: .sixMonths, generatedAt: finalGeneratedAt)
+      ))
+    await expectStoreIdle(context.store)
+    await settle()
+
+    #expect(context.store.history?.generatedAt == finalGeneratedAt)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(await context.fetcher.callCount == 5)
   }
 
   @MainActor

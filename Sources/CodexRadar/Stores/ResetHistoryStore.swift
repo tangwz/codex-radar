@@ -21,8 +21,8 @@ final class ResetHistoryStore: ObservableObject {
   private var isDashboardActive = false
   private var lastObservedResetAt: Date?
   private var activeQuery: Query?
-  private var needsTrailingResetReload = false
-  private var needsTrailingBoundaryReload = false
+  private var carriedFreshness: FreshnessIntent = []
+  private var pendingFreshness: FreshnessIntent = []
   private var loadTask: Task<Void, Never>?
   private var boundaryTask: Task<Void, Never>?
   private var lastTriggeredBoundary: Date?
@@ -37,6 +37,14 @@ final class ResetHistoryStore: ObservableObject {
   private enum RequestTrigger {
     case ordinary
     case resetChange
+    case boundary
+  }
+
+  private struct FreshnessIntent: OptionSet, Sendable {
+    let rawValue: UInt8
+
+    static let reset = FreshnessIntent(rawValue: 1 << 0)
+    static let boundary = FreshnessIntent(rawValue: 1 << 1)
   }
 
   init(
@@ -96,8 +104,8 @@ final class ResetHistoryStore: ObservableObject {
     boundaryTask?.cancel()
     boundaryTask = nil
     activeQuery = nil
-    needsTrailingResetReload = false
-    needsTrailingBoundaryReload = false
+    carriedFreshness = []
+    pendingFreshness = []
     pendingRange = nil
     isLoading = false
   }
@@ -157,18 +165,33 @@ final class ResetHistoryStore: ObservableObject {
 
   private func request(_ query: Query, trigger: RequestTrigger) {
     if activeQuery == query {
-      if case .resetChange = trigger {
-        needsTrailingResetReload = true
+      switch trigger {
+      case .ordinary:
+        break
+      case .resetChange:
+        pendingFreshness.insert(.reset)
+      case .boundary:
+        pendingFreshness.insert(.boundary)
       }
       return
     }
 
     cancelBoundaryRefreshIfTimeZoneChanged(to: query.timeZoneIdentifier)
-    needsTrailingResetReload = false
+    var transferredFreshness = carriedFreshness.union(pendingFreshness)
+    switch trigger {
+    case .ordinary:
+      break
+    case .resetChange:
+      transferredFreshness.insert(.reset)
+    case .boundary:
+      transferredFreshness.insert(.boundary)
+    }
     generation &+= 1
     let requestGeneration = generation
     loadTask?.cancel()
     activeQuery = query
+    carriedFreshness = transferredFreshness
+    pendingFreshness = []
     pendingRange =
       history?.timeZone == query.timeZoneIdentifier
         && history?.range.covers(query.targetRange) == true
@@ -192,10 +215,13 @@ final class ResetHistoryStore: ObservableObject {
           self.issue = nil
           self.scheduleBoundaryRefresh(after: result)
         }
-        self.finish()
+        self.finish(consumingCarriedFreshness: true)
       } catch is CancellationError {
         guard let self, requestGeneration == self.generation else { return }
-        self.finish()
+        self.finish(
+          consumingCarriedFreshness: false,
+          startsTrailingReload: false
+        )
       } catch {
         guard
           !Task.isCancelled,
@@ -203,18 +229,26 @@ final class ResetHistoryStore: ObservableObject {
           requestGeneration == self.generation
         else { return }
         self.issue = self.formatIssue()
-        self.finish()
+        self.finish(consumingCarriedFreshness: true)
       }
     }
   }
 
-  private func finish() {
+  private func finish(
+    consumingCarriedFreshness: Bool,
+    startsTrailingReload: Bool = true
+  ) {
     guard let completedQuery = activeQuery else { return }
-    let shouldReloadForReset = needsTrailingResetReload
-    let shouldReloadAtBoundary = needsTrailingBoundaryReload
+    if !consumingCarriedFreshness {
+      pendingFreshness.formUnion(carriedFreshness)
+    }
+    carriedFreshness = []
+    let shouldReloadForReset = pendingFreshness.contains(.reset)
+    let shouldReloadAtBoundary = pendingFreshness.contains(.boundary)
     let shouldReload =
       (shouldReloadForReset || shouldReloadAtBoundary)
       && isDashboardActive
+      && startsTrailingReload
     let targetRange =
       shouldReloadForReset
       ? completedQuery.targetRange
@@ -225,8 +259,6 @@ final class ResetHistoryStore: ObservableObject {
       targetRange: targetRange
     )
     self.activeQuery = nil
-    needsTrailingResetReload = false
-    needsTrailingBoundaryReload = false
     pendingRange = nil
     isLoading = false
     loadTask = nil
@@ -244,6 +276,8 @@ final class ResetHistoryStore: ObservableObject {
     generation &+= 1
     loadTask?.cancel()
     loadTask = nil
+    pendingFreshness.formUnion(carriedFreshness)
+    carriedFreshness = []
     self.activeQuery = nil
     pendingRange = nil
     isLoading = false
@@ -251,8 +285,7 @@ final class ResetHistoryStore: ObservableObject {
   }
 
   private func reloadAfterCanceledRequestIfNeeded(timeZone: TimeZone) {
-    guard needsTrailingResetReload || needsTrailingBoundaryReload else { return }
-    needsTrailingBoundaryReload = false
+    guard !pendingFreshness.isEmpty else { return }
     request(
       Query(
         timeZoneIdentifier: timeZone.identifier,
@@ -317,7 +350,7 @@ final class ResetHistoryStore: ObservableObject {
     boundaryTask = nil
     lastTriggeredBoundary = boundary
     if activeQuery != nil {
-      needsTrailingBoundaryReload = true
+      pendingFreshness.insert(.boundary)
       return
     }
     request(
@@ -326,7 +359,7 @@ final class ResetHistoryStore: ObservableObject {
         fetchRange: selectedRange.requestedRange,
         targetRange: selectedRange
       ),
-      trigger: .ordinary
+      trigger: .boundary
     )
   }
 }
