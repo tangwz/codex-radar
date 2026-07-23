@@ -102,6 +102,7 @@ func resetHistoryJSON(
   monthCount: Int = 6,
   timeZoneIdentifier: String = "Asia/Shanghai",
   generatedAt: String = "2026-07-19T09:00:00Z",
+  currentMonthCount: Int? = nil,
   recent: String = ""
 ) -> String {
   let boundaryTimeZone =
@@ -117,7 +118,7 @@ func resetHistoryJSON(
     count: monthCount,
     timeZoneIdentifier: boundaryTimeZone
   )
-  let currentMonthCount: Int
+  let derivedCurrentMonthCount: Int
   if monthCount > 0 {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: boundaryTimeZone)!
@@ -125,10 +126,11 @@ func resetHistoryJSON(
       from: DateComponents(year: startYear, month: startMonth, day: 1)
     )!
     let finalMonth = calendar.date(byAdding: .month, value: monthCount - 1, to: start)!
-    currentMonthCount = calendar.component(.month, from: finalMonth)
+    derivedCurrentMonthCount = calendar.component(.month, from: finalMonth)
   } else {
-    currentMonthCount = 0
+    derivedCurrentMonthCount = 0
   }
+  let resolvedCurrentMonthCount = currentMonthCount ?? derivedCurrentMonthCount
   let resolvedRecent =
     recent.isEmpty
     ? """
@@ -145,7 +147,7 @@ func resetHistoryJSON(
       "range":"\(range)",
       "current":{
         "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
-        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(currentMonthCount)}
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(resolvedCurrentMonthCount)}
       },
       "months":[\(months)],
       "recent":[\(resolvedRecent)]

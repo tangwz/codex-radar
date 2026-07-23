@@ -89,12 +89,7 @@ struct ResetHistoryDecodingTests {
 
   @Test
   func rejectsCurrentMonthThatDiffersFromFinalBucket() {
-    let json = resetHistoryJSON().replacingOccurrences(
-      of: "\"count\":7}\n      },\n      \"months\"",
-      with: "\"count\":8}\n      },\n      \"months\""
-    )
-
-    expectDecodingFailure(json)
+    expectDecodingFailure(resetHistoryJSON(currentMonthCount: 8))
   }
 
   @Test
