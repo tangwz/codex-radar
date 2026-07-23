@@ -81,7 +81,7 @@ Distribution Halt 用于最新 Production Feed 指向的版本存在问题、但
 script/halt_distribution.sh --previous-commit 0123456789abcdef0123456789abcdef01234567
 ```
 
-命令使用已认证的 operator `gh` session，先通过 GitHub Compare API 确认指定 commit 是当前远端 `main` 的祖先；API 读取失败、响应结构异常、分叉 commit 或非祖先 commit 都会在读取回退 feed 和写入前硬失败。随后命令通过 GitHub Contents API 读取 `main/appcast.xml` 的当前精确字节和 blob SHA，并从该祖先 commit 读取上一份精确字节。任何写入前，它会用固定在 `config/update.env` 中的 Sparkle Ed25519 公钥验证两份 feed，要求二者都使用版本固定资产 URL、最低系统版本一致，且 previous build 严格低于 current build。随后命令打印两份 feed 的版本、build 和 SHA-256；operator 必须输入由已验签 current feed 得出的当前 tag，完全匹配后才继续。
+命令在 Sparkle checkout 缺失时先从仓库根目录执行 `swift package resolve`，再由 verifier 校验 checkout 的固定 revision、Git 状态和源码 blob；依赖准备失败时不会访问 GitHub Production Feed。随后命令使用已认证的 operator `gh` session，先通过 GitHub Compare API 确认指定 commit 是当前远端 `main` 的祖先；API 读取失败、响应结构异常、分叉 commit 或非祖先 commit 都会在读取回退 feed 和写入前硬失败。随后命令通过 GitHub Contents API 读取 `main/appcast.xml` 的当前精确字节和 blob SHA，并从该祖先 commit 读取上一份精确字节。任何写入前，它会用固定在 `config/update.env` 中的 Sparkle Ed25519 公钥验证两份 feed，要求二者都使用版本固定资产 URL、最低系统版本一致，且 previous build 严格低于 current build。随后命令打印两份 feed 的版本、build 和 SHA-256；operator 必须输入由已验签 current feed 得出的当前 tag，完全匹配后才继续。
 
 写入使用当前 blob SHA 对 `main/appcast.xml` 执行 compare-and-swap，并把上一份 signed feed 的精确字节作为内容。HTTP 409 或 422 表示 CAS 冲突，命令立即停止且绝不强制覆盖。PUT 后命令通过 Contents API 独立复读仓库 blob，要求字节完全等于 previous feed；然后有限次轮询固定 raw URL。raw 返回 current 精确字节时只等待缓存传播，返回 previous 精确字节才报告成功，任何第三种字节立即硬失败。轮询超时只报告 `Distribution Halt Pending`，不得宣称完成，也不得删除 Release 或 tag。
 

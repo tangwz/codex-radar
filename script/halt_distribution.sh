@@ -12,6 +12,7 @@ UPDATE_CONFIG="${HALT_TEST_UPDATE_CONFIG:-$ROOT_DIR/config/update.env}"
 SPARKLE_SOURCE="${HALT_TEST_SPARKLE_SOURCE:-$ROOT_DIR/.build/checkouts/Sparkle}"
 GH_EXECUTABLE="${HALT_GH_EXECUTABLE:-gh}"
 HTTP_EXECUTABLE="${HALT_HTTP_EXECUTABLE:-/usr/bin/curl}"
+SWIFT_EXECUTABLE="${HALT_SWIFT_EXECUTABLE:-/usr/bin/swift}"
 POLL_ATTEMPTS="${HALT_TEST_POLL_ATTEMPTS:-12}"
 POLL_INTERVAL_SECONDS="${HALT_TEST_POLL_INTERVAL_SECONDS:-5}"
 
@@ -23,6 +24,18 @@ usage() {
 die() {
   echo "$*" >&2
   return 1
+}
+
+resolve_sparkle_source() {
+  [[ -d "$SPARKLE_SOURCE" ]] && return 0
+  command -v "$SWIFT_EXECUTABLE" >/dev/null 2>&1 ||
+    die "swift executable is unavailable" || return 1
+  (
+    cd "$ROOT_DIR"
+    "$SWIFT_EXECUTABLE" package resolve
+  ) || die "unable to resolve pinned SwiftPM dependencies" || return 1
+  [[ -d "$SPARKLE_SOURCE" ]] ||
+    die "SwiftPM dependency resolution did not create the Sparkle checkout" || return 1
 }
 
 if [[ "$TEST_HARNESS" != true ]]; then
@@ -47,6 +60,7 @@ command -v "$GH_EXECUTABLE" >/dev/null 2>&1 || die "gh executable is unavailable
 command -v "$HTTP_EXECUTABLE" >/dev/null 2>&1 ||
   die "HTTP transport executable is unavailable" || exit 1
 [[ -x "$VERIFY_SCRIPT" ]] || die "update verifier is unavailable" || exit 1
+resolve_sparkle_source || exit 1
 
 work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codex-radar-halt.XXXXXX")"
 cleanup() {

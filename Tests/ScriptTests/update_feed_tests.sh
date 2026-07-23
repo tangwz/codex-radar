@@ -1240,6 +1240,7 @@ halt_fixture_dir="$fixture_root/halt-fixture"
 /bin/mkdir -p "$halt_fixture_dir"
 halt_fake_gh="$halt_fixture_dir/gh"
 halt_fake_http="$halt_fixture_dir/http"
+halt_fake_swift="$halt_fixture_dir/swift"
 
 /usr/bin/tee "$halt_fake_gh" >/dev/null <<'FAKE_GH'
 #!/usr/bin/env bash
@@ -1427,7 +1428,26 @@ case "$HALT_FIXTURE_MODE" in
     ;;
 esac
 FAKE_HTTP
-/bin/chmod 755 "$halt_fake_gh" "$halt_fake_http"
+
+/usr/bin/tee "$halt_fake_swift" >/dev/null <<'FAKE_SWIFT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+working_root="$(pwd -P)"
+expected_root="$(cd "$HALT_FIXTURE_PACKAGE_ROOT" && pwd -P)"
+printf '%s|%s\n' "$working_root" "$*" >>"$HALT_FIXTURE_DIR/swift.log"
+[[ "$working_root" == "$expected_root" ]] || {
+  echo "unexpected SwiftPM package root: $working_root" >&2
+  exit 2
+}
+[[ "$#" -eq 2 && "$1" == package && "$2" == resolve ]] || {
+  echo "unexpected SwiftPM arguments: $*" >&2
+  exit 2
+}
+/bin/mkdir -p "$(/usr/bin/dirname "$HALT_TEST_SPARKLE_SOURCE")"
+/usr/bin/ditto "$HALT_FIXTURE_REAL_SPARKLE_SOURCE" "$HALT_TEST_SPARKLE_SOURCE"
+FAKE_SWIFT
+/bin/chmod 755 "$halt_fake_gh" "$halt_fake_http" "$halt_fake_swift"
 
 halt_previous_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 halt_unknown_feed="$fixture_root/halt-unknown.xml"
@@ -1473,17 +1493,19 @@ HALT_SCRIPT="$halt_harness_script"
 run_halt_fixture() {
   local mode="$1" previous_feed="${2:-$halt_previous_feed}" confirmation="${3:-v0.2.0}"
   local preserve_server_state="${4:-false}"
+  local sparkle_source="${5:-$SPARKLE_SOURCE}"
 
   if [[ "$preserve_server_state" == false ]]; then
     /bin/rm -f "$halt_fixture_dir/put-complete"
   fi
   /bin/rm -f "$halt_fixture_dir/put-body.json" "$halt_fixture_dir/http-count" \
-    "$halt_fixture_dir/gh.log" "$halt_fixture_dir/http.log"
+    "$halt_fixture_dir/gh.log" "$halt_fixture_dir/http.log" "$halt_fixture_dir/swift.log"
   printf '%s\n' "$confirmation" | env \
     HALT_GH_EXECUTABLE="$halt_fake_gh" \
     HALT_HTTP_EXECUTABLE="$halt_fake_http" \
+    HALT_SWIFT_EXECUTABLE="$halt_fake_swift" \
     HALT_TEST_UPDATE_CONFIG="$candidate_dir/update.env" \
-    HALT_TEST_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+    HALT_TEST_SPARKLE_SOURCE="$sparkle_source" \
     HALT_TEST_POLL_ATTEMPTS=3 \
     HALT_TEST_POLL_INTERVAL_SECONDS=0 \
     HALT_FIXTURE_DIR="$halt_fixture_dir" \
@@ -1493,6 +1515,8 @@ run_halt_fixture() {
     HALT_FIXTURE_LOWER_FEED="$halt_previous_feed" \
     HALT_FIXTURE_UNKNOWN_FEED="$halt_unknown_feed" \
     HALT_FIXTURE_PREVIOUS_COMMIT="$halt_previous_commit" \
+    HALT_FIXTURE_PACKAGE_ROOT="$halt_harness_root" \
+    HALT_FIXTURE_REAL_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
     "$HALT_SCRIPT" --previous-commit "$halt_previous_commit"
 }
 
@@ -1528,6 +1552,15 @@ fi
 if /usr/bin/grep -F 'api --include --method PUT' "$halt_fixture_dir/gh.log" >/dev/null; then
   fail "halt command performed PUT after rejecting a lower-build provenance parent"
 fi
+
+halt_missing_sparkle_source="$halt_harness_root/.build/checkouts/Sparkle"
+halt_fresh_checkout_output="$fixture_root/halt-fresh-checkout-output"
+run_halt_fixture default "$halt_previous_feed" v0.2.0 false \
+  "$halt_missing_sparkle_source" >"$halt_fresh_checkout_output"
+/usr/bin/grep -E '^/.*\|package resolve$' "$halt_fixture_dir/swift.log" >/dev/null ||
+  fail "halt command did not resolve SwiftPM dependencies from a fresh checkout"
+/usr/bin/grep -F 'Distribution Halt completed' "$halt_fresh_checkout_output" >/dev/null ||
+  fail "halt command did not complete from a fresh checkout"
 
 halt_success_output="$fixture_root/halt-success-output"
 run_halt_fixture default >"$halt_success_output"
