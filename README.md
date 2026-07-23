@@ -11,7 +11,7 @@
 - 按日、月、年聚合 input、output、cached input 和 total token。
 - 参考 CodexBar 的累计快照、interleaved counter 与稳定 session identity 处理；统计为本地日志推算值，不依赖 CodexBar 运行时。
 - 支持跟随系统、English 和简体中文。
-- 支持 Light/Dark Mode，不需要额外 Swift package 依赖。
+- 支持 Light/Dark Mode，并使用 Sparkle 2.9.4 提供签名自动更新。
 
 ## 运行
 
@@ -20,6 +20,28 @@
 ```
 
 应用会构建到 `dist/CodexRadar.app`。也可以使用 Codex 的 Run action 启动。
+
+## 下载与首次安装
+
+bootstrap 版本使用不可变的版本固定资产，不要使用 `latest/download`：
+
+- ZIP：<https://github.com/tangwz/codex-radar/releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip>
+- SHA-256：<https://github.com/tangwz/codex-radar/releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip.sha256>
+
+下载两个文件后，在同一目录验证 ZIP 与匹配的不可变 checksum 资产：
+
+```bash
+/usr/bin/shasum -a 256 --check CodexRadar-v0.1.0-macos-universal.zip.sha256
+```
+
+SHA-256 只能确认下载字节与该 Release 资产一致，不能证明开发者身份。当前应用是 ad-hoc signed，不是 Developer ID signed，也未 notarized；首次手动下载与 GitHub 分发渠道仍是独立的引导信任边界。
+
+校验通过后解压 ZIP，并把 `CodexRadar.app` 移到 `/Applications` 或 `~/Applications`。首次启动只使用以下单应用流程之一：
+
+1. 在 Finder 中按住 Control 点击 `CodexRadar.app`，选择 Open，再确认 Open。
+2. 如果 macOS 阻止启动，打开 System Settings > Privacy & Security，仅对刚被阻止的 `CodexRadar.app` 选择 Open Anyway。
+
+不要关闭或全局降低 Gatekeeper。首次成功启动后，后续自动更新由应用内置的 Sparkle Ed25519 公钥验证。
 
 ## 测试
 
@@ -33,60 +55,6 @@ swift test
 
 ## 发布
 
-发布版本前必须先修改并提交 `version.env`。其中 `MARKETING_VERSION` 必须使用 `MAJOR.MINOR.PATCH` 格式，`BUILD_NUMBER` 必须是正整数；两者是应用和发布产物版本的唯一来源。
+发布链分为 Candidate 准备和 Production Update 激活两个阶段。修改并提交 `version.env` 后，从 `main` 创建匹配的 `v<MARKETING_VERSION>` tag；`Prepare Update Candidate` 负责生成并签名 Draft Release。真实 Mac 资格测试通过后，再手动运行 `Publish Update` 公开不可变资产并以 compare-and-swap 激活 signed appcast。
 
-当前采用两阶段策略：
-
-- 在 `main` 上手动运行 GitHub Actions 的 `Release`，属于 package-only/preflight：它构建、签名、验证并保留七天 Artifact，但不会创建 GitHub Release。
-- 手动 ad-hoc preflight 必须选择 `signing_mode=adhoc` 和 `release_channel=prerelease`；`adhoc + stable` 会 fail closed。Artifact 是 ad-hoc 签名且未公证的预检产物。手动选择 `developer-id` 时，会真实执行 Developer ID 签名并向 Apple 提交公证、等待并 stapling；它仍然只生成 Artifact，不创建 GitHub Release。
-- 推送位于 `main` 历史中的 `v*` tag 时，工作流固定创建 ad-hoc 签名、未公证的 GitHub Pre-release。它不会根据已有 secrets 自动切换为 Developer ID 或 stable 发布。
-- 在 Apple Developer Program 凭据和受保护的 `release` Environment 完整配置之前，Developer ID 分发保持禁用。未来只有通过可审阅的显式配置切换到 `developer-id` 后，才能发布 stable Developer ID 版本。
-
-推荐按照以下顺序操作：
-
-1. 修改 `version.env`，提交版本变更，并将该提交合入 `main`。
-2. 在 `main` 手动运行 `Release`，优先选择 `adhoc` 做 package-only/preflight；下载七天 Artifact，确认没有创建 GitHub Release。
-3. 对同一 `main` 提交创建与 `MARKETING_VERSION` 完全一致的 tag。`v0.1.0` 之类的 tag 必须指向已经包含在 `main` 中的提交。
-4. 推送 tag，等待 ad-hoc GitHub Pre-release 创建完成。
-
-在本地创建 tag 前，可先确认版本元数据和当前提交已进入远端 `main`：
-
-```bash
-git fetch origin main
-./script/validate_release.sh
-git merge-base --is-ancestor HEAD origin/main
-```
-
-本地也可以先生成与工作流相同的 ad-hoc 发布产物：
-
-```bash
-SIGNING_MODE=adhoc RELEASE_PRERELEASE=true \
-  ./script/package_release.sh dist/release
-```
-
-当前版本的发布资产为 ZIP `CodexRadar-v<MARKETING_VERSION>-macos-universal.zip` 及同名 `.zip.sha256`。打包脚本不会清理输出目录中的旧版本资产，建议使用空输出目录，或在验证时只选择当前版本的这两个文件。发布或下载 Artifact 后，在这两个文件所在目录验证 checksum：
-
-```bash
-/usr/bin/shasum -a 256 --check CodexRadar-v0.1.0-macos-universal.zip.sha256
-```
-
-确认 `version.env` 已合入 `main` 且预检成功后，再创建并推送 tag：
-
-```bash
-git tag -a v0.1.0 -m "CodexRadar v0.1.0"
-git push origin v0.1.0
-```
-
-发布脚本不会自动覆盖已经公开的 tag 或 GitHub Release。构建、测试、签名或验证失败时不会创建 Release；资产上传失败时会保留 Draft，避免暴露不完整产物。只可对同一 tag 的 Draft 安全重跑，重跑会重新上传同名资产；一旦 Release 已公开，脚本会拒绝覆盖，必须停止并按新的版本/tag 或经人工审核的修复流程处理。
-
-推送第一个发布 tag 前，仓库管理员还必须启用一个针对 `v*` 的 active tag ruleset，至少禁止 tag update 和 delete，并严格限制或取消管理员/其他 bypass。workflow 会在 metadata、ad-hoc 打包前和发布调用前分别从远端重新读取并核对 tag commit，但这些检查与后续操作无法组成原子事务；tag ruleset 是关闭最后一次检查后的瞬时竞态、tag 移动/删除以及管理员重跑风险所需的外部边界。仓库内检查不能替代该 ruleset，也不应声称可以完全消除竞态。
-
-Developer ID 手动 preflight 前，仓库管理员必须在 GitHub 预先创建 `release` Environment。在 deployment branches/tags 中分别添加 deployment Branch rule `main` 与 Tag rule `v*`，配置 required reviewer、开启 prevent self-review，并取消勾选 `Allow administrators to bypass configured protection rules`。还必须配置以下五项 secrets：
-
-- `MACOS_CERTIFICATE_P12`
-- `MACOS_CERTIFICATE_PASSWORD`
-- `APP_STORE_CONNECT_API_KEY_P8`
-- `APP_STORE_CONNECT_KEY_ID`
-- `APP_STORE_CONNECT_ISSUER_ID`
-
-这些 Environment 规则是仓库外部的发布前置条件；本地脚本和 `main` 祖先校验不能替代 reviewer 审批或管理员绕过保护。不要在本地或 workflow 日志中输出任何证书、密码或 App Store Connect 凭据。
+完整的环境配置、密钥迁移、资格测试、失败恢复和 Distribution Halt 操作见 [`docs/releasing.md`](docs/releasing.md)。

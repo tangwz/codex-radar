@@ -1,0 +1,432 @@
+name: Publish Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Qualified Draft Release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-${{ github.repository }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish-and-verify:
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check out trusted main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Validate tag, version, commit, and Draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin main
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          tag_commit="$(git rev-parse --verify "$TAG^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          git checkout --detach "$tag_commit"
+          source script/lib/release_common.sh
+          load_version_config version.env
+          validate_release_tag "$TAG"
+          [[ "$tag_commit" == "$(git rev-parse HEAD)" ]]
+
+          gh release view "$TAG" \
+            --json isDraft,isPrerelease,tagName,targetCommitish >dist-release.json
+          [[ "$(jq -r .isDraft dist-release.json)" == true ]]
+          [[ "$(jq -r .tagName dist-release.json)" == "$TAG" ]]
+          target_commitish="$(jq -r .targetCommitish dist-release.json)"
+          case "$target_commitish" in
+            main|"$TAG"|"$tag_commit") ;;
+            *)
+              echo "Draft targetCommitish does not identify the qualified commit" >&2
+              exit 1
+              ;;
+          esac
+
+          archive_name="$(release_asset_basename).zip"
+          expected_assets="$(printf '%s\n' \
+            "$archive_name" "$archive_name.manifest" "$archive_name.sha256" appcast.xml | sort)"
+          actual_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
+          [[ "$actual_assets" == "$expected_assets" ]]
+
+      - name: Download and independently verify Draft assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          archive_name="$(release_asset_basename).zip"
+          mkdir -p dist/draft
+          gh release download "$TAG" --dir dist/draft --pattern '*'
+          [[ "$(find dist/draft -type f | wc -l | tr -d ' ')" == 4 ]]
+          (cd dist/draft && /usr/bin/shasum -a 256 --check "$archive_name.sha256")
+
+          swift package resolve
+          sparkle_source=.build/checkouts/Sparkle
+          [[ "$(git -C "$sparkle_source" rev-parse HEAD)" == \
+            b6496a74a087257ef5e6da1c5b29a447a60f5bd7 ]]
+          ./script/verify_update_artifacts.sh \
+            --mode published \
+            --feed dist/draft/appcast.xml \
+            --archive "dist/draft/$archive_name" \
+            --manifest "dist/draft/$archive_name.manifest" \
+            --version-config version.env \
+            --update-config config/update.env \
+            --sparkle-source "$sparkle_source"
+
+      - name: Capture expected Production Feed state
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          mkdir -p dist/activation-inputs
+          api_url="https://api.github.com/repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=main"
+          status="$(curl --silent --show-error --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output dist/current-feed-response.json \
+            --write-out '%{http_code}' "$api_url")"
+          case "$status" in
+            200)
+              jq -r .content dist/current-feed-response.json | tr -d '\n' | \
+                /usr/bin/base64 -D >dist/activation-inputs/expected-previous-appcast.xml
+              jq -er .sha dist/current-feed-response.json >dist/activation-inputs/expected-previous-blob-sha
+              ./script/verify_update_artifacts.sh \
+                --mode previous \
+                --feed dist/activation-inputs/expected-previous-appcast.xml \
+                --version-config version.env \
+                --update-config config/update.env \
+                --sparkle-source .build/checkouts/Sparkle
+              ;;
+            404)
+              [[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq "[.[] | select(.tag_name != \"$TAG\")] | length == 0" | \
+                /usr/bin/grep -Fx true >/dev/null
+              : >dist/activation-inputs/expected-previous-absent
+              ;;
+            *)
+              echo "Unable to read Production Feed: HTTP $status" >&2
+              exit 1
+              ;;
+          esac
+          archive_name="$(release_asset_basename).zip"
+          /bin/cp "dist/draft/$archive_name" dist/activation-inputs/
+          /bin/cp "dist/draft/$archive_name.sha256" dist/activation-inputs/
+          /bin/cp "dist/draft/$archive_name.manifest" dist/activation-inputs/
+          /bin/cp dist/draft/appcast.xml dist/activation-inputs/candidate-appcast.xml
+          /bin/cp version.env dist/activation-inputs/version.env
+          /bin/cp config/update.env dist/activation-inputs/update.env
+
+      - name: Upload activation inputs before publishing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: production-activation-inputs
+          path: dist/activation-inputs
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+      - name: Publish Immutable Pre-release and publicly reverify
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          archive_name="$(release_asset_basename).zip"
+          cleanup_failed_publication() {
+            status="$?"
+            if [[ "$status" -ne 0 ]]; then
+              release_is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
+              if [[ "$release_is_draft" == false ]]; then
+                echo "Public verification failed; burning $TAG and deleting its Release and tag." >&2
+                if ! gh release delete "$TAG" --yes --cleanup-tag; then
+                  echo "Automatic cleanup failed; Release Operator intervention is required." >&2
+                fi
+              elif [[ "$release_is_draft" != true ]]; then
+                echo "Release state is unknown; Release Operator intervention is required." >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_publication EXIT
+
+          gh release edit "$TAG" --draft=false --prerelease
+          [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == false ]]
+          [[ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" == true ]]
+
+          mkdir -p dist/public
+          public_base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          for asset in "$archive_name" "$archive_name.sha256" "$archive_name.manifest" appcast.xml; do
+            curl --fail --location --proto '=https' --tlsv1.2 \
+              --output "dist/public/$asset" "$public_base/$asset"
+          done
+          /usr/bin/cmp -s "dist/draft/$archive_name" "dist/public/$archive_name"
+          /usr/bin/cmp -s "dist/draft/$archive_name.sha256" "dist/public/$archive_name.sha256"
+          /usr/bin/cmp -s "dist/draft/$archive_name.manifest" "dist/public/$archive_name.manifest"
+          /usr/bin/cmp -s dist/draft/appcast.xml dist/public/appcast.xml
+          (cd dist/public && /usr/bin/shasum -a 256 --check "$archive_name.sha256")
+          ./script/verify_update_artifacts.sh \
+            --mode published \
+            --feed dist/public/appcast.xml \
+            --archive "dist/public/$archive_name" \
+            --manifest "dist/public/$archive_name.manifest" \
+            --version-config version.env \
+            --update-config config/update.env \
+            --sparkle-source .build/checkouts/Sparkle
+
+          integrity_verified=false
+          for delay in 1 2 4 8 15; do
+            if gh release verify "$TAG"; then
+              integrity_verified=true
+              break
+            fi
+            sleep "$delay"
+          done
+          [[ "$integrity_verified" == true ]]
+          trap - EXIT
+
+  activate-production-feed:
+    needs: publish-and-verify
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check out trusted main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Validate public Release and tag ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin main
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          tag_commit="$(git rev-parse --verify "$TAG^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          gh release view "$TAG" --json isDraft,isPrerelease,tagName >dist-release.json
+          [[ "$(jq -r .isDraft dist-release.json)" == false ]]
+          [[ "$(jq -r .isPrerelease dist-release.json)" == true ]]
+          [[ "$(jq -r .tagName dist-release.json)" == "$TAG" ]]
+          gh release verify "$TAG"
+          git checkout --detach "$tag_commit"
+
+      - name: Download publicly verified activation inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: production-activation-inputs
+          path: dist/activation-inputs
+
+      - name: Independently redownload and verify public assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          validate_release_tag "$TAG"
+          /usr/bin/cmp -s version.env dist/activation-inputs/version.env
+          /usr/bin/cmp -s config/update.env dist/activation-inputs/update.env
+          archive_name="$(release_asset_basename).zip"
+          [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == false ]]
+          [[ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" == true ]]
+          mkdir -p dist/activation-public
+          public_base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          for asset in "$archive_name" "$archive_name.sha256" "$archive_name.manifest" appcast.xml; do
+            curl --fail --location --proto '=https' --tlsv1.2 \
+              --output "dist/activation-public/$asset" "$public_base/$asset"
+          done
+          /usr/bin/cmp -s "dist/activation-inputs/$archive_name" \
+            "dist/activation-public/$archive_name"
+          /usr/bin/cmp -s "dist/activation-inputs/$archive_name.sha256" \
+            "dist/activation-public/$archive_name.sha256"
+          /usr/bin/cmp -s "dist/activation-inputs/$archive_name.manifest" \
+            "dist/activation-public/$archive_name.manifest"
+          /usr/bin/cmp -s dist/activation-inputs/candidate-appcast.xml \
+            dist/activation-public/appcast.xml
+          (cd dist/activation-public && /usr/bin/shasum -a 256 --check "$archive_name.sha256")
+
+          swift package resolve
+          sparkle_source=.build/checkouts/Sparkle
+          [[ "$(git -C "$sparkle_source" rev-parse HEAD)" == \
+            b6496a74a087257ef5e6da1c5b29a447a60f5bd7 ]]
+          ./script/verify_update_artifacts.sh \
+            --mode published \
+            --feed dist/activation-public/appcast.xml \
+            --archive "dist/activation-public/$archive_name" \
+            --manifest "dist/activation-public/$archive_name.manifest" \
+            --version-config version.env \
+            --update-config config/update.env \
+            --sparkle-source "$sparkle_source"
+          gh release verify "$TAG"
+
+      - name: Compare and swap Production Feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          validate_release_tag "$TAG"
+          /usr/bin/cmp -s version.env dist/activation-inputs/version.env
+          /usr/bin/cmp -s config/update.env dist/activation-inputs/update.env
+          archive_name="$(release_asset_basename).zip"
+          candidate_feed=dist/activation-inputs/candidate-appcast.xml
+
+          api_url="https://api.github.com/repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=main"
+          current_status="$(curl --silent --show-error --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output dist/current-feed-response.json \
+            --write-out '%{http_code}' "$api_url")"
+          cas_current=()
+          case "$current_status" in
+            200)
+              jq -r .content dist/current-feed-response.json | tr -d '\n' | \
+                /usr/bin/base64 -D >dist/current-appcast.xml
+              current_blob_sha="$(jq -er .sha dist/current-feed-response.json)"
+              cas_current=(--current-feed dist/current-appcast.xml)
+              ;;
+            404)
+              current_blob_sha=''
+              cas_current=(--current-absent)
+              ;;
+            *)
+              echo "Unable to read current Production Feed: HTTP $current_status" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ -f dist/activation-inputs/expected-previous-appcast.xml ]]; then
+            cas_expected=(--expected-previous-feed dist/activation-inputs/expected-previous-appcast.xml)
+          elif [[ -f dist/activation-inputs/expected-previous-absent ]]; then
+            cas_expected=(--expected-previous-absent)
+          else
+            echo "Activation inputs lack the expected previous signed feed state" >&2
+            exit 1
+          fi
+          cas_output="$(./script/verify_update_artifacts.sh \
+            --mode cas \
+            "${cas_current[@]}" \
+            "${cas_expected[@]}" \
+            --candidate-feed "$candidate_feed")"
+
+          case "$cas_output" in
+            cas_state=already-active)
+              echo "Candidate is already active; resuming Activation Pending verification."
+              ;;
+            cas_state=ready)
+              [[ -n "$current_blob_sha" ]]
+              candidate_content="$(/usr/bin/base64 <"$candidate_feed" | tr -d '\n')"
+              jq -n \
+                --arg message "Activate $TAG Production Feed" \
+                --arg content "$candidate_content" \
+                --arg sha "$current_blob_sha" \
+                '{message:$message, content:$content, sha:$sha, branch:"main"}' \
+                >dist/feed-update.json
+              ;;
+            cas_state=ready-bootstrap)
+              [[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq "[.[] | select(.tag_name != \"$TAG\")] | length == 0" | \
+                /usr/bin/grep -Fx true >/dev/null
+              second_status="$(curl --silent --show-error --location \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header 'Accept: application/vnd.github+json' \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                --output dist/bootstrap-second-feed-response.json \
+                --write-out '%{http_code}' "$api_url")"
+              [[ "$second_status" == 404 ]]
+              candidate_content="$(/usr/bin/base64 <"$candidate_feed" | tr -d '\n')"
+              jq -n \
+                --arg message "Bootstrap $TAG Production Feed" \
+                --arg content "$candidate_content" \
+                '{message:$message, content:$content, branch:"main"}' \
+                >dist/feed-update.json
+              ;;
+            *)
+              echo "Unknown CAS state: $cas_output" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ "$cas_output" != cas_state=already-active ]]; then
+            put_status="$(curl --silent --show-error \
+              --request PUT \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --data-binary @dist/feed-update.json \
+              --output dist/feed-update-response.json \
+              --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/appcast.xml")"
+            case "$put_status" in
+              200|201) ;;
+              409|422)
+                echo "Production Feed CAS conflict: HTTP $put_status" >&2
+                exit 1
+                ;;
+              *)
+                echo "Production Feed write failed: HTTP $put_status" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+      - name: Poll raw Production Feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_feed=dist/activation-inputs/candidate-appcast.xml
+          raw_url="https://raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml"
+          for delay in 1 2 4 8 16 30; do
+            raw_status="$(curl --silent --show-error --location \
+              --output dist/raw-appcast.xml \
+              --write-out '%{http_code}' "$raw_url" || true)"
+            if [[ "$raw_status" == 200 ]]; then
+              if /usr/bin/cmp -s dist/raw-appcast.xml "$candidate_feed"; then
+                echo "Production Feed activation complete for $TAG."
+                exit 0
+              fi
+              if [[ -f dist/activation-inputs/expected-previous-appcast.xml ]] && \
+                /usr/bin/cmp -s dist/raw-appcast.xml \
+                  dist/activation-inputs/expected-previous-appcast.xml; then
+                sleep "$delay"
+                continue
+              fi
+              echo "unknown Production Feed bytes; Release Operator investigation is required" >&2
+              exit 1
+            fi
+            if [[ "$raw_status" == 404 && \
+              -f dist/activation-inputs/expected-previous-absent ]]; then
+              sleep "$delay"
+              continue
+            fi
+            sleep "$delay"
+          done
+          echo "::warning title=Activation Pending::Repository CAS succeeded, but raw Production Feed has not converged. Re-run failed jobs only; do not delete the public Release or roll back the feed."
+          exit 1

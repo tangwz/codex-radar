@@ -1,0 +1,290 @@
+name: Prepare Update Candidate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-${{ github.repository }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-package:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - name: Validate release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            validate_release_tag "$GITHUB_REF_NAME"
+            [[ "$(git rev-parse "$GITHUB_REF^{commit}")" == "$GITHUB_SHA" ]]
+          fi
+          printf 'MARKETING_VERSION=%s\nBUILD_NUMBER=%s\n' "$MARKETING_VERSION" "$BUILD_NUMBER"
+
+      - name: Test and package Universal 2 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test
+          bash Tests/ScriptTests/release_common_tests.sh
+          bash Tests/ScriptTests/package_verification_tests.sh
+          bash Tests/ScriptTests/update_feed_tests.sh
+          find script -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          ./script/package_release.sh --output dist/candidate --signing-mode adhoc
+          source script/lib/release_common.sh
+          load_version_config version.env
+          archive="dist/candidate/$(release_asset_basename).zip"
+          mkdir -p dist/extracted
+          /usr/bin/ditto -x -k "$archive" dist/extracted
+          /bin/cp dist/extracted/CodexRadar.app/Contents/Info.plist dist/final-Info.plist
+
+      - name: Upload unsigned candidate inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-build-${{ github.sha }}
+          path: |
+            dist/candidate
+            dist/final-Info.plist
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-candidate:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build-test-package
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - name: Download candidate inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: candidate-build-${{ github.sha }}
+          path: dist/downloaded
+
+      - name: Revalidate candidate and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          /usr/bin/git fetch --no-tags origin main
+          tag_commit="$(/usr/bin/git rev-parse --verify "$GITHUB_REF^{commit}")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]]
+          /usr/bin/git merge-base --is-ancestor "$tag_commit" origin/main
+          source script/lib/release_common.sh
+          load_version_config version.env
+          validate_release_tag "$GITHUB_REF_NAME"
+          archive_name="$(release_asset_basename).zip"
+          archive="dist/downloaded/candidate/$archive_name"
+          checksum="$archive.sha256"
+          manifest="$archive.manifest"
+          [[ -f "$archive" && -f "$checksum" && -f "$manifest" ]]
+          (cd dist/downloaded/candidate && /usr/bin/shasum -a 256 --check "$archive_name.sha256")
+          /usr/bin/ditto -x -k "$archive" "$RUNNER_TEMP/candidate-extracted"
+          /usr/bin/cmp -s "$RUNNER_TEMP/candidate-extracted/CodexRadar.app/Contents/Info.plist" \
+            dist/downloaded/final-Info.plist
+
+      - name: Verify Sparkle tools and build fixed CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools_archive="$RUNNER_TEMP/Sparkle-2.9.4.tar.xz"
+          tools_dir="$RUNNER_TEMP/sparkle-tools"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$tools_archive" \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.4/Sparkle-2.9.4.tar.xz
+          printf '%s  %s\n' \
+            ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9 \
+            "$tools_archive" | /usr/bin/shasum -a 256 -c -
+          mkdir -p "$tools_dir"
+          /usr/bin/tar -xJf "$tools_archive" -C "$tools_dir"
+          [[ -x "$tools_dir/bin/generate_appcast" ]]
+          swift package resolve
+          sparkle_checkout=.build/checkouts/Sparkle
+          sparkle_revision=b6496a74a087257ef5e6da1c5b29a447a60f5bd7
+          [[ "$(git -C "$sparkle_checkout" rev-parse HEAD)" == "$sparkle_revision" ]]
+          source_dir="$RUNNER_TEMP/sparkle-source"
+          mkdir -p "$source_dir"
+          git -C "$sparkle_checkout" archive "$sparkle_revision" | /usr/bin/tar -x -C "$source_dir"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" \
+            SWIFTPM_DISABLE_SANDBOX=1 /usr/bin/xcodebuild \
+            -disableAutomaticPackageResolution \
+            -project "$source_dir/Sparkle.xcodeproj" \
+            -scheme sparkle-cli \
+            -configuration Release \
+            SYMROOT="$RUNNER_TEMP/sparkle-build" \
+            OBJROOT="$RUNNER_TEMP/sparkle-obj" \
+            CODE_SIGNING_ALLOWED=NO build >/dev/null
+          cli="$RUNNER_TEMP/sparkle-build/Release/sparkle.app/Contents/MacOS/sparkle"
+          cli_info="$RUNNER_TEMP/sparkle-build/Release/sparkle.app/Contents/Info.plist"
+          [[ -x "$cli" ]]
+          [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$cli_info")" == "2.9.4" ]]
+          /usr/bin/file "$cli" | /usr/bin/grep -F 'Mach-O' >/dev/null
+          printf 'SPARKLE_FIXED_CLI=%s\n' "$cli" >>"$GITHUB_ENV"
+
+      - name: Prepare production and qualification inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          archive_name="$(release_asset_basename).zip"
+          archive="dist/downloaded/candidate/$archive_name"
+          manifest="$archive.manifest"
+          mkdir -p dist/prepared-parent
+          if git cat-file -e origin/main:appcast.xml 2>/dev/null; then
+            git show origin/main:appcast.xml >dist/production-appcast.xml
+            ./script/prepare_appcast_inputs.sh \
+              --output dist/prepared-parent/inputs \
+              --archive "$archive" \
+              --manifest "$manifest" \
+              --final-info-plist dist/downloaded/final-Info.plist \
+              --version-config version.env \
+              --update-config config/update.env \
+              --sparkle-source .build/checkouts/Sparkle \
+              --production-feed dist/production-appcast.xml
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" >dist/release-history.json
+            ./script/prepare_appcast_inputs.sh \
+              --output dist/prepared-parent/inputs \
+              --archive "$archive" \
+              --manifest "$manifest" \
+              --final-info-plist dist/downloaded/final-Info.plist \
+              --version-config version.env \
+              --update-config config/update.env \
+              --sparkle-source .build/checkouts/Sparkle \
+              --bootstrap \
+              --release-history dist/release-history.json
+          fi
+          mkdir -p dist/prepared-parent/inputs/bin
+          /bin/cp "$SPARKLE_FIXED_CLI" dist/prepared-parent/inputs/bin/sparkle
+          /bin/chmod 755 dist/prepared-parent/inputs/bin/sparkle
+          production_prefix="$(<dist/prepared-parent/inputs/production-download-url-prefix)"
+          qualification_prefix="$(<dist/prepared-parent/inputs/qualification-download-url-prefix)"
+          printf 'PRODUCTION_DOWNLOAD_URL_PREFIX=%s\n' "$production_prefix" >>"$GITHUB_ENV"
+          printf 'QUALIFICATION_DOWNLOAD_URL_PREFIX=%s\n' "$qualification_prefix" >>"$GITHUB_ENV"
+
+      - name: Sign prepared appcasts
+        shell: bash
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set +x
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$PRODUCTION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/production
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$QUALIFICATION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/qualification
+
+      - name: Validate signed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          archive_name="$(release_asset_basename).zip"
+          archive="dist/downloaded/candidate/$archive_name"
+          ./script/verify_update_artifacts.sh \
+            --mode artifacts \
+            --inputs dist/prepared-parent/inputs \
+            --archive "$archive" \
+            --manifest "$archive.manifest" \
+            --final-info-plist dist/downloaded/final-Info.plist \
+            --version-config version.env \
+            --update-config config/update.env \
+            --sparkle-source .build/checkouts/Sparkle
+
+      - name: Create and redownload Draft Candidate Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          tag="$GITHUB_REF_NAME"
+          archive_name="$(release_asset_basename).zip"
+          archive="dist/downloaded/candidate/$archive_name"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Candidate Release already exists: $tag" >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --verify-tag \
+            --draft \
+            --title "CodexRadar $MARKETING_VERSION Candidate" \
+            "$archive" \
+            "$archive.sha256" \
+            "$archive.manifest" \
+            "dist/prepared-parent/inputs/production/appcast.xml#appcast.xml"
+          [[ "$(gh release view "$tag" --json isDraft --jq .isDraft)" == "true" ]]
+          mkdir -p dist/draft-download
+          gh release download "$tag" --dir dist/draft-download
+          [[ "$(find dist/draft-download -type f | wc -l | tr -d ' ')" == "4" ]]
+          /usr/bin/cmp -s "$archive" "dist/draft-download/$archive_name"
+          /usr/bin/cmp -s "$archive.sha256" "dist/draft-download/$archive_name.sha256"
+          /usr/bin/cmp -s "$archive.manifest" "dist/draft-download/$archive_name.manifest"
+          /usr/bin/cmp -s dist/prepared-parent/inputs/production/appcast.xml \
+            dist/draft-download/appcast.xml
+          (cd dist/draft-download && /usr/bin/shasum -a 256 --check "$archive_name.sha256")
+          /usr/bin/cmp -s "$archive.manifest" dist/prepared-parent/inputs/manifest
+          [[ "$(gh release view "$tag" --json isDraft --jq .isDraft)" == "true" ]]
+
+      - name: Assemble qualification bundle from Draft bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          source script/lib/release_common.sh
+          load_version_config version.env
+          archive_name="$(release_asset_basename).zip"
+          /usr/bin/ditto dist/prepared-parent/inputs dist/qualification
+          /bin/cp "dist/draft-download/$archive_name" \
+            "dist/qualification/production/$archive_name"
+          /bin/cp "dist/draft-download/$archive_name" \
+            "dist/qualification/qualification/$archive_name"
+          /bin/cp "dist/draft-download/$archive_name.manifest" dist/qualification/manifest
+          /usr/bin/cmp -s "dist/draft-download/$archive_name" \
+            "dist/qualification/qualification/$archive_name"
+          /usr/bin/cmp -s dist/prepared-parent/inputs/qualification/appcast.xml \
+            dist/qualification/qualification/appcast.xml
+          [[ -x dist/qualification/bin/sparkle ]]
+
+      - name: Upload seven-day qualification Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qualification-${{ github.ref_name }}
+          path: dist/qualification
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Confirm Candidate Release remains Draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" == "true" ]]
+          echo "Draft Candidate Release is ready for local qualification."

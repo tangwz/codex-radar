@@ -12,6 +12,7 @@ enum SettingsLayout {
 struct SettingsView: View {
   @ObservedObject var store: DashboardStore
   @ObservedObject var selection: SettingsSelection
+  @ObservedObject var updaterSettings: UpdaterSettingsModel
   @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
 
   private var selectedLanguage: AppLanguage {
@@ -57,7 +58,7 @@ struct SettingsView: View {
     case .settings:
       SettingsPageView()
     case .about:
-      AboutView()
+      AboutView(updaterSettings: updaterSettings)
     }
   }
 }
