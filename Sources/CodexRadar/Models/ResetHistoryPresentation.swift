@@ -13,7 +13,6 @@ struct ResetHistoryPresentation {
   }
 
   let selectedRange: ResetHistoryRange
-  let responseRevision: Date
   let rangeDescription: String
   let weekCount: Int
   let monthCount: Int
@@ -54,7 +53,6 @@ struct ResetHistoryPresentation {
     ).month(.abbreviated).year()
 
     self.selectedRange = selectedRange
-    responseRevision = history.generatedAt
     rangeDescription = [visibleSummaries.first, visibleSummaries.last]
       .compactMap { $0?.from.formatted(rangeStyle) }
       .joined(separator: " – ")

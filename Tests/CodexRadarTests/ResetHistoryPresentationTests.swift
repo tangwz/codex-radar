@@ -86,7 +86,7 @@ struct ResetHistoryPresentationTests {
   }
 
   @Test
-  func mapsResponseRevisionIndependentlyFromLatestMonth() throws {
+  func keepsLatestMonthIdentityStableAcrossSameMonthResponses() throws {
     let firstHistory = try decodeHistory(
       resetHistoryJSON(generatedAt: "2026-07-19T09:00:00Z")
     )
@@ -106,9 +106,23 @@ struct ResetHistoryPresentationTests {
     )
 
     #expect(firstPresentation.months.last?.id == secondPresentation.months.last?.id)
-    #expect(firstPresentation.responseRevision == firstHistory.generatedAt)
-    #expect(secondPresentation.responseRevision == secondHistory.generatedAt)
-    #expect(firstPresentation.responseRevision != secondPresentation.responseRevision)
+  }
+
+  @Test
+  func allChartScrollsOnAppearanceAndLatestMonthIdentityChanges() throws {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let viewSource = try String(
+      contentsOf: repositoryRoot.appendingPathComponent(
+        "Sources/CodexRadar/Views/ResetHistoryView.swift"),
+      encoding: .utf8
+    )
+
+    #expect(viewSource.contains(".onAppear {"))
+    #expect(viewSource.contains(".onChange(of: presentation.months.last?.id)"))
+    #expect(!viewSource.contains(".onChange(of: presentation.responseRevision)"))
   }
 
   @Test

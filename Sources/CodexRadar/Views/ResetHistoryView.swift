@@ -123,7 +123,7 @@ struct ResetHistoryView: View {
           .onAppear {
             scrollToLatestMonth(in: presentation, with: scrollProxy)
           }
-          .onChange(of: presentation.responseRevision) {
+          .onChange(of: presentation.months.last?.id) {
             scrollToLatestMonth(in: presentation, with: scrollProxy)
           }
         }

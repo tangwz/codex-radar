@@ -442,6 +442,50 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func freshnessResponseRetargetedBeyondFetchedRangeTrailsCurrentTarget() async {
+    let context = makeContext()
+    let cachedAt = Date(timeIntervalSince1970: 1_700_000_100)
+    let narrowAt = Date(timeIntervalSince1970: 1_700_000_200)
+    let refreshedAt = Date(timeIntervalSince1970: 1_700_000_300)
+    await loadInitialHistory(context)
+
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(history(range: .all, generatedAt: cachedAt)))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_150),
+      timeZone: context.zone
+    )
+    await expectCallCount(3, fetcher: context.fetcher)
+    context.store.selectRange(.all, timeZone: context.zone)
+
+    #expect(context.store.selectedRange == .all)
+    #expect(await context.fetcher.requests.last?.range == .sixMonths)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, generatedAt: narrowAt)))
+    await expectCallCount(4, fetcher: context.fetcher)
+
+    #expect(context.store.history?.generatedAt == cachedAt)
+    #expect(context.store.isLoading)
+    #expect(await context.fetcher.requests.last?.range == .all)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .all, generatedAt: refreshedAt)))
+    await expectStoreIdle(context.store)
+    await settle()
+
+    #expect(context.store.history?.generatedAt == refreshedAt)
+    #expect(context.store.selectedRange == .all)
+    #expect(await context.fetcher.callCount == 4)
+  }
+
+  @MainActor
+  @Test
   func resetFreshnessSurvivesArbitraryReplacementChain() async {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
@@ -574,6 +618,28 @@ struct ResetHistoryStoreTests {
     await expectWaitCount(2, waiter: context.waiter)
     context.store.dashboardDidDisappear()
     await expectCancellationCount(1, waiter: context.waiter)
+  }
+
+  @MainActor
+  @Test
+  func failedBoundaryRefreshSchedulesLaterBoundaryWithoutImmediateRetry() async throws {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+    let firstBoundary = try #require(await context.waiter.dates.first)
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+
+    let boundaries = await context.waiter.dates
+    let laterBoundary = try #require(boundaries.dropFirst().first)
+    #expect(laterBoundary > firstBoundary)
+    #expect(await context.fetcher.callCount == 2)
+    #expect(await context.waiter.activeWaitCount == 1)
+    #expect(context.store.issue == "History unavailable")
   }
 
   @MainActor
@@ -794,6 +860,39 @@ struct ResetHistoryStoreTests {
     #expect(laterDate > dates[0])
     #expect(await context.fetcher.callCount == 2)
   }
+
+  @MainActor
+  @Test
+  func responseCrossingMonthBoundaryCatchesUpOnceThenAdvances() async throws {
+    let generatedAt = try #require(
+      ISO8601DateFormatter().date(from: "2026-07-31T15:59:59Z"))
+    let missedBoundary = try #require(
+      ISO8601DateFormatter().date(from: "2026-07-31T16:00:01Z"))
+    let commitNow = try #require(
+      ISO8601DateFormatter().date(from: "2026-07-31T16:00:02Z"))
+    let context = makeContext(now: { commitNow })
+    let staleHistory = history(range: .sixMonths, generatedAt: generatedAt)
+
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(staleHistory))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    #expect(await context.waiter.dates == [missedBoundary])
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(staleHistory))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+
+    let boundaries = await context.waiter.dates
+    let futureBoundary = try #require(boundaries.dropFirst().first)
+    #expect(futureBoundary > commitNow)
+    #expect(futureBoundary > missedBoundary)
+    #expect(await context.fetcher.callCount == 2)
+  }
 }
 
 @MainActor
@@ -805,7 +904,11 @@ private struct HistoryStoreTestContext {
 }
 
 @MainActor
-private func makeContext() -> HistoryStoreTestContext {
+private func makeContext(
+  now: @escaping ResetHistoryStore.Now = {
+    Date(timeIntervalSince1970: 1_700_000_000)
+  }
+) -> HistoryStoreTestContext {
   let fetcher = ControlledHistoryFetcher()
   let waiter = ControlledHistoryWaiter()
   let store = ResetHistoryStore(
@@ -815,9 +918,7 @@ private func makeContext() -> HistoryStoreTestContext {
     waitUntil: {
       try await waiter.wait(until: $0)
     },
-    now: {
-      Date(timeIntervalSince1970: 1_700_000_000)
-    },
+    now: now,
     formatIssue: { "History unavailable" }
   )
   return HistoryStoreTestContext(

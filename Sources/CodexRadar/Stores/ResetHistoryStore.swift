@@ -209,13 +209,14 @@ final class ResetHistoryStore: ObservableObject {
           requestGeneration == self.generation
         else { return }
         guard let activeQuery = self.activeQuery else { return }
-        if result.range.covers(activeQuery.targetRange) {
+        let committed = result.range.covers(activeQuery.targetRange)
+        if committed {
           self.history = result
           self.selectedRange = activeQuery.targetRange
           self.issue = nil
           self.scheduleBoundaryRefresh(after: result)
         }
-        self.finish(consumingCarriedFreshness: true)
+        self.finish(consumingCarriedFreshness: committed)
       } catch is CancellationError {
         guard let self, requestGeneration == self.generation else { return }
         self.finish(
@@ -229,6 +230,9 @@ final class ResetHistoryStore: ObservableObject {
           requestGeneration == self.generation
         else { return }
         self.issue = self.formatIssue()
+        if self.carriedFreshness.contains(.boundary), let history = self.history {
+          self.scheduleBoundaryRefresh(after: history)
+        }
         self.finish(consumingCarriedFreshness: true)
       }
     }
@@ -250,7 +254,7 @@ final class ResetHistoryStore: ObservableObject {
       && isDashboardActive
       && startsTrailingReload
     let targetRange =
-      shouldReloadForReset
+      !consumingCarriedFreshness || shouldReloadForReset
       ? completedQuery.targetRange
       : selectedRange
     let trailingQuery = Query(
@@ -315,18 +319,27 @@ final class ResetHistoryStore: ObservableObject {
   private func scheduleBoundaryRefresh(after history: ResetHistory) {
     boundaryTask?.cancel()
     boundaryTask = nil
-    let schedulingAnchor = max(
-      history.generatedAt,
-      max(lastTriggeredBoundary ?? history.generatedAt, now())
-    )
     guard
       isDashboardActive,
       let timeZone = TimeZone(identifier: history.timeZone),
-      let boundary = ResetHistoryRefreshSchedule.nextBoundary(
-        after: schedulingAnchor,
+      let firstBoundary = ResetHistoryRefreshSchedule.nextBoundary(
+        after: history.generatedAt,
         timeZone: timeZone
       )
     else { return }
+    let boundary: Date
+    if let lastTriggeredBoundary, lastTriggeredBoundary >= firstBoundary {
+      let schedulingAnchor = max(lastTriggeredBoundary, now())
+      guard
+        let futureBoundary = ResetHistoryRefreshSchedule.nextBoundary(
+          after: schedulingAnchor,
+          timeZone: timeZone
+        )
+      else { return }
+      boundary = futureBoundary
+    } else {
+      boundary = firstBoundary
+    }
     scheduleBoundaryWait(until: boundary, timeZone: timeZone)
   }
 
