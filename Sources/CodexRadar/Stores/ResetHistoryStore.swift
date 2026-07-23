@@ -113,7 +113,10 @@ final class ResetHistoryStore: ObservableObject {
   func refresh(timeZone: TimeZone) {
     guard isDashboardActive else { return }
     let query: Query
-    if let activeQuery, activeQuery.timeZoneIdentifier == timeZone.identifier {
+    if let activeQuery,
+      activeQuery.timeZoneIdentifier == timeZone.identifier,
+      activeQuery.fetchRange.covers(activeQuery.targetRange)
+    {
       query = activeQuery
     } else {
       query = Query(
@@ -229,9 +232,16 @@ final class ResetHistoryStore: ObservableObject {
           let self,
           requestGeneration == self.generation
         else { return }
+        guard let completedQuery = self.activeQuery else { return }
         self.issue = self.formatIssue()
-        if self.carriedFreshness.contains(.boundary), let history = self.history {
+        if self.carriedFreshness.contains(.boundary),
+          let history = self.history,
+          history.timeZone == completedQuery.timeZoneIdentifier
+        {
           self.scheduleBoundaryRefresh(after: history)
+        } else {
+          self.scheduleFutureBoundaryRefresh(
+            timeZoneIdentifier: completedQuery.timeZoneIdentifier)
         }
         self.finish(consumingCarriedFreshness: true)
       }
@@ -356,6 +366,19 @@ final class ResetHistoryStore: ObservableObject {
         return
       }
     }
+  }
+
+  private func scheduleFutureBoundaryRefresh(timeZoneIdentifier: String) {
+    guard
+      isDashboardActive,
+      boundaryTask == nil,
+      let timeZone = TimeZone(identifier: timeZoneIdentifier),
+      let boundary = ResetHistoryRefreshSchedule.nextBoundary(
+        after: now(),
+        timeZone: timeZone
+      )
+    else { return }
+    scheduleBoundaryWait(until: boundary, timeZone: timeZone)
   }
 
   private func refreshAtBoundary(_ boundary: Date, timeZone: TimeZone) {

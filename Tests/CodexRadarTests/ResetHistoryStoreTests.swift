@@ -213,6 +213,53 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func explicitAllRefreshReplacesActiveQueryThatCannotCoverTarget() async throws {
+    let context = makeContext()
+    let cachedAt = Date(timeIntervalSince1970: 1_700_000_100)
+    let narrowAt = Date(timeIntervalSince1970: 1_700_000_200)
+    let refreshedAt = Date(timeIntervalSince1970: 1_700_000_300)
+    await loadInitialHistory(context)
+
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(history(range: .all, generatedAt: cachedAt)))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
+    context.store.selectRange(.all, timeZone: context.zone)
+
+    #expect(context.store.selectedRange == .all)
+    #expect(context.store.isLoading)
+    #expect(await context.fetcher.requests.last?.range == .sixMonths)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(4, fetcher: context.fetcher)
+    try #require(await context.fetcher.callCount == 4)
+
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .all, .sixMonths, .all])
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, generatedAt: narrowAt)))
+    await settle()
+    #expect(context.store.history?.generatedAt == cachedAt)
+    #expect(context.store.isLoading)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .all, generatedAt: refreshedAt)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.history?.generatedAt == refreshedAt)
+    #expect(context.store.selectedRange == .all)
+    #expect(await context.fetcher.callCount == 4)
+  }
+
+  @MainActor
+  @Test
   func timeZoneChangeUsesCurrentSelectionsNormalizedFetchRange() async {
     let context = makeContext()
     let utc = TimeZone(identifier: "UTC")!
@@ -229,6 +276,45 @@ struct ResetHistoryStoreTests {
     await context.fetcher.completeNext(
       with: .success(history(range: .sixMonths, timeZone: utc.identifier)))
     await expectStoreIdle(context.store)
+  }
+
+  @MainActor
+  @Test
+  func failedTimeZoneRequestSchedulesFutureBoundaryInRequestedTimeZone() async throws {
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let context = makeContext(now: { now })
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    let expectedBoundary = try #require(
+      ResetHistoryRefreshSchedule.nextBoundary(after: now, timeZone: utc))
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.refresh(timeZone: utc)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await expectCancellationCount(1, waiter: context.waiter)
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+    let boundaries = await context.waiter.dates
+    try #require(boundaries.count == 2)
+
+    #expect(boundaries[1] == expectedBoundary)
+    #expect(boundaries[1] > now)
+    #expect(await context.waiter.activeWaitCount == 1)
+    #expect(await context.fetcher.callCount == 2)
+    #expect(context.store.history?.timeZone == context.zone.identifier)
+    #expect(context.store.issue == "History unavailable")
+
+    await context.waiter.fireNext()
+    await expectCallCount(3, fetcher: context.fetcher)
+    #expect(
+      await context.fetcher.requests.last
+        == HistoryRequest(timeZoneIdentifier: utc.identifier, range: .sixMonths))
+
+    context.store.dashboardDidDisappear()
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, timeZone: utc.identifier)))
+    await settle()
   }
 
   @MainActor
@@ -640,6 +726,50 @@ struct ResetHistoryStoreTests {
     #expect(await context.fetcher.callCount == 2)
     #expect(await context.waiter.activeWaitCount == 1)
     #expect(context.store.issue == "History unavailable")
+  }
+
+  @MainActor
+  @Test
+  func failedTimeZoneReplacementOfBoundaryRequestSchedulesRequestedTimeZone() async throws {
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let context = makeContext(now: { now })
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    let expectedBoundary = try #require(
+      ResetHistoryRefreshSchedule.nextBoundary(after: now, timeZone: utc))
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.refresh(timeZone: utc)
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, timeZone: context.zone.identifier)))
+    await settle()
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+
+    let boundaries = await context.waiter.dates
+    try #require(boundaries.count == 2)
+    #expect(boundaries[1] == expectedBoundary)
+    #expect(boundaries[1] > now)
+    #expect(await context.waiter.activeWaitCount == 1)
+    #expect(await context.fetcher.callCount == 3)
+    #expect(context.store.history?.timeZone == context.zone.identifier)
+    #expect(context.store.issue == "History unavailable")
+
+    await context.waiter.fireNext()
+    await expectCallCount(4, fetcher: context.fetcher)
+    #expect(
+      await context.fetcher.requests.last
+        == HistoryRequest(timeZoneIdentifier: utc.identifier, range: .sixMonths))
+
+    context.store.dashboardDidDisappear()
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, timeZone: utc.identifier)))
+    await settle()
   }
 
   @MainActor
