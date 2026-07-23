@@ -74,15 +74,81 @@ func resetHistoryMonthSummaryJSON(
 }
 
 func resetHistoryMonthSummariesJSON(
-  year: Int,
-  timeZoneIdentifier: String,
-  monthCount: Int = 12
+  startYear: Int,
+  startMonth: Int,
+  count: Int,
+  timeZoneIdentifier: String
 ) -> String {
-  (1...monthCount).map { month in
-    resetHistoryMonthSummaryJSON(
-      year: year,
-      month: month,
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = TimeZone(identifier: timeZoneIdentifier)!
+  let start = calendar.date(
+    from: DateComponents(year: startYear, month: startMonth, day: 1)
+  )!
+
+  return (0..<count).map { offset in
+    let date = calendar.date(byAdding: .month, value: offset, to: start)!
+    return resetHistoryMonthSummaryJSON(
+      year: calendar.component(.year, from: date),
+      month: calendar.component(.month, from: date),
       timeZoneIdentifier: timeZoneIdentifier
     )
   }.joined(separator: ",")
+}
+
+func resetHistoryJSON(
+  range: String = "6m",
+  startYear: Int = 2026,
+  startMonth: Int = 2,
+  monthCount: Int = 6,
+  timeZoneIdentifier: String = "Asia/Shanghai",
+  generatedAt: String = "2026-07-19T09:00:00Z",
+  recent: String = ""
+) -> String {
+  let boundaryTimeZone =
+    TimeZone(identifier: timeZoneIdentifier) == nil ? "UTC" : timeZoneIdentifier
+  let generatedAtDate = ISO8601DateFormatter().date(from: generatedAt)!
+  let current = resetHistoryCurrentIntervals(
+    generatedAt: generatedAtDate,
+    timeZoneIdentifier: boundaryTimeZone
+  )
+  let months = resetHistoryMonthSummariesJSON(
+    startYear: startYear,
+    startMonth: startMonth,
+    count: monthCount,
+    timeZoneIdentifier: boundaryTimeZone
+  )
+  let currentMonthCount: Int
+  if monthCount > 0 {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: boundaryTimeZone)!
+    let start = calendar.date(
+      from: DateComponents(year: startYear, month: startMonth, day: 1)
+    )!
+    let finalMonth = calendar.date(byAdding: .month, value: monthCount - 1, to: start)!
+    currentMonthCount = calendar.component(.month, from: finalMonth)
+  } else {
+    currentMonthCount = 0
+  }
+  let resolvedRecent =
+    recent.isEmpty
+    ? """
+    {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"},
+    {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"}
+    """
+    : recent
+
+  return """
+    {
+      "schema_version":"1.0",
+      "generated_at":"\(generatedAt)",
+      "time_zone":"\(timeZoneIdentifier)",
+      "range":"\(range)",
+      "current":{
+        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(currentMonthCount)}
+      },
+      "months":[\(months)],
+      "recent":[\(resolvedRecent)]
+    }
+    """
 }

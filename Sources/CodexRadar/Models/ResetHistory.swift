@@ -34,8 +34,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
   let schemaVersion: String
   let generatedAt: Date
   let timeZone: String
-  let year: Int
-  let availableYears: [Int]
+  let range: ResetHistoryRange
   let current: ResetHistoryCurrent
   let months: [ResetMonthSummary]
   let recent: [ResetHistoryEvent]
@@ -44,8 +43,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     case schemaVersion = "schema_version"
     case generatedAt = "generated_at"
     case timeZone = "time_zone"
-    case year
-    case availableYears = "available_years"
+    case range
     case current
     case months
     case recent
@@ -56,8 +54,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
     generatedAt = try container.decode(Date.self, forKey: .generatedAt)
     timeZone = try container.decode(String.self, forKey: .timeZone)
-    year = try container.decode(Int.self, forKey: .year)
-    availableYears = try container.decode([Int].self, forKey: .availableYears)
+    range = try container.decode(ResetHistoryRange.self, forKey: .range)
     current = try container.decode(ResetHistoryCurrent.self, forKey: .current)
     months = try container.decode([ResetMonthSummary].self, forKey: .months)
     recent = try container.decode([ResetHistoryEvent].self, forKey: .recent)
@@ -66,14 +63,6 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       throw invalidValue(
         forKey: .timeZone, in: container, description: "Expected a valid time zone.")
     }
-    let (followingYear, yearOverflow) = year.addingReportingOverflow(1)
-    guard !yearOverflow else {
-      throw invalidValue(
-        forKey: .year,
-        in: container,
-        description: "Expected a year with a representable following year."
-      )
-    }
     try validate(interval: current.week, forKey: .current, in: container)
     try validate(interval: current.month, forKey: .current, in: container)
     try validateCurrentBoundaries(
@@ -81,28 +70,81 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       forKey: .current,
       in: container
     )
-    for month in months {
-      try validate(interval: month, forKey: .months, in: container)
-    }
+    try validateMonths(timeZone: decodedTimeZone, in: container)
+    try validateRecent(in: container)
+  }
 
-    let expectedYearIdentifier = yearIdentifier(for: year)
-    let expectedMonths = (1...12).map { month in
-      let monthIdentifier = month < 10 ? "0\(month)" : String(month)
-      return "\(expectedYearIdentifier)-\(monthIdentifier)"
+  private func validateMonths(
+    timeZone: TimeZone,
+    in container: KeyedDecodingContainer<CodingKeys>
+  ) throws {
+    guard !months.isEmpty else {
+      throw invalidValue(
+        forKey: .months, in: container, description: "Expected at least one month summary.")
     }
-    guard months.map(\.month) == expectedMonths else {
+    if let expectedCount = range.fixedMonthCount, months.count != expectedCount {
       throw invalidValue(
         forKey: .months,
         in: container,
-        description: "Expected one ordered summary for each month of the requested year."
+        description: "Expected the fixed range to contain its exact number of months."
       )
     }
-    try validateMonthBoundaries(
-      timeZone: decodedTimeZone,
-      followingYear: followingYear,
-      forKey: .months,
-      in: container
-    )
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    var previousStart: Date?
+
+    for month in months {
+      try validate(interval: month, forKey: .months, in: container)
+      guard let components = monthComponents(from: month.month),
+        let expectedFrom = calendar.date(from: components),
+        let expectedTo = calendar.date(byAdding: .month, value: 1, to: expectedFrom),
+        month.from == expectedFrom,
+        month.to == expectedTo
+      else {
+        throw invalidValue(
+          forKey: .months,
+          in: container,
+          description:
+            "Month intervals must match their natural boundaries in the response time zone."
+        )
+      }
+      if let previousStart,
+        calendar.date(byAdding: .month, value: 1, to: previousStart) != expectedFrom
+      {
+        throw invalidValue(
+          forKey: .months,
+          in: container,
+          description: "Month summaries must be contiguous and strictly ascending."
+        )
+      }
+      previousStart = expectedFrom
+    }
+
+    guard let expectedCurrentMonth = calendar.dateInterval(of: .month, for: generatedAt),
+      let finalMonth = months.last,
+      finalMonth.from == expectedCurrentMonth.start,
+      finalMonth.to == expectedCurrentMonth.end
+    else {
+      throw invalidValue(
+        forKey: .months,
+        in: container,
+        description: "The final month summary must contain generated_at."
+      )
+    }
+    guard current.month.from == finalMonth.from,
+      current.month.to == finalMonth.to,
+      current.month.count == finalMonth.count
+    else {
+      throw invalidValue(
+        forKey: .current,
+        in: container,
+        description: "Current month must equal the final month summary."
+      )
+    }
+  }
+
+  private func validateRecent(in container: KeyedDecodingContainer<CodingKeys>) throws {
     guard recent.count <= 5 else {
       throw invalidValue(
         forKey: .recent,
@@ -129,54 +171,20 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     }
   }
 
-  private func yearIdentifier(for year: Int) -> String {
-    let value = String(year)
-    guard value.count < 4 else { return value }
-
-    let padding = String(repeating: "0", count: 4 - value.count)
-    if value.first == "-" {
-      return "-\(padding)\(value.dropFirst())"
-    }
-    return "\(padding)\(value)"
-  }
-
-  private func validateMonthBoundaries(
-    timeZone: TimeZone,
-    followingYear: Int,
-    forKey key: CodingKeys,
-    in container: KeyedDecodingContainer<CodingKeys>
-  ) throws {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = timeZone
-
-    for (index, month) in months.enumerated() {
-      let monthNumber = index + 1
-      let nextYear = monthNumber == 12 ? followingYear : year
-      let nextMonth = monthNumber == 12 ? 1 : monthNumber + 1
-      guard
-        let expectedFrom = naturalMonthBoundary(
-          year: year,
-          month: monthNumber,
-          timeZone: timeZone,
-          calendar: calendar
-        ),
-        let expectedTo = naturalMonthBoundary(
-          year: nextYear,
-          month: nextMonth,
-          timeZone: timeZone,
-          calendar: calendar
-        ),
-        month.from == expectedFrom,
-        month.to == expectedTo
-      else {
-        throw invalidValue(
-          forKey: key,
-          in: container,
-          description:
-            "Month intervals must match their natural boundaries in the response time zone."
-        )
-      }
-    }
+  private func monthComponents(from identifier: String) -> DateComponents? {
+    guard
+      identifier.range(
+        of: #"^\d{4}-(0[1-9]|1[0-2])$"#,
+        options: .regularExpression
+      ) != nil
+    else { return nil }
+    let parts = identifier.split(separator: "-")
+    guard
+      parts.count == 2,
+      let year = Int(parts[0]),
+      let month = Int(parts[1])
+    else { return nil }
+    return DateComponents(year: year, month: month, day: 1)
   }
 
   private func validateCurrentBoundaries(
@@ -200,27 +208,9 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       throw invalidValue(
         forKey: key,
         in: container,
-        description:
-          "Current intervals must match generated_at in the response time zone."
+        description: "Current intervals must match generated_at in the response time zone."
       )
     }
-  }
-
-  private func naturalMonthBoundary(
-    year: Int,
-    month: Int,
-    timeZone: TimeZone,
-    calendar: Calendar
-  ) -> Date? {
-    var components = DateComponents()
-    components.timeZone = timeZone
-    components.year = year
-    components.month = month
-    components.day = 1
-    components.hour = 0
-    components.minute = 0
-    components.second = 0
-    return calendar.date(from: components)
   }
 
   private func validate(

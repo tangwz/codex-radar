@@ -5,243 +5,158 @@ import Testing
 
 struct ResetHistoryDecodingTests {
   @Test
-  func decodesTwelveMonthsAndFiveOrFewerRecentEvents() throws {
-    let history = try APIJSONCoding.makeDecoder().decode(
-      ResetHistory.self,
-      from: Data(historyJSON(monthCount: 12, recentCount: 5).utf8)
+  func decodesSixMonthRangeEndingInGeneratedAtMonth() throws {
+    let history = try decodeHistory(resetHistoryJSON())
+
+    #expect(history.schemaVersion == "1.0")
+    #expect(history.range == .sixMonths)
+    #expect(
+      history.months.map(\.month) == [
+        "2026-02", "2026-03", "2026-04",
+        "2026-05", "2026-06", "2026-07",
+      ])
+    #expect(history.current.month.count == history.months.last?.count)
+  }
+
+  @Test(arguments: ["3m", "12m", "all"])
+  func decodesOtherValidRanges(_ range: String) throws {
+    let json: String
+    switch range {
+    case "3m":
+      json = resetHistoryJSON(range: range, startYear: 2026, startMonth: 5, monthCount: 3)
+    case "12m":
+      json = resetHistoryJSON(range: range, startYear: 2025, startMonth: 8, monthCount: 12)
+    default:
+      json = resetHistoryJSON(range: range, startYear: 2026, startMonth: 7, monthCount: 1)
+    }
+
+    #expect(try decodeHistory(json).range.rawValue == range)
+  }
+
+  @Test
+  func decodesNaturalMonthBoundariesAcrossDaylightSavingTime() throws {
+    let history = try decodeHistory(resetHistoryJSON(timeZoneIdentifier: "America/New_York"))
+
+    #expect(history.months.first?.from == ISO8601DateFormatter().date(from: "2026-02-01T05:00:00Z"))
+    #expect(history.months[1].to == ISO8601DateFormatter().date(from: "2026-04-01T04:00:00Z"))
+  }
+
+  @Test(arguments: [
+    resetHistoryJSON(range: "24m"),
+    resetHistoryJSON().replacingOccurrences(of: "\"range\":\"6m\",\n", with: ""),
+  ])
+  func rejectsUnknownOrMissingRange(_ json: String) {
+    expectDecodingFailure(json)
+  }
+
+  @Test(arguments: [
+    resetHistoryJSON(range: "3m", startYear: 2026, startMonth: 6, monthCount: 2),
+    resetHistoryJSON(range: "6m", startYear: 2026, startMonth: 3, monthCount: 5),
+    resetHistoryJSON(range: "12m", startYear: 2025, startMonth: 9, monthCount: 11),
+    resetHistoryJSON(range: "all", monthCount: 0),
+  ])
+  func rejectsInvalidRangeBucketCounts(_ json: String) {
+    expectDecodingFailure(json)
+  }
+
+  @Test(arguments: [
+    resetHistoryJSON().replacingOccurrences(of: "\"2026-03\"", with: "\"2026-02\""),
+    resetHistoryJSON().replacingOccurrences(of: "\"2026-04\"", with: "\"2026-05\""),
+    resetHistoryJSON().replacingOccurrences(
+      of: "\"2026-02\"", with: "\"2026-07\"", options: [], range: nil),
+    resetHistoryJSON().replacingOccurrences(of: "\"2026-02\"", with: "\"2026-2\""),
+  ])
+  func rejectsDuplicateSkippedReversedOrMalformedMonthIdentifiers(_ json: String) {
+    expectDecodingFailure(json)
+  }
+
+  @Test
+  func rejectsBucketOutsideNaturalMonthBoundaries() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: "\"to\":\"2026-04-30T16:00:00Z\"",
+      with: "\"to\":\"2026-04-30T15:00:00Z\""
     )
 
-    #expect(history.year == 2026)
-    #expect(history.availableYears == [2026, 2025])
-    #expect(history.current.week.count == 2)
-    #expect(history.current.month.count == 6)
-    #expect(history.months.count == 12)
-    #expect(history.recent.count == 5)
+    expectDecodingFailure(json)
   }
 
   @Test
-  func rejectsInvalidCollectionShapes() {
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(
-        ResetHistory.self,
-        from: Data(historyJSON(monthCount: 11, recentCount: 2).utf8)
-      )
-    }
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(
-        ResetHistory.self,
-        from: Data(historyJSON(monthCount: 12, recentCount: 6).utf8)
-      )
-    }
+  func rejectsFinalBucketOutsideGeneratedAtMonth() {
+    let json = resetHistoryJSON(startYear: 2026, startMonth: 1, monthCount: 6)
+
+    expectDecodingFailure(json)
   }
 
   @Test
-  func rejectsCorrectMonthIDsWithRepeatedJanuaryIntervals() {
-    let january = resetHistoryMonthInterval(
-      year: 2026,
-      month: 1,
+  func rejectsCurrentMonthThatDiffersFromFinalBucket() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: "\"count\":7}\n      },\n      \"months\"",
+      with: "\"count\":8}\n      },\n      \"months\""
+    )
+
+    expectDecodingFailure(json)
+  }
+
+  @Test
+  func rejectsCurrentIntervalsOutsideGeneratedAtNaturalBuckets() {
+    let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+    let current = resetHistoryCurrentIntervals(
+      generatedAt: generatedAt,
       timeZoneIdentifier: "Asia/Shanghai"
     )
-    let months = (1...12).map { month in
-      resetHistoryMonthSummaryJSON(
-        year: 2026,
-        month: month,
-        timeZoneIdentifier: "Asia/Shanghai",
-        from: january.from,
-        to: january.to
-      )
-    }.joined(separator: ",")
+    let formatter = ISO8601DateFormatter()
+    let shiftedWeekFrom = formatter.string(from: generatedAt.addingTimeInterval(-86_400))
+    let shiftedMonthFrom = formatter.string(from: generatedAt.addingTimeInterval(-86_400))
 
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(
-        ResetHistory.self,
-        from: Data(historyJSON(months: months).utf8)
-      )
-    }
-  }
-
-  @Test
-  func rejectsFixedOffsetBoundariesAcrossDaylightSavingTime() {
-    let months = (1...12).map { month in
-      resetHistoryMonthSummaryJSON(
-        year: 2026,
-        month: month,
-        timeZoneIdentifier: "America/New_York",
-        from: month == 4 ? "2026-04-01T05:00:00Z" : nil,
-        to: month == 4 ? "2026-05-01T05:00:00Z" : nil
-      )
-    }.joined(separator: ",")
-
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(
-        ResetHistory.self,
-        from: Data(historyJSON(timeZone: "America/New_York", months: months).utf8)
-      )
-    }
-  }
-
-  @Test
-  func rejectsMaximumYearWithoutOverflowing() {
-    let months = (1...12).map { month in
-      let legacyIdentifier = String(format: "%04d-%02d", Int.max, month)
-      return resetHistoryMonthSummaryJSON(
-        year: 1,
-        month: month,
-        timeZoneIdentifier: "UTC",
-        identifier: legacyIdentifier
-      )
-    }.joined(separator: ",")
-
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(
-        ResetHistory.self,
-        from: Data(historyJSON(year: Int.max, timeZone: "UTC", months: months).utf8)
-      )
-    }
-  }
-
-  @Test
-  func decodesFourDigitMonthIdentifiersForLowYears() throws {
-    let history = try APIJSONCoding.makeDecoder().decode(
-      ResetHistory.self,
-      from: Data(historyJSON(year: 1, timeZone: "UTC").utf8)
+    expectDecodingFailure(
+      resetHistoryJSON().replacingOccurrences(of: current.weekFrom, with: shiftedWeekFrom)
     )
-
-    #expect(history.year == 1)
-    #expect(history.months.first?.month == "0001-01")
+    expectDecodingFailure(
+      resetHistoryJSON().replacingOccurrences(of: current.monthFrom, with: shiftedMonthFrom)
+    )
   }
 
   @Test(arguments: [
-    historyJSON(
-      weekFrom: "2026-07-13T16:00:00Z",
-      weekTo: "2026-07-20T16:00:00Z"
-    ),
-    historyJSON(
-      monthFrom: "2026-06-29T16:00:00Z",
-      monthTo: "2026-07-30T16:00:00Z"
-    ),
-  ])
-  func rejectsCurrentIntervalsOutsideGeneratedAtNaturalBuckets(_ json: String) {
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
-    }
-  }
-
-  @Test(arguments: [
+    """
+    {"id":"reset-6","reset_at":"2026-07-19T11:21:34Z"},
+    {"id":"reset-5","reset_at":"2026-07-19T10:21:34Z"},
+    {"id":"reset-4","reset_at":"2026-07-19T09:21:34Z"},
+    {"id":"reset-3","reset_at":"2026-07-19T08:21:34Z"},
+    {"id":"reset-2","reset_at":"2026-07-19T07:21:34Z"},
+    {"id":"reset-1","reset_at":"2026-07-19T06:21:34Z"}
+    """,
+    """
+    {"id":"reset-1","reset_at":"2026-07-19T09:21:34Z"},
+    {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"}
+    """,
     """
     {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"},
     {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"}
     """,
-    """
-    {"id":"reset-1","reset_at":"2026-07-19T09:21:34Z"},
-    {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"}
-    """,
   ])
-  func rejectsRecentEventsOutsideStableDescendingOrder(_ recent: String) {
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(
-        ResetHistory.self,
-        from: Data(historyJSON(recent: recent).utf8)
-      )
-    }
+  func rejectsInvalidRecentRows(_ recent: String) {
+    expectDecodingFailure(resetHistoryJSON(recent: recent))
   }
 
   @Test(arguments: [
-    historyJSON(timeZone: "Invalid/Zone"),
-    historyJSON(weekCount: -1),
-    historyJSON(months: invalidIntervalMonths()),
-    historyJSON(months: duplicateMonthIDs()),
-    historyJSON(recent: duplicateRecentIDs()),
+    resetHistoryJSON(timeZoneIdentifier: "Invalid/Zone"),
+    resetHistoryJSON().replacingOccurrences(of: "\"count\":2", with: "\"count\":-1"),
+    resetHistoryJSON().replacingOccurrences(
+      of: "\"from\":\"2026-01-31T16:00:00Z\"",
+      with: "\"from\":\"2026-02-01T00:00:00Z\""
+    ),
   ])
   func rejectsInvalidValues(_ json: String) {
-    #expect(throws: DecodingError.self) {
-      try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
-    }
+    expectDecodingFailure(json)
   }
 }
 
-private func historyJSON(
-  year: Int = 2026,
-  monthCount: Int = 12,
-  recentCount: Int = 2,
-  timeZone: String = "Asia/Shanghai",
-  weekCount: Int = 2,
-  weekFrom: String? = nil,
-  weekTo: String? = nil,
-  monthFrom: String? = nil,
-  monthTo: String? = nil,
-  months: String? = nil,
-  recent: String? = nil
-) -> String {
-  let boundaryTimeZone = TimeZone(identifier: timeZone) == nil ? "UTC" : timeZone
-  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
-  let current = resetHistoryCurrentIntervals(
-    generatedAt: generatedAt,
-    timeZoneIdentifier: boundaryTimeZone
-  )
-  let resolvedMonths =
-    months
-    ?? resetHistoryMonthSummariesJSON(
-      year: year,
-      timeZoneIdentifier: boundaryTimeZone,
-      monthCount: monthCount
-    )
-  let resolvedRecent =
-    recent
-    ?? (1...recentCount).reversed().map { index in
-      """
-      {"id":"reset-\(index)","reset_at":"2026-07-19T08:21:34Z"}
-      """
-    }.joined(separator: ",")
-  return """
-    {
-      "schema_version":"1.0",
-      "generated_at":"2026-07-19T09:00:00Z",
-      "time_zone":"\(timeZone)",
-      "year":\(year),
-      "available_years":[2026,2025],
-      "current":{
-        "week":{"from":"\(weekFrom ?? current.weekFrom)","to":"\(weekTo ?? current.weekTo)","count":\(weekCount)},
-        "month":{"from":"\(monthFrom ?? current.monthFrom)","to":"\(monthTo ?? current.monthTo)","count":6}
-      },
-      "months":[\(resolvedMonths)],
-      "recent":[\(resolvedRecent)]
-    }
-    """
+private func decodeHistory(_ json: String) throws -> ResetHistory {
+  try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
 }
 
-private func invalidIntervalMonths() -> String {
-  (1...12).map { month -> String in
-    let interval = resetHistoryMonthInterval(
-      year: 2026,
-      month: month,
-      timeZoneIdentifier: "Asia/Shanghai"
-    )
-    return resetHistoryMonthSummaryJSON(
-      year: 2026,
-      month: month,
-      timeZoneIdentifier: "Asia/Shanghai",
-      to: month == 1 ? interval.from : interval.to
-    )
+private func expectDecodingFailure(_ json: String) {
+  #expect(throws: DecodingError.self) {
+    try decodeHistory(json)
   }
-  .joined(separator: ",")
-}
-
-private func duplicateMonthIDs() -> String {
-  (1...12).map { month in
-    resetHistoryMonthSummaryJSON(
-      year: 2026,
-      month: month,
-      timeZoneIdentifier: "Asia/Shanghai",
-      identifier: month == 12 ? "2026-11" : nil
-    )
-  }
-  .joined(separator: ",")
-}
-
-private func duplicateRecentIDs() -> String {
-  """
-  {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"},
-  {"id":"reset-1","reset_at":"2026-07-19T09:21:34Z"}
-  """
 }
