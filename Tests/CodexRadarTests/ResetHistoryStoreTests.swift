@@ -3,385 +3,584 @@ import Testing
 
 @testable import CodexRadar
 
+@Suite(.serialized)
 struct ResetHistoryStoreTests {
   @MainActor
   @Test
-  func doesNotLoadUntilDashboardAppears() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = zone
-    let expectedYear = calendar.component(.year, from: .now)
+  func firstDashboardAppearanceRequestsSixMonths() async {
+    let context = makeContext()
 
-    store.refresh(timeZone: zone)
-    await Task.yield()
-    #expect(await fetcher.callCount == 0)
+    context.store.refresh(timeZone: context.zone)
+    await settle()
+    #expect(await context.fetcher.callCount == 0)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
 
-    #expect(await fetcher.callCount == 1)
     #expect(
-      await fetcher.requests
-        == [HistoryRequest(timeZoneIdentifier: zone.identifier, year: expectedYear)])
+      await context.fetcher.requests
+        == [
+          HistoryRequest(
+            timeZoneIdentifier: context.zone.identifier,
+            range: .sixMonths
+          )
+        ])
 
-    await fetcher.completeNext(with: .success(history(year: expectedYear)))
-    await waitUntil { store.history?.year == expectedYear && !store.isLoading }
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
   }
 
   @MainActor
   @Test
-  func ordinaryIdenticalRequestsCoalesceWithoutATrailingReload() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func ordinaryIdenticalRequestsCoalesceWithoutTrailingReload() async {
+    let context = makeContext()
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    store.refresh(timeZone: zone)
-    store.refresh(timeZone: zone)
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    context.store.refresh(timeZone: context.zone)
+    context.store.refresh(timeZone: context.zone)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
 
-    await fetcher.completeNext(with: .success(history(year: currentYear(in: zone))))
-    await waitForCompletionOrAdditionalCall(store: store, fetcher: fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    await settle()
 
-    #expect(await fetcher.callCount == 1)
-
-    if await fetcher.callCount > 1 {
-      await fetcher.completeNext(with: .success(history(year: currentYear(in: zone))))
-      await waitUntil { !store.isLoading }
-    }
+    #expect(await context.fetcher.callCount == 1)
+    context.store.dashboardDidDisappear()
   }
 
   @MainActor
   @Test
-  func manualRefreshPreservesTheInFlightSelectedYear() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func coveredSelectionsDoNotRequestMoreData() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(
-      with: .success(history(year: 2026, availableYears: [2026, 2025])))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    await settle()
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(context.store.pendingRange == nil)
+    #expect(await context.fetcher.callCount == 1)
 
-    store.selectYear(2025, timeZone: zone)
-    await waitForCallCount(2, fetcher: fetcher)
-    store.refresh(timeZone: zone)
-    for _ in 0..<10 {
-      await Task.yield()
-    }
-
-    let requestYears = await fetcher.requests.map(\.year)
-    #expect(requestYears == [2026, 2025])
-    #expect(store.pendingYear == 2025)
-
-    await fetcher.completeNext(
-      with: .success(history(year: 2025, availableYears: [2026, 2025])))
-    await waitUntil { store.history?.year == 2025 && !store.isLoading }
+    context.store.selectRange(.sixMonths, timeZone: context.zone)
+    await settle()
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.pendingRange == nil)
+    #expect(await context.fetcher.callCount == 1)
   }
 
   @MainActor
   @Test
-  func failedYearSelectionKeepsCommittedData() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func firstTwelveMonthSelectionRequestsTwelveMonths() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(with: .success(history(year: 2026)))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
 
-    store.selectYear(2025, timeZone: zone)
-    await waitForCallCount(2, fetcher: fetcher)
-    #expect(store.pendingYear == 2025)
-    #expect(store.isLoading)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.pendingRange == .twelveMonths)
+    #expect(await context.fetcher.requests.last?.range == .twelveMonths)
 
-    await fetcher.completeNext(with: .failure(.unavailable))
-    await waitUntil { !store.isLoading }
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await expectStoreIdle(context.store)
 
-    #expect(store.history?.year == 2026)
-    #expect(store.pendingYear == nil)
-    #expect(store.issue == "History unavailable")
+    #expect(context.store.selectedRange == .twelveMonths)
+    #expect(context.store.history?.range == .twelveMonths)
   }
 
   @MainActor
   @Test
-  func newerYearRequestWinsOverAnOlderResponse() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func firstAllSelectionRequestsAll() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(
-      with: .success(history(year: 2026, availableYears: [2026, 2025, 2024])))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
 
-    store.selectYear(2025, timeZone: zone)
-    await waitForCallCount(2, fetcher: fetcher)
-    store.selectYear(2024, timeZone: zone)
-    await waitForCallCount(3, fetcher: fetcher)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.pendingRange == .all)
+    #expect(await context.fetcher.requests.last?.range == .all)
 
-    await fetcher.completeNext(
-      with: .success(history(year: 2025, availableYears: [2026, 2025, 2024])))
-    for _ in 0..<10 {
-      await Task.yield()
+    await context.fetcher.completeNext(with: .success(history(range: .all)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.selectedRange == .all)
+    #expect(context.store.history?.range == .all)
+  }
+
+  @MainActor
+  @Test
+  func committedAllSnapshotServesEveryLaterSelectionLocally() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .all)))
+    await expectStoreIdle(context.store)
+
+    for range in ResetHistoryRange.allCases {
+      context.store.selectRange(range, timeZone: context.zone)
+      await settle()
+      #expect(context.store.selectedRange == range)
+      #expect(context.store.pendingRange == nil)
     }
 
-    #expect(store.history?.year == 2026)
-    #expect(store.pendingYear == 2024)
-    #expect(await fetcher.callCount == 3)
-
-    await fetcher.completeNext(
-      with: .success(history(year: 2024, availableYears: [2026, 2025, 2024])))
-    await waitUntil { store.history?.year == 2024 && !store.isLoading }
-
-    #expect(store.pendingYear == nil)
-    #expect(!store.isLoading)
-    #expect(await fetcher.callCount == 3)
+    #expect(await context.fetcher.callCount == 2)
+    #expect(context.store.history?.range == .all)
   }
 
   @MainActor
   @Test
-  func resetDuringYearSwitchTrailsTheSelectedActiveQuery() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
-    let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    let changedReset = Date(timeIntervalSince1970: 1_700_000_100)
-    let oldGeneratedAt = Date(timeIntervalSince1970: 1_700_000_010)
-    let newGeneratedAt = Date(timeIntervalSince1970: 1_700_000_110)
+  func failedExpansionKeepsCommittedSnapshotAndSelection() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: initialReset)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(
-      with: .success(history(year: 2026, availableYears: [2026, 2025])))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(context.store)
 
-    store.selectYear(2025, timeZone: zone)
-    await waitForCallCount(2, fetcher: fetcher)
-    store.lastResetDidChange(changedReset, timeZone: zone)
-
-    await fetcher.completeNext(
-      with: .success(
-        history(
-          year: 2025,
-          availableYears: [2026, 2025],
-          generatedAt: oldGeneratedAt)))
-    await waitForCallCount(3, fetcher: fetcher)
-
-    #expect(await fetcher.requests.map(\.year) == [2026, 2025, 2025])
-    #expect(store.history?.year == 2025)
-    #expect(store.history?.generatedAt == oldGeneratedAt)
-
-    await fetcher.completeNext(
-      with: .success(
-        history(
-          year: 2025,
-          availableYears: [2026, 2025],
-          generatedAt: newGeneratedAt)))
-    await waitUntil { store.history?.generatedAt == newGeneratedAt && !store.isLoading }
-
-    #expect(store.history?.year == 2025)
-    #expect(await fetcher.callCount == 3)
+    #expect(context.store.history?.range == .sixMonths)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.pendingRange == nil)
+    #expect(context.store.issue == "History unavailable")
   }
 
   @MainActor
   @Test
-  func changedLastResetReloadsOnlyWhileDashboardIsActive() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
-    let firstReset = Date(timeIntervalSince1970: 1_700_000_000)
-    let secondReset = Date(timeIntervalSince1970: 1_700_000_100)
-    let thirdReset = Date(timeIntervalSince1970: 1_700_000_200)
+  func newerExpansionInvalidatesOlderResponse() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
 
-    store.lastResetDidChange(firstReset, timeZone: zone)
-    await Task.yield()
-    #expect(await fetcher.callCount == 0)
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: firstReset)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(with: .success(history(year: 2026)))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await settle()
 
-    store.lastResetDidChange(secondReset, timeZone: zone)
-    await waitForCallCount(2, fetcher: fetcher)
-    await fetcher.completeNext(with: .success(history(year: 2026)))
-    await waitUntil { !store.isLoading }
+    #expect(context.store.history?.range == .sixMonths)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.pendingRange == .all)
 
-    store.dashboardDidDisappear()
-    store.lastResetDidChange(thirdReset, timeZone: zone)
-    await Task.yield()
+    await context.fetcher.completeNext(with: .success(history(range: .all)))
+    await expectStoreIdle(context.store)
 
-    #expect(await fetcher.callCount == 2)
+    #expect(context.store.history?.range == .all)
+    #expect(context.store.selectedRange == .all)
   }
 
   @MainActor
   @Test
-  func disappearanceCancelsAndBlocksTheInFlightCommit() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func refreshCoalescesWithInFlightExpansion() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    #expect(store.isLoading)
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.refresh(timeZone: context.zone)
+    await settle()
 
-    store.dashboardDidDisappear()
-    #expect(!store.isLoading)
-    #expect(store.pendingYear == nil)
+    #expect(await context.fetcher.callCount == 2)
+    #expect(context.store.pendingRange == .twelveMonths)
 
-    await fetcher.completeNext(with: .success(history(year: 2026)))
-    for _ in 0..<10 {
-      await Task.yield()
-    }
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await expectStoreIdle(context.store)
 
-    #expect(store.history == nil)
-    #expect(store.issue == nil)
-    #expect(await fetcher.callCount == 1)
+    #expect(context.store.history?.range == .twelveMonths)
+    #expect(context.store.selectedRange == .twelveMonths)
   }
 
   @MainActor
   @Test
-  func changedTimeZoneReloadsTheCommittedYear() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+  func refreshUsesCurrentSelectionsNormalizedFetchRange() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+
+    #expect(await context.fetcher.requests.last?.range == .sixMonths)
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(context.store.pendingRange == nil)
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    #expect(context.store.selectedRange == .threeMonths)
+  }
+
+  @MainActor
+  @Test
+  func timeZoneChangeUsesCurrentSelectionsNormalizedFetchRange() async {
+    let context = makeContext()
     let utc = TimeZone(identifier: "UTC")!
+    await loadInitialHistory(context)
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
 
-    store.dashboardDidAppear(timeZone: shanghai, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(with: .success(history(year: 2025, timeZone: shanghai.identifier)))
-    await waitUntil { store.history?.year == 2025 && !store.isLoading }
-
-    store.refresh(timeZone: utc)
-    await waitForCallCount(2, fetcher: fetcher)
+    context.store.refresh(timeZone: utc)
+    await expectCallCount(2, fetcher: context.fetcher)
 
     #expect(
-      await fetcher.requests.last
-        == HistoryRequest(timeZoneIdentifier: utc.identifier, year: 2025))
+      await context.fetcher.requests.last
+        == HistoryRequest(timeZoneIdentifier: utc.identifier, range: .sixMonths))
 
-    await fetcher.completeNext(with: .success(history(year: 2025, timeZone: utc.identifier)))
-    await waitUntil { store.history?.timeZone == utc.identifier && !store.isLoading }
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, timeZone: utc.identifier)))
+    await expectStoreIdle(context.store)
   }
 
   @MainActor
   @Test
-  func rejectsASelectedYearThatIsNotAvailable() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func coveredSelectionInDifferentTimeZoneRequestsFreshData() async {
+    let context = makeContext()
+    let utc = TimeZone(identifier: "UTC")!
+    await loadInitialHistory(context)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: nil)
-    await waitForCallCount(1, fetcher: fetcher)
-    await fetcher.completeNext(
-      with: .success(history(year: 2026, availableYears: [2026, 2025])))
-    await waitUntil { store.history?.year == 2026 && !store.isLoading }
+    context.store.selectRange(.threeMonths, timeZone: utc)
+    await expectCallCount(2, fetcher: context.fetcher)
 
-    store.selectYear(2024, timeZone: zone)
-    await Task.yield()
+    #expect(
+      await context.fetcher.requests.last
+        == HistoryRequest(timeZoneIdentifier: utc.identifier, range: .sixMonths))
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.pendingRange == .threeMonths)
 
-    #expect(await fetcher.callCount == 1)
-    #expect(store.pendingYear == nil)
-    #expect(!store.isLoading)
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, timeZone: utc.identifier)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(context.store.history?.timeZone == utc.identifier)
   }
 
   @MainActor
   @Test
-  func multipleResetChangesDuringInitialLoadStartExactlyOneTrailingReload() async {
-    let fetcher = ControlledHistoryFetcher()
-    let store = makeHistoryStore(fetcher: fetcher)
-    let zone = TimeZone(identifier: "Asia/Shanghai")!
+  func coveredSelectionPreservesInFlightOrdinaryRefresh() async {
+    let context = makeContext()
+    let refreshedAt = Date(timeIntervalSince1970: 1_700_000_100)
+    await loadInitialHistory(context)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(context.store.isLoading)
+    #expect(await context.fetcher.callCount == 2)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, generatedAt: refreshedAt)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.history?.generatedAt == refreshedAt)
+    #expect(context.store.selectedRange == .threeMonths)
+  }
+
+  @MainActor
+  @Test
+  func resetChangesDuringLoadStartOneTrailingNormalizedReload() async {
+    let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    let secondReset = Date(timeIntervalSince1970: 1_700_000_100)
-    let thirdReset = Date(timeIntervalSince1970: 1_700_000_200)
-    let fourthReset = Date(timeIntervalSince1970: 1_700_000_300)
-    let oldGeneratedAt = Date(timeIntervalSince1970: 1_700_000_010)
-    let newGeneratedAt = Date(timeIntervalSince1970: 1_700_000_110)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
 
-    store.dashboardDidAppear(timeZone: zone, lastResetAt: initialReset)
-    await waitForCallCount(1, fetcher: fetcher)
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_100),
+      timeZone: context.zone
+    )
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_200),
+      timeZone: context.zone
+    )
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_300),
+      timeZone: context.zone
+    )
 
-    store.lastResetDidChange(secondReset, timeZone: zone)
-    store.lastResetDidChange(thirdReset, timeZone: zone)
-    store.lastResetDidChange(fourthReset, timeZone: zone)
-    await fetcher.completeNext(
-      with: .success(history(year: 2026, generatedAt: oldGeneratedAt)))
-    await waitForCallCount(2, fetcher: fetcher)
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )))
+    await expectCallCount(3, fetcher: context.fetcher)
 
-    #expect(store.history?.generatedAt == oldGeneratedAt)
-    #expect(store.isLoading)
-    #expect(await fetcher.callCount == 2)
+    #expect(await context.fetcher.requests.map(\.range) == [.sixMonths, .sixMonths, .sixMonths])
+    #expect(context.store.selectedRange == .threeMonths)
 
-    await fetcher.completeNext(
-      with: .success(history(year: 2026, generatedAt: newGeneratedAt)))
-    await waitUntil { store.history?.generatedAt == newGeneratedAt && !store.isLoading }
-    for _ in 0..<10 {
-      await Task.yield()
-    }
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_200)
+        )))
+    await expectStoreIdle(context.store)
+    await settle()
 
-    #expect(await fetcher.callCount == 2)
+    #expect(await context.fetcher.callCount == 3)
+  }
+
+  @MainActor
+  @Test
+  func resetDuringExpansionTrailsTheExpansionTarget() async {
+    let context = makeContext()
+    let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_100),
+      timeZone: context.zone
+    )
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .twelveMonths, .twelveMonths])
+    #expect(context.store.selectedRange == .twelveMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await expectStoreIdle(context.store)
+    context.store.dashboardDidDisappear()
+  }
+
+  @MainActor
+  @Test
+  func disappearanceCancelsLoadAndBoundaryWaitWithoutDiscardingSnapshot() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.dashboardDidDisappear()
+    await expectCancellationCount(1, waiter: context.waiter)
+
+    #expect(!context.store.isLoading)
+    #expect(context.store.pendingRange == nil)
+    #expect(context.store.history?.range == .sixMonths)
+    #expect(context.store.selectedRange == .sixMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await settle()
+    #expect(context.store.history?.range == .sixMonths)
+    #expect(await context.fetcher.callCount == 2)
+  }
+
+  @MainActor
+  @Test
+  func successfulResponseSchedulesOneBoundaryWait() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    let dates = await context.waiter.dates
+    #expect(dates.count == 1)
+    #expect(
+      dates.first
+        == ResetHistoryRefreshSchedule.nextBoundary(
+          after: context.store.history!.generatedAt,
+          timeZone: context.zone
+        ))
+
+    context.store.dashboardDidDisappear()
+    await expectCancellationCount(1, waiter: context.waiter)
+  }
+
+  @MainActor
+  @Test
+  func firingBoundaryWhileActiveTriggersOneReload() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    await settle()
+
+    #expect(await context.fetcher.callCount == 2)
+    #expect(await context.fetcher.requests.last?.range == .sixMonths)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_604_800)
+        )))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+    context.store.dashboardDidDisappear()
+    await expectCancellationCount(1, waiter: context.waiter)
+  }
+
+  @MainActor
+  @Test
+  func newerSuccessfulResponseReplacesPreviousBoundaryWait() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_086_400)
+        )))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+    await expectCancellationCount(1, waiter: context.waiter)
+
+    #expect(await context.waiter.activeWaitCount == 1)
+
+    await context.waiter.fireNext()
+    await expectCallCount(3, fetcher: context.fetcher)
+    #expect(await context.fetcher.callCount == 3)
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    context.store.dashboardDidDisappear()
+  }
+
+  @MainActor
+  @Test
+  func boundaryDoesNotReloadAfterDisappearance() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.dashboardDidDisappear()
+    await expectCancellationCount(1, waiter: context.waiter)
+    await settle()
+
+    #expect(await context.fetcher.callCount == 1)
+    #expect(context.store.history?.range == .sixMonths)
+  }
+
+  @MainActor
+  @Test
+  func staleResponseAfterBoundaryDoesNotCreateImmediateReloadLoop() async {
+    let context = makeContext()
+    let staleHistory = history(range: .sixMonths)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(staleHistory))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(staleHistory))
+    await expectStoreIdle(context.store)
+    await settle()
+
+    #expect(await context.waiter.dates.count == 1)
+    #expect(await context.fetcher.callCount == 2)
   }
 }
 
 @MainActor
-private func makeHistoryStore(fetcher: ControlledHistoryFetcher) -> ResetHistoryStore {
-  ResetHistoryStore(
-    fetchHistory: { try await fetcher.fetch(timeZoneIdentifier: $0, year: $1) },
+private struct HistoryStoreTestContext {
+  let fetcher: ControlledHistoryFetcher
+  let waiter: ControlledHistoryWaiter
+  let store: ResetHistoryStore
+  let zone: TimeZone
+}
+
+@MainActor
+private func makeContext() -> HistoryStoreTestContext {
+  let fetcher = ControlledHistoryFetcher()
+  let waiter = ControlledHistoryWaiter()
+  let store = ResetHistoryStore(
+    fetchHistory: {
+      try await fetcher.fetch(timeZoneIdentifier: $0, range: $1)
+    },
+    waitUntil: {
+      try await waiter.wait(until: $0)
+    },
     formatIssue: { "History unavailable" }
+  )
+  return HistoryStoreTestContext(
+    fetcher: fetcher,
+    waiter: waiter,
+    store: store,
+    zone: TimeZone(identifier: "Asia/Shanghai")!
   )
 }
 
 @MainActor
-private func waitUntil(_ condition: () -> Bool) async {
-  for _ in 0..<200 {
-    if condition() {
-      return
-    }
-    try? await Task.sleep(for: .milliseconds(1))
-  }
-  Issue.record("Timed out waiting for store state.")
-}
-
-private func waitForCallCount(_ count: Int, fetcher: ControlledHistoryFetcher) async {
-  for _ in 0..<200 {
-    if await fetcher.callCount >= count {
-      return
-    }
-    try? await Task.sleep(for: .milliseconds(1))
-  }
-  Issue.record("Timed out waiting for history request count \(count).")
+private func loadInitialHistory(_ context: HistoryStoreTestContext) async {
+  context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+  await expectCallCount(1, fetcher: context.fetcher)
+  await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+  await expectStoreIdle(context.store)
 }
 
 @MainActor
-private func waitForCompletionOrAdditionalCall(
-  store: ResetHistoryStore,
-  fetcher: ControlledHistoryFetcher
-) async {
-  for _ in 0..<200 {
-    let callCount = await fetcher.callCount
-    if !store.isLoading || callCount > 1 {
+private func expectStoreIdle(_ store: ResetHistoryStore) async {
+  for _ in 0..<1_000 {
+    if !store.isLoading {
       return
     }
-    try? await Task.sleep(for: .milliseconds(1))
+    await Task.yield()
   }
-  Issue.record("Timed out waiting for request completion or a trailing reload.")
+  Issue.record("Timed out waiting for store completion.")
 }
 
-private func currentYear(in timeZone: TimeZone) -> Int {
-  var calendar = Calendar(identifier: .gregorian)
-  calendar.timeZone = timeZone
-  return calendar.component(.year, from: .now)
+private func expectCallCount(_ count: Int, fetcher: ControlledHistoryFetcher) async {
+  await eventually("Timed out waiting for history request count \(count).") {
+    await fetcher.callCount >= count
+  }
+}
+
+private func expectWaitCount(_ count: Int, waiter: ControlledHistoryWaiter) async {
+  await eventually("Timed out waiting for boundary wait count \(count).") {
+    await waiter.dates.count >= count
+  }
+}
+
+private func expectCancellationCount(_ count: Int, waiter: ControlledHistoryWaiter) async {
+  await eventually("Timed out waiting for boundary cancellation count \(count).") {
+    await waiter.cancellationCount >= count
+  }
+}
+
+private func eventually(
+  _ message: String,
+  condition: () async -> Bool
+) async {
+  for _ in 0..<1_000 {
+    if await condition() {
+      return
+    }
+    await Task.yield()
+  }
+  Issue.record(Comment(rawValue: message))
+}
+
+private func settle() async {
+  for _ in 0..<20 {
+    await Task.yield()
+  }
 }
 
 private struct HistoryRequest: Equatable, Sendable {
   let timeZoneIdentifier: String
-  let year: Int?
+  let range: ResetHistoryRange
 }
 
 private actor ControlledHistoryFetcher {
@@ -395,8 +594,12 @@ private actor ControlledHistoryFetcher {
 
   var callCount: Int { requests.count }
 
-  func fetch(timeZoneIdentifier: String, year: Int?) async throws -> ResetHistory {
-    requests.append(HistoryRequest(timeZoneIdentifier: timeZoneIdentifier, year: year))
+  func fetch(
+    timeZoneIdentifier: String,
+    range: ResetHistoryRange
+  ) async throws -> ResetHistory {
+    requests.append(
+      HistoryRequest(timeZoneIdentifier: timeZoneIdentifier, range: range))
     let outcome = await withCheckedContinuation { continuation in
       continuations.append(continuation)
     }
@@ -417,33 +620,85 @@ private actor ControlledHistoryFetcher {
   }
 }
 
+private actor ControlledHistoryWaiter {
+  private struct Wait {
+    let id: UUID
+    let continuation: CheckedContinuation<Void, Error>
+  }
+
+  private var waits: [Wait] = []
+  private(set) var dates: [Date] = []
+  private(set) var cancellationCount = 0
+
+  var activeWaitCount: Int { waits.count }
+
+  func wait(until date: Date) async throws {
+    let id = UUID()
+    dates.append(date)
+    try await withTaskCancellationHandler {
+      try Task.checkCancellation()
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, Error>) in
+        if Task.isCancelled {
+          continuation.resume(throwing: CancellationError())
+        } else {
+          waits.append(Wait(id: id, continuation: continuation))
+        }
+      }
+    } onCancel: {
+      Task {
+        await self.cancel(id: id)
+      }
+    }
+  }
+
+  func fireNext() {
+    guard !waits.isEmpty else {
+      Issue.record("No pending boundary wait to fire.")
+      return
+    }
+    waits.removeFirst().continuation.resume()
+  }
+
+  private func cancel(id: UUID) {
+    guard let index = waits.firstIndex(where: { $0.id == id }) else { return }
+    cancellationCount += 1
+    waits.remove(at: index).continuation.resume(throwing: CancellationError())
+  }
+}
+
 private func history(
-  year: Int,
+  range: ResetHistoryRange,
   timeZone: String = "Asia/Shanghai",
-  availableYears: [Int] = [2026, 2025],
   generatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
 ) -> ResetHistory {
-  let months = resetHistoryMonthSummariesJSON(year: year, timeZoneIdentifier: timeZone)
-  let years = availableYears.map(String.init).joined(separator: ",")
-  let generatedAtValue = ISO8601DateFormatter().string(from: generatedAt)
-  let current = resetHistoryCurrentIntervals(
-    generatedAt: generatedAt,
-    timeZoneIdentifier: timeZone
+  let formatter = ISO8601DateFormatter()
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = TimeZone(identifier: timeZone)!
+  let generatedMonth = calendar.dateInterval(of: .month, for: generatedAt)!.start
+  let monthCount: Int
+  switch range {
+  case .threeMonths:
+    monthCount = 3
+  case .sixMonths:
+    monthCount = 6
+  case .twelveMonths:
+    monthCount = 12
+  case .all:
+    monthCount = 19
+  }
+  let start = calendar.date(byAdding: .month, value: -(monthCount - 1), to: generatedMonth)!
+  return try! APIJSONCoding.makeDecoder().decode(
+    ResetHistory.self,
+    from: Data(
+      resetHistoryJSON(
+        range: range.rawValue,
+        startYear: calendar.component(.year, from: start),
+        startMonth: calendar.component(.month, from: start),
+        monthCount: monthCount,
+        timeZoneIdentifier: timeZone,
+        generatedAt: formatter.string(from: generatedAt)
+      ).utf8
+    )
   )
-  let json = """
-    {
-      "schema_version":"1.0",
-      "generated_at":"\(generatedAtValue)",
-      "time_zone":"\(timeZone)",
-      "year":\(year),
-      "available_years":[\(years)],
-      "current":{
-        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
-        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":6}
-      },
-      "months":[\(months)],
-      "recent":[]
-    }
-    """
-  return try! APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
 }
