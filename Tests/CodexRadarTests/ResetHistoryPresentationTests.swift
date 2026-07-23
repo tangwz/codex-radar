@@ -5,104 +5,115 @@ import Testing
 
 struct ResetHistoryPresentationTests {
   @Test
-  func mapsStatisticsAndRecentRows() throws {
+  func cropsFixedRangeToNewestMonths() throws {
+    let history = try decodeHistory(resetHistoryJSON())
+
     let presentation = ResetHistoryPresentation(
-      history: try presentationHistory(year: 2026, recentCount: 5),
+      history: history,
+      selectedRange: .threeMonths,
       locale: Locale(identifier: "en_US")
     )
 
-    #expect(presentation.year == 2026)
+    #expect(presentation.selectedRange == .threeMonths)
+    #expect(presentation.months.map(\.id) == ["2026-05", "2026-06", "2026-07"])
+    #expect(presentation.months.map(\.label) == ["May", "Jun", "Jul"])
     #expect(presentation.weekCount == 2)
-    #expect(presentation.monthCount == 6)
+    #expect(presentation.monthCount == 7)
+    #expect(presentation.recent.count == 2)
+  }
+
+  @Test
+  func describesFixedRangeWithYearsAtBothEnds() throws {
+    let history = try decodeHistory(resetHistoryJSON())
+
+    let presentation = ResetHistoryPresentation(
+      history: history,
+      selectedRange: .sixMonths,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(presentation.rangeDescription == "Feb 2026 – Jul 2026")
+  }
+
+  @Test
+  func keepsTwelveMonthsAcrossYearBoundary() throws {
+    let history = try decodeHistory(
+      resetHistoryJSON(
+        range: "12m",
+        startYear: 2025,
+        startMonth: 8,
+        monthCount: 12,
+        generatedAt: "2026-07-19T09:00:00Z"
+      )
+    )
+
+    let presentation = ResetHistoryPresentation(
+      history: history,
+      selectedRange: .twelveMonths,
+      locale: Locale(identifier: "en_US")
+    )
+
     #expect(presentation.months.count == 12)
-    #expect(presentation.months.first?.label == "Jan")
-    #expect(presentation.months.last?.label == "Dec")
-    #expect(presentation.recent.count == 5)
-    #expect(presentation.recent.first?.dateTime == "Jul 19, 2026 at 4:21\u{202F}AM")
-    #expect(presentation.availableYears == [2026, 2025])
+    #expect(presentation.months.first?.id == "2025-08")
+    #expect(presentation.months.last?.id == "2026-07")
+    #expect(presentation.months.first?.label == "Aug")
+    #expect(presentation.months.last?.label == "Jul")
+    #expect(presentation.rangeDescription == "Aug 2025 – Jul 2026")
   }
 
   @Test
-  func formatsCommittedSnapshotInItsResponseTimeZone() throws {
-    let liveRequestTimeZone = TimeZone(identifier: "America/Los_Angeles")!
-    let history = try presentationHistory(
-      year: 2026,
-      recentCount: 1,
-      januaryFrom: "2025-12-31T16:00:00Z",
-      recentAt: "2025-12-31T16:30:00Z"
+  func keepsAllMonthsAndIncludesShortYearsInLabels() throws {
+    let history = try decodeHistory(
+      resetHistoryJSON(
+        range: "all",
+        startYear: 2025,
+        startMonth: 5,
+        monthCount: 15,
+        generatedAt: "2026-07-19T09:00:00Z"
+      )
     )
+
     let presentation = ResetHistoryPresentation(
       history: history,
+      selectedRange: .all,
       locale: Locale(identifier: "en_US")
     )
 
-    #expect(liveRequestTimeZone.identifier != history.timeZone)
-    #expect(presentation.months.first?.label == "Jan")
+    #expect(presentation.months.count == 15)
+    #expect(presentation.months.first?.label == "May 25")
+    #expect(presentation.months.last?.label == "Jul 26")
+    #expect(presentation.rangeDescription == "May 2025 – Jul 2026")
+  }
+
+  @Test
+  func formatsLabelsAndRecentRowsInResponseTimeZone() throws {
+    let history = try decodeHistory(
+      resetHistoryJSON(
+        range: "all",
+        startYear: 2025,
+        startMonth: 12,
+        monthCount: 2,
+        timeZoneIdentifier: "Pacific/Kiritimati",
+        generatedAt: "2026-01-01T00:00:00Z",
+        recent: """
+          {"id":"reset-1","reset_at":"2025-12-31T10:30:00Z"}
+          """
+      )
+    )
+
+    let presentation = ResetHistoryPresentation(
+      history: history,
+      selectedRange: .all,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(TimeZone.current.identifier != history.timeZone)
+    #expect(presentation.months.map(\.label) == ["Dec 25", "Jan 26"])
+    #expect(presentation.rangeDescription == "Dec 2025 – Jan 2026")
     #expect(presentation.recent.first?.dateTime == "Jan 1, 2026 at 12:30\u{202F}AM")
-  }
-
-  @Test
-  func includesCommittedYearInUniqueDescendingPickerOptions() throws {
-    let history = try presentationHistory(
-      year: 2025,
-      recentCount: 0,
-      availableYears: [2026, 2024, 2024]
-    )
-    let originalAvailableYears = history.availableYears
-
-    let presentation = ResetHistoryPresentation(
-      history: history,
-      locale: Locale(identifier: "en_US")
-    )
-
-    #expect(presentation.year == 2025)
-    #expect(presentation.availableYears == [2026, 2025, 2024])
-    #expect(history.availableYears == originalAvailableYears)
   }
 }
 
-private func presentationHistory(
-  year: Int,
-  recentCount: Int,
-  januaryFrom: String? = nil,
-  availableYears: [Int] = [2026, 2025],
-  recentAt: String = "2026-07-18T20:21:34Z"
-) throws -> ResetHistory {
-  let months = (1...12).map { month in
-    resetHistoryMonthSummaryJSON(
-      year: year,
-      month: month,
-      timeZoneIdentifier: "Asia/Shanghai",
-      from: month == 1 ? januaryFrom : nil
-    )
-  }.joined(separator: ",")
-  let years = availableYears.map(String.init).joined(separator: ",")
-  let recent = (0..<recentCount).reversed().map { offset in
-    let index = offset + 1
-    return """
-      {"id":"reset-\(index)","reset_at":"\(recentAt)"}
-      """
-  }.joined(separator: ",")
-  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
-  let current = resetHistoryCurrentIntervals(
-    generatedAt: generatedAt,
-    timeZoneIdentifier: "Asia/Shanghai"
-  )
-  let json = """
-    {
-      "schema_version":"1.0",
-      "generated_at":"2026-07-19T09:00:00Z",
-      "time_zone":"Asia/Shanghai",
-      "year":\(year),
-      "available_years":[\(years)],
-      "current":{
-        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
-        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":6}
-      },
-      "months":[\(months)],
-      "recent":[\(recent)]
-    }
-    """
-
-  return try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
+private func decodeHistory(_ json: String) throws -> ResetHistory {
+  try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
 }

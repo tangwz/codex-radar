@@ -55,6 +55,11 @@
 "Reset statistics" = "Reset statistics";
 "This week" = "This week";
 "Monthly resets" = "Monthly resets";
+"Resets by month" = "Resets by month";
+"Time range" = "Time range";
+"All" = "All";
+"About monthly reset statistics" = "About monthly reset statistics";
+"Months follow natural boundaries in your selected time zone." = "Months follow natural boundaries in your selected time zone.";
 "Recent resets" = "Recent resets";
 "Latest 5" = "Latest 5";
 "Loading reset statistics" = "Loading reset statistics";

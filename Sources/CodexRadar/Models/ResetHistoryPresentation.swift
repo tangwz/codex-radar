@@ -12,32 +12,56 @@ struct ResetHistoryPresentation {
     let dateTime: String
   }
 
-  let year: Int
-  let availableYears: [Int]
+  let selectedRange: ResetHistoryRange
+  let rangeDescription: String
   let weekCount: Int
   let monthCount: Int
   let months: [Month]
   let recent: [Recent]
 
-  init(history: ResetHistory, locale: Locale) {
+  init(
+    history: ResetHistory,
+    selectedRange: ResetHistoryRange,
+    locale: Locale
+  ) {
     let timeZone = TimeZone(identifier: history.timeZone)!
+    let visibleSummaries: ArraySlice<ResetMonthSummary>
+    if let count = selectedRange.fixedMonthCount {
+      visibleSummaries = history.months.suffix(count)
+    } else {
+      visibleSummaries = history.months[...]
+    }
+    let monthStyle =
+      selectedRange == .all
+      ? Date.FormatStyle(
+        date: .omitted,
+        time: .omitted,
+        locale: locale,
+        timeZone: timeZone
+      ).month(.abbreviated).year(.twoDigits)
+      : Date.FormatStyle(
+        date: .omitted,
+        time: .omitted,
+        locale: locale,
+        timeZone: timeZone
+      ).month(.abbreviated)
+    let rangeStyle = Date.FormatStyle(
+      date: .omitted,
+      time: .omitted,
+      locale: locale,
+      timeZone: timeZone
+    ).month(.abbreviated).year()
 
-    year = history.year
-    availableYears = Set(history.availableYears + [history.year]).sorted(by: >)
+    self.selectedRange = selectedRange
+    rangeDescription = [visibleSummaries.first, visibleSummaries.last]
+      .compactMap { $0?.from.formatted(rangeStyle) }
+      .joined(separator: " – ")
     weekCount = history.current.week.count
     monthCount = history.current.month.count
-    months = history.months.map { summary in
+    months = visibleSummaries.map { summary in
       Month(
         id: summary.id,
-        label: summary.from.formatted(
-          Date.FormatStyle(
-            date: .omitted,
-            time: .omitted,
-            locale: locale,
-            timeZone: timeZone
-          )
-          .month(.abbreviated)
-        ),
+        label: summary.from.formatted(monthStyle),
         count: summary.count
       )
     }
