@@ -359,6 +359,95 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func resetIntentSurvivesCancelingExpansionForCoveredSelection() async {
+    let context = makeContext()
+    let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_100),
+      timeZone: context.zone
+    )
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_200),
+      timeZone: context.zone
+    )
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_300),
+      timeZone: context.zone
+    )
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .twelveMonths, .sixMonths])
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(context.store.isLoading)
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await settle()
+    #expect(context.store.history?.range == .sixMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    await settle()
+
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(await context.fetcher.callCount == 3)
+  }
+
+  @MainActor
+  @Test
+  func resetIntentTransfersToReplacementExpansionAndRetriggersOnce() async {
+    let context = makeContext()
+    let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_100),
+      timeZone: context.zone
+    )
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_200),
+      timeZone: context.zone
+    )
+    context.store.lastResetDidChange(
+      Date(timeIntervalSince1970: 1_700_000_300),
+      timeZone: context.zone
+    )
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await settle()
+    await context.fetcher.completeNext(with: .success(history(range: .all)))
+    await expectCallCount(4, fetcher: context.fetcher)
+
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .twelveMonths, .all, .all])
+
+    await context.fetcher.completeNext(with: .success(history(range: .all)))
+    await expectStoreIdle(context.store)
+    await settle()
+
+    #expect(context.store.selectedRange == .all)
+    #expect(await context.fetcher.callCount == 4)
+  }
+
+  @MainActor
+  @Test
   func disappearanceCancelsLoadAndBoundaryWaitWithoutDiscardingSnapshot() async {
     let context = makeContext()
     await loadInitialHistory(context)
@@ -428,6 +517,90 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func boundaryWaitsForExpansionAndRefreshesExpandedSelection() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.waiter.fireNext()
+    await settle()
+
+    #expect(await context.fetcher.callCount == 2)
+    #expect(context.store.pendingRange == .twelveMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    #expect(await context.fetcher.requests.last?.range == .twelveMonths)
+    #expect(context.store.selectedRange == .twelveMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
+    await expectStoreIdle(context.store)
+  }
+
+  @MainActor
+  @Test
+  func boundaryAfterFailedExpansionRefreshesRetainedSelection() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.waiter.fireNext()
+    await settle()
+
+    #expect(await context.fetcher.callCount == 2)
+    #expect(context.store.pendingRange == .twelveMonths)
+
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    #expect(await context.fetcher.requests.last?.range == .sixMonths)
+    #expect(context.store.selectedRange == .sixMonths)
+    #expect(context.store.history?.range == .sixMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+  }
+
+  @MainActor
+  @Test
+  func boundaryWaitsForOrdinaryRequestBeforeReloading() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.waiter.fireNext()
+    await settle()
+
+    #expect(await context.fetcher.callCount == 2)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_604_800)
+        )))
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    #expect(await context.fetcher.requests.last?.range == .sixMonths)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_604_800)
+        )))
+    await expectStoreIdle(context.store)
+  }
+
+  @MainActor
+  @Test
   func newerSuccessfulResponseReplacesPreviousBoundaryWait() async {
     let context = makeContext()
     await loadInitialHistory(context)
@@ -473,7 +646,7 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
-  func staleResponseAfterBoundaryDoesNotCreateImmediateReloadLoop() async {
+  func staleResponseAfterBoundaryDoesNotCreateImmediateReloadLoop() async throws {
     let context = makeContext()
     let staleHistory = history(range: .sixMonths)
     context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
@@ -486,9 +659,12 @@ struct ResetHistoryStoreTests {
     await expectCallCount(2, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(staleHistory))
     await expectStoreIdle(context.store)
-    await settle()
+    await expectWaitCount(2, waiter: context.waiter)
 
-    #expect(await context.waiter.dates.count == 1)
+    let dates = await context.waiter.dates
+    #expect(dates.count == 2)
+    let laterDate = try #require(dates.dropFirst().first)
+    #expect(laterDate > dates[0])
     #expect(await context.fetcher.callCount == 2)
   }
 }
@@ -511,6 +687,9 @@ private func makeContext() -> HistoryStoreTestContext {
     },
     waitUntil: {
       try await waiter.wait(until: $0)
+    },
+    now: {
+      Date(timeIntervalSince1970: 1_700_000_000)
     },
     formatIssue: { "History unavailable" }
   )

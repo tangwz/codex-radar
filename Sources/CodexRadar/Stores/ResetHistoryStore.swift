@@ -6,6 +6,7 @@ final class ResetHistoryStore: ObservableObject {
   typealias FetchHistory =
     @Sendable (String, ResetHistoryRange) async throws -> ResetHistory
   typealias WaitUntil = @Sendable (Date) async throws -> Void
+  typealias Now = @Sendable () -> Date
 
   @Published private(set) var history: ResetHistory?
   @Published private(set) var selectedRange: ResetHistoryRange = .sixMonths
@@ -15,11 +16,13 @@ final class ResetHistoryStore: ObservableObject {
 
   private let fetchHistory: FetchHistory
   private let waitUntil: WaitUntil
+  private let now: Now
   private let formatIssue: @MainActor @Sendable () -> String
   private var isDashboardActive = false
   private var lastObservedResetAt: Date?
   private var activeQuery: Query?
   private var needsTrailingResetReload = false
+  private var needsTrailingBoundaryReload = false
   private var loadTask: Task<Void, Never>?
   private var boundaryTask: Task<Void, Never>?
   private var lastTriggeredBoundary: Date?
@@ -42,6 +45,7 @@ final class ResetHistoryStore: ObservableObject {
       let duration = max(0, date.timeIntervalSinceNow)
       try await Task.sleep(for: .seconds(duration))
     },
+    now: @escaping Now = Date.init,
     formatIssue: @escaping @MainActor @Sendable () -> String = {
       AppLocalization.string("Reset history is temporarily unavailable.")
     }
@@ -50,6 +54,7 @@ final class ResetHistoryStore: ObservableObject {
       try await service.fetch(timeZoneIdentifier: $0, range: $1)
     }
     self.waitUntil = waitUntil
+    self.now = now
     self.formatIssue = formatIssue
   }
 
@@ -59,12 +64,14 @@ final class ResetHistoryStore: ObservableObject {
       let duration = max(0, date.timeIntervalSinceNow)
       try await Task.sleep(for: .seconds(duration))
     },
+    now: @escaping Now = Date.init,
     formatIssue: @escaping @MainActor @Sendable () -> String = {
       AppLocalization.string("Reset history is temporarily unavailable.")
     }
   ) {
     self.fetchHistory = fetchHistory
     self.waitUntil = waitUntil
+    self.now = now
     self.formatIssue = formatIssue
   }
 
@@ -90,6 +97,7 @@ final class ResetHistoryStore: ObservableObject {
     boundaryTask = nil
     activeQuery = nil
     needsTrailingResetReload = false
+    needsTrailingBoundaryReload = false
     pendingRange = nil
     isLoading = false
   }
@@ -114,10 +122,13 @@ final class ResetHistoryStore: ObservableObject {
     if history?.timeZone == timeZone.identifier,
       history?.range.covers(range) == true
     {
-      cancelExpansionRequestIfNeeded()
+      let canceledExpansion = cancelExpansionRequestIfNeeded()
       retargetOrdinaryRequestIfNeeded(to: range)
       selectedRange = range
       pendingRange = nil
+      if canceledExpansion {
+        reloadAfterCanceledRequestIfNeeded(timeZone: timeZone)
+      }
       return
     }
     request(
@@ -199,14 +210,23 @@ final class ResetHistoryStore: ObservableObject {
 
   private func finish() {
     guard let completedQuery = activeQuery else { return }
-    let shouldReload = needsTrailingResetReload && isDashboardActive
+    let shouldReloadForReset = needsTrailingResetReload
+    let shouldReloadAtBoundary = needsTrailingBoundaryReload
+    let shouldReload =
+      (shouldReloadForReset || shouldReloadAtBoundary)
+      && isDashboardActive
+    let targetRange =
+      shouldReloadForReset
+      ? completedQuery.targetRange
+      : selectedRange
     let trailingQuery = Query(
       timeZoneIdentifier: completedQuery.timeZoneIdentifier,
-      fetchRange: completedQuery.targetRange.requestedRange,
-      targetRange: completedQuery.targetRange
+      fetchRange: targetRange.requestedRange,
+      targetRange: targetRange
     )
     self.activeQuery = nil
     needsTrailingResetReload = false
+    needsTrailingBoundaryReload = false
     pendingRange = nil
     isLoading = false
     loadTask = nil
@@ -215,19 +235,32 @@ final class ResetHistoryStore: ObservableObject {
     request(trailingQuery, trigger: .ordinary)
   }
 
-  private func cancelExpansionRequestIfNeeded() {
+  private func cancelExpansionRequestIfNeeded() -> Bool {
     guard
       let activeQuery,
       history?.timeZone != activeQuery.timeZoneIdentifier
         || history?.range.covers(activeQuery.targetRange) != true
-    else { return }
+    else { return false }
     generation &+= 1
     loadTask?.cancel()
     loadTask = nil
     self.activeQuery = nil
-    needsTrailingResetReload = false
     pendingRange = nil
     isLoading = false
+    return true
+  }
+
+  private func reloadAfterCanceledRequestIfNeeded(timeZone: TimeZone) {
+    guard needsTrailingResetReload || needsTrailingBoundaryReload else { return }
+    needsTrailingBoundaryReload = false
+    request(
+      Query(
+        timeZoneIdentifier: timeZone.identifier,
+        fetchRange: selectedRange.requestedRange,
+        targetRange: selectedRange
+      ),
+      trigger: .ordinary
+    )
   }
 
   private func retargetOrdinaryRequestIfNeeded(to range: ResetHistoryRange) {
@@ -249,15 +282,22 @@ final class ResetHistoryStore: ObservableObject {
   private func scheduleBoundaryRefresh(after history: ResetHistory) {
     boundaryTask?.cancel()
     boundaryTask = nil
+    let schedulingAnchor = max(
+      history.generatedAt,
+      max(lastTriggeredBoundary ?? history.generatedAt, now())
+    )
     guard
       isDashboardActive,
       let timeZone = TimeZone(identifier: history.timeZone),
       let boundary = ResetHistoryRefreshSchedule.nextBoundary(
-        after: history.generatedAt,
+        after: schedulingAnchor,
         timeZone: timeZone
-      ),
-      lastTriggeredBoundary.map({ boundary > $0 }) ?? true
+      )
     else { return }
+    scheduleBoundaryWait(until: boundary, timeZone: timeZone)
+  }
+
+  private func scheduleBoundaryWait(until boundary: Date, timeZone: TimeZone) {
     let waitUntil = waitUntil
     boundaryTask = Task { [weak self] in
       do {
@@ -276,6 +316,10 @@ final class ResetHistoryStore: ObservableObject {
     guard isDashboardActive else { return }
     boundaryTask = nil
     lastTriggeredBoundary = boundary
+    if activeQuery != nil {
+      needsTrailingBoundaryReload = true
+      return
+    }
     request(
       Query(
         timeZoneIdentifier: timeZone.identifier,
