@@ -384,6 +384,91 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func lateCanceledBoundaryCallbacksCannotDisturbCurrentWaitOwner() async throws {
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let fetcher = ControlledHistoryFetcher()
+    let waiter = NonCooperativeHistoryWaiter()
+    let store = ResetHistoryStore(
+      fetchHistory: {
+        try await fetcher.fetch(timeZoneIdentifier: $0, range: $1)
+      },
+      waitUntil: {
+        try await waiter.wait(until: $0)
+      },
+      now: { now },
+      formatIssue: { "History unavailable" }
+    )
+    let shanghai = try #require(TimeZone(identifier: "Asia/Shanghai"))
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    let expectedUTCBoundary = try #require(
+      ResetHistoryRefreshSchedule.nextBoundary(after: now, timeZone: utc))
+    let expectedShanghaiBoundary = try #require(
+      ResetHistoryRefreshSchedule.nextBoundary(after: now, timeZone: shanghai))
+
+    store.dashboardDidAppear(timeZone: shanghai, lastResetAt: nil)
+    await expectCallCount(1, fetcher: fetcher)
+    await fetcher.completeNext(
+      with: .success(history(range: .sixMonths, generatedAt: now)))
+    await expectStoreIdle(store)
+    await expectWaitCount(1, waiter: waiter)
+    let retainedGeneratedAt = try #require(store.history?.generatedAt)
+
+    store.refresh(timeZone: utc)
+    await expectCallCount(2, fetcher: fetcher)
+    await fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(store)
+    await expectWaitCount(2, waiter: waiter)
+
+    store.refresh(timeZone: shanghai)
+    await expectCallCount(3, fetcher: fetcher)
+    await fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(store)
+    await expectWaitCount(3, waiter: waiter)
+
+    let dates = await waiter.dates
+    try #require(dates.count == 3)
+    #expect(dates[1] == expectedUTCBoundary)
+    #expect(dates[2] == expectedShanghaiBoundary)
+    #expect(await waiter.pendingWaitCount == 3)
+    #expect(await fetcher.callCount == 3)
+    #expect(store.history?.generatedAt == retainedGeneratedAt)
+
+    await waiter.resume(waitID: 1)
+    await settle()
+    #expect(await fetcher.callCount == 3)
+    #expect(store.history?.generatedAt == retainedGeneratedAt)
+
+    await waiter.fail(waitID: 0)
+    await settle()
+    #expect(await fetcher.callCount == 3)
+    #expect(store.history?.generatedAt == retainedGeneratedAt)
+    #expect(await waiter.pendingWaitCount == 1)
+
+    await waiter.resume(waitID: 2)
+    await expectCallCount(4, fetcher: fetcher)
+    try #require(await fetcher.callCount == 4)
+    #expect(
+      await fetcher.requests.last
+        == HistoryRequest(
+          timeZoneIdentifier: shanghai.identifier,
+          range: .sixMonths
+        ))
+    #expect(store.history?.generatedAt == retainedGeneratedAt)
+    #expect(await waiter.pendingWaitCount == 0)
+
+    store.dashboardDidDisappear()
+    await fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          generatedAt: Date(timeIntervalSince1970: 1_700_000_500)
+        )))
+    await settle()
+    #expect(store.history?.generatedAt == retainedGeneratedAt)
+  }
+
+  @MainActor
+  @Test
   func coveredSelectionInDifferentTimeZoneRequestsFreshData() async {
     let context = makeContext()
     let utc = TimeZone(identifier: "UTC")!
@@ -727,6 +812,60 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func reopeningInNewTimeZoneEvaluatesStaleBoundaryIndependently() async throws {
+    let generatedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let context = makeContext(now: { generatedAt })
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    let expectedUTCBoundary = try #require(
+      ResetHistoryRefreshSchedule.nextBoundary(after: generatedAt, timeZone: utc))
+    let expectedShanghaiBoundary = try #require(
+      ResetHistoryRefreshSchedule.nextBoundary(
+        after: generatedAt,
+        timeZone: context.zone
+      ))
+
+    context.store.dashboardDidAppear(timeZone: utc, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          timeZone: utc.identifier,
+          generatedAt: generatedAt
+        )))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(1, waiter: context.waiter)
+    #expect(await context.waiter.dates == [expectedUTCBoundary])
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.dashboardDidDisappear()
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    await context.fetcher.completeNext(
+      with: .success(
+        history(
+          range: .sixMonths,
+          timeZone: utc.identifier,
+          generatedAt: generatedAt
+        )))
+    await settle()
+    await context.fetcher.completeNext(
+      with: .success(
+        history(range: .sixMonths, generatedAt: generatedAt)))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+
+    let boundaries = await context.waiter.dates
+    try #require(boundaries.count == 2)
+    #expect(boundaries[1] == expectedShanghaiBoundary)
+    #expect(await context.waiter.activeWaitCount == 1)
+    #expect(context.store.history?.timeZone == context.zone.identifier)
+  }
+
+  @MainActor
+  @Test
   func successfulResponseSchedulesOneBoundaryWait() async {
     let context = makeContext()
     await loadInitialHistory(context)
@@ -743,6 +882,30 @@ struct ResetHistoryStoreTests {
 
     context.store.dashboardDidDisappear()
     await expectCancellationCount(1, waiter: context.waiter)
+  }
+
+  @MainActor
+  @Test
+  func ordinaryBoundaryWaitErrorAllowsSameTimeZoneRescheduling() async {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    await context.waiter.failNext()
+    await settle()
+
+    #expect(await context.fetcher.callCount == 1)
+    #expect(await context.waiter.activeWaitCount == 0)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(2, waiter: context.waiter)
+
+    #expect(await context.waiter.activeWaitCount == 1)
+    #expect(await context.fetcher.callCount == 2)
+    #expect(context.store.issue == "History unavailable")
   }
 
   @MainActor
@@ -1155,6 +1318,12 @@ private func expectWaitCount(_ count: Int, waiter: ControlledHistoryWaiter) asyn
   }
 }
 
+private func expectWaitCount(_ count: Int, waiter: NonCooperativeHistoryWaiter) async {
+  await eventually("Timed out waiting for non-cooperative boundary wait count \(count).") {
+    await waiter.dates.count >= count
+  }
+}
+
 private func expectCancellationCount(_ count: Int, waiter: ControlledHistoryWaiter) async {
   await eventually("Timed out waiting for boundary cancellation count \(count).") {
     await waiter.cancellationCount >= count
@@ -1262,10 +1431,65 @@ private actor ControlledHistoryWaiter {
     waits.removeFirst().continuation.resume()
   }
 
+  func failNext() {
+    guard !waits.isEmpty else {
+      Issue.record("No pending boundary wait to fail.")
+      return
+    }
+    waits.removeFirst().continuation.resume(throwing: HistoryWaitTestError.failed)
+  }
+
   private func cancel(id: UUID) {
     guard let index = waits.firstIndex(where: { $0.id == id }) else { return }
     cancellationCount += 1
     waits.remove(at: index).continuation.resume(throwing: CancellationError())
+  }
+}
+
+private enum HistoryWaitTestError: Error {
+  case failed
+}
+
+private actor NonCooperativeHistoryWaiter {
+  private struct Wait {
+    let id: Int
+    let continuation: CheckedContinuation<Void, Error>
+  }
+
+  private var waits: [Wait] = []
+  private var nextID = 0
+  private(set) var dates: [Date] = []
+
+  var pendingWaitCount: Int { waits.count }
+
+  func wait(until date: Date) async throws {
+    let id = nextID
+    nextID += 1
+    dates.append(date)
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, Error>) in
+        waits.append(Wait(id: id, continuation: continuation))
+      }
+    } onCancel: {
+      // Intentionally retain the continuation to model a non-cooperative dependency.
+    }
+  }
+
+  func resume(waitID: Int) {
+    guard let index = waits.firstIndex(where: { $0.id == waitID }) else {
+      Issue.record("No retained boundary wait \(waitID) to resume.")
+      return
+    }
+    waits.remove(at: index).continuation.resume()
+  }
+
+  func fail(waitID: Int) {
+    guard let index = waits.firstIndex(where: { $0.id == waitID }) else {
+      Issue.record("No retained boundary wait \(waitID) to fail.")
+      return
+    }
+    waits.remove(at: index).continuation.resume(throwing: HistoryWaitTestError.failed)
   }
 }
 

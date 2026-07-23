@@ -25,6 +25,7 @@ final class ResetHistoryStore: ObservableObject {
   private var pendingFreshness: FreshnessIntent = []
   private var loadTask: Task<Void, Never>?
   private var boundaryTask: Task<Void, Never>?
+  private var boundaryWaitIdentity: UUID?
   private var boundaryTimeZoneIdentifier: String?
   private var lastTriggeredBoundary: Date?
   private var generation: UInt64 = 0
@@ -103,6 +104,7 @@ final class ResetHistoryStore: ObservableObject {
     loadTask?.cancel()
     loadTask = nil
     cancelBoundaryWait()
+    lastTriggeredBoundary = nil
     activeQuery = nil
     carriedFreshness = []
     pendingFreshness = []
@@ -334,8 +336,17 @@ final class ResetHistoryStore: ObservableObject {
   }
 
   private func cancelBoundaryWait() {
-    boundaryTask?.cancel()
+    let task = boundaryTask
     boundaryTask = nil
+    boundaryWaitIdentity = nil
+    boundaryTimeZoneIdentifier = nil
+    task?.cancel()
+  }
+
+  private func clearBoundaryWait(ifOwnedBy identity: UUID) {
+    guard boundaryWaitIdentity == identity else { return }
+    boundaryTask = nil
+    boundaryWaitIdentity = nil
     boundaryTimeZoneIdentifier = nil
   }
 
@@ -372,15 +383,20 @@ final class ResetHistoryStore: ObservableObject {
 
   private func scheduleBoundaryWait(until boundary: Date, timeZone: TimeZone) {
     let waitUntil = waitUntil
+    let identity = UUID()
+    boundaryWaitIdentity = identity
     boundaryTimeZoneIdentifier = timeZone.identifier
     boundaryTask = Task { [weak self] in
       do {
         try await waitUntil(boundary)
         guard !Task.isCancelled, let self else { return }
-        self.refreshAtBoundary(boundary, timeZone: timeZone)
-      } catch is CancellationError {
-        return
+        self.refreshAtBoundary(
+          boundary,
+          timeZone: timeZone,
+          identity: identity
+        )
       } catch {
+        self?.clearBoundaryWait(ifOwnedBy: identity)
         return
       }
     }
@@ -407,8 +423,14 @@ final class ResetHistoryStore: ObservableObject {
     scheduleBoundaryWait(until: boundary, timeZone: timeZone)
   }
 
-  private func refreshAtBoundary(_ boundary: Date, timeZone: TimeZone) {
+  private func refreshAtBoundary(
+    _ boundary: Date,
+    timeZone: TimeZone,
+    identity: UUID
+  ) {
+    guard boundaryWaitIdentity == identity else { return }
     boundaryTask = nil
+    boundaryWaitIdentity = nil
     boundaryTimeZoneIdentifier = nil
     guard isDashboardActive else { return }
     lastTriggeredBoundary = boundary
