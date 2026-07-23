@@ -4,17 +4,28 @@ import Testing
 @testable import CodexRadar
 
 struct ResetHistoryServiceTests {
-  @Test
-  func sendsTimeZoneAndYear() async throws {
+  @Test(arguments: [
+    (ResetHistoryRange.threeMonths, "3m"),
+    (ResetHistoryRange.sixMonths, nil),
+    (.twelveMonths, "12m"),
+    (.all, "all"),
+  ])
+  func sendsNormalizedRange(
+    _ range: ResetHistoryRange,
+    _ expectedQueryValue: String?
+  ) async throws {
     let recorder = HistoryRequestRecorder()
     let service = ResetHistoryService(
       loader: HTTPDataLoader { request in
         await recorder.record(request)
-        return (Data(historyServiceJSON().utf8), historyResponse(status: 200, url: request.url!))
+        return (
+          Data(historyServiceJSON(range: range).utf8),
+          historyResponse(status: 200, url: request.url!)
+        )
       }
     )
 
-    _ = try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", year: 2026)
+    _ = try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", range: range)
     let request = try #require(await recorder.request)
     let components = try #require(URLComponents(url: request.url!, resolvingAgainstBaseURL: false))
 
@@ -22,7 +33,9 @@ struct ResetHistoryServiceTests {
     #expect(
       components.queryItems?.first(where: { $0.name == "time_zone" })?.value == "Asia/Shanghai"
     )
-    #expect(components.queryItems?.first(where: { $0.name == "year" })?.value == "2026")
+    #expect(
+      components.queryItems?.first(where: { $0.name == "range" })?.value == expectedQueryValue)
+    #expect(components.queryItems?.contains(where: { $0.name == "year" }) == false)
     #expect(request.timeoutInterval == 15)
     #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
   }
@@ -40,34 +53,34 @@ struct ResetHistoryServiceTests {
     )
 
     await #expect(throws: expectedError) {
-      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", year: 2026)
+      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
     }
   }
 
   @Test
-  func rejectsMismatchedResponseTimeZoneOrYear() async {
+  func rejectsMismatchedResponseTimeZoneOrRange() async {
     let mismatchedTimeZone = ResetHistoryService(
       loader: HTTPDataLoader { request in
         (
-          Data(historyServiceJSON(timeZone: "UTC").utf8),
+          Data(historyServiceJSON(timeZone: "UTC", range: .sixMonths).utf8),
           historyResponse(status: 200, url: request.url!)
         )
       }
     )
-    let mismatchedYear = ResetHistoryService(
+    let mismatchedRange = ResetHistoryService(
       loader: HTTPDataLoader { request in
         (
-          Data(historyServiceJSON(year: 2025).utf8),
+          Data(historyServiceJSON(range: .twelveMonths).utf8),
           historyResponse(status: 200, url: request.url!)
         )
       }
     )
 
     await #expect(throws: ResetHistoryServiceError.invalidResponse) {
-      try await mismatchedTimeZone.fetch(timeZoneIdentifier: "Asia/Shanghai", year: 2026)
+      try await mismatchedTimeZone.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
     }
     await #expect(throws: ResetHistoryServiceError.invalidResponse) {
-      try await mismatchedYear.fetch(timeZoneIdentifier: "Asia/Shanghai", year: 2026)
+      try await mismatchedRange.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
     }
   }
 
@@ -81,7 +94,7 @@ struct ResetHistoryServiceTests {
     )
 
     await #expect(throws: ResetHistoryServiceError.invalidRequest) {
-      try await service.fetch(timeZoneIdentifier: "Invalid/Zone", year: nil)
+      try await service.fetch(timeZoneIdentifier: "Invalid/Zone", range: .sixMonths)
     }
   }
 
@@ -98,7 +111,7 @@ struct ResetHistoryServiceTests {
     )
 
     await #expect(throws: ResetHistoryServiceError.invalidResponse) {
-      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", year: 2026)
+      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
     }
   }
 }
@@ -115,26 +128,26 @@ private func historyResponse(status: Int, url: URL) -> HTTPURLResponse {
   HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
 }
 
-private func historyServiceJSON(timeZone: String = "Asia/Shanghai", year: Int = 2026) -> String {
-  let months = resetHistoryMonthSummariesJSON(year: year, timeZoneIdentifier: timeZone)
-  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
-  let current = resetHistoryCurrentIntervals(
-    generatedAt: generatedAt,
+private func historyServiceJSON(
+  timeZone: String = "Asia/Shanghai",
+  range: ResetHistoryRange = .sixMonths
+) -> String {
+  let monthCount = range.fixedMonthCount ?? 6
+  let startYear = range == .twelveMonths ? 2025 : 2026
+  let startMonth: Int
+  switch range {
+  case .threeMonths:
+    startMonth = 5
+  case .twelveMonths:
+    startMonth = 8
+  case .sixMonths, .all:
+    startMonth = 2
+  }
+  return resetHistoryJSON(
+    range: range.rawValue,
+    startYear: startYear,
+    startMonth: startMonth,
+    monthCount: monthCount,
     timeZoneIdentifier: timeZone
   )
-  return """
-    {
-      "schema_version":"1.0",
-      "generated_at":"2026-07-19T09:00:00Z",
-      "time_zone":"\(timeZone)",
-      "year":\(year),
-      "available_years":[\(year)],
-      "current":{
-        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
-        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":6}
-      },
-      "months":[\(months)],
-      "recent":[]
-    }
-    """
 }

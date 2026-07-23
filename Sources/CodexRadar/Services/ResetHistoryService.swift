@@ -29,7 +29,10 @@ struct ResetHistoryService: Sendable {
     self.loader = loader
   }
 
-  func fetch(timeZoneIdentifier: String, year: Int?) async throws -> ResetHistory {
+  func fetch(
+    timeZoneIdentifier: String,
+    range: ResetHistoryRange
+  ) async throws -> ResetHistory {
     guard
       TimeZone(identifier: timeZoneIdentifier) != nil,
       var components = URLComponents(url: historyURL, resolvingAgainstBaseURL: false)
@@ -37,9 +40,13 @@ struct ResetHistoryService: Sendable {
       throw ResetHistoryServiceError.invalidRequest
     }
 
-    components.queryItems = [URLQueryItem(name: "time_zone", value: timeZoneIdentifier)]
-    if let year {
-      components.queryItems?.append(URLQueryItem(name: "year", value: String(year)))
+    components.queryItems = [
+      URLQueryItem(name: "time_zone", value: timeZoneIdentifier)
+    ]
+    if let queryValue = range.queryValue {
+      components.queryItems?.append(
+        URLQueryItem(name: "range", value: queryValue)
+      )
     }
     guard let url = components.url else {
       throw ResetHistoryServiceError.invalidRequest
@@ -56,7 +63,7 @@ struct ResetHistoryService: Sendable {
     switch http.statusCode {
     case 200..<300:
       let history = try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: data)
-      guard history.timeZone == timeZoneIdentifier, year.map({ history.year == $0 }) ?? true else {
+      guard history.timeZone == timeZoneIdentifier, history.range == range else {
         throw ResetHistoryServiceError.invalidResponse
       }
       return history
