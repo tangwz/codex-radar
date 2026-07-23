@@ -133,6 +133,10 @@ struct ResetHistoryDecodingTests {
     {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"},
     {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"}
     """,
+    """
+    {"id":"reset-1","reset_at":"2026-07-19T09:21:34Z"},
+    {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"}
+    """,
   ])
   func rejectsInvalidRecentRows(_ recent: String) {
     expectDecodingFailure(resetHistoryJSON(recent: recent))
