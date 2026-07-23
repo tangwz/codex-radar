@@ -25,6 +25,7 @@ final class ResetHistoryStore: ObservableObject {
   private var pendingFreshness: FreshnessIntent = []
   private var loadTask: Task<Void, Never>?
   private var boundaryTask: Task<Void, Never>?
+  private var boundaryTimeZoneIdentifier: String?
   private var lastTriggeredBoundary: Date?
   private var generation: UInt64 = 0
 
@@ -101,8 +102,7 @@ final class ResetHistoryStore: ObservableObject {
     generation &+= 1
     loadTask?.cancel()
     loadTask = nil
-    boundaryTask?.cancel()
-    boundaryTask = nil
+    cancelBoundaryWait()
     activeQuery = nil
     carriedFreshness = []
     pendingFreshness = []
@@ -320,15 +320,32 @@ final class ResetHistoryStore: ObservableObject {
   }
 
   private func cancelBoundaryRefreshIfTimeZoneChanged(to timeZoneIdentifier: String) {
-    guard history?.timeZone != timeZoneIdentifier else { return }
-    boundaryTask?.cancel()
-    boundaryTask = nil
+    if let boundaryTimeZoneIdentifier {
+      guard boundaryTimeZoneIdentifier != timeZoneIdentifier else { return }
+      cancelBoundaryWait()
+      lastTriggeredBoundary = nil
+      return
+    }
+    guard
+      let activeQuery,
+      activeQuery.timeZoneIdentifier != timeZoneIdentifier
+    else { return }
     lastTriggeredBoundary = nil
   }
 
-  private func scheduleBoundaryRefresh(after history: ResetHistory) {
+  private func cancelBoundaryWait() {
     boundaryTask?.cancel()
     boundaryTask = nil
+    boundaryTimeZoneIdentifier = nil
+  }
+
+  private func scheduleBoundaryRefresh(after history: ResetHistory) {
+    let changesTimeZone =
+      boundaryTimeZoneIdentifier.map { $0 != history.timeZone } ?? false
+    cancelBoundaryWait()
+    if changesTimeZone {
+      lastTriggeredBoundary = nil
+    }
     guard
       isDashboardActive,
       let timeZone = TimeZone(identifier: history.timeZone),
@@ -355,6 +372,7 @@ final class ResetHistoryStore: ObservableObject {
 
   private func scheduleBoundaryWait(until boundary: Date, timeZone: TimeZone) {
     let waitUntil = waitUntil
+    boundaryTimeZoneIdentifier = timeZone.identifier
     boundaryTask = Task { [weak self] in
       do {
         try await waitUntil(boundary)
@@ -371,8 +389,16 @@ final class ResetHistoryStore: ObservableObject {
   private func scheduleFutureBoundaryRefresh(timeZoneIdentifier: String) {
     guard
       isDashboardActive,
-      boundaryTask == nil,
-      let timeZone = TimeZone(identifier: timeZoneIdentifier),
+      let timeZone = TimeZone(identifier: timeZoneIdentifier)
+    else { return }
+    if boundaryTask != nil {
+      guard boundaryTimeZoneIdentifier != timeZoneIdentifier else { return }
+      cancelBoundaryWait()
+      lastTriggeredBoundary = nil
+    } else {
+      boundaryTimeZoneIdentifier = nil
+    }
+    guard
       let boundary = ResetHistoryRefreshSchedule.nextBoundary(
         after: now(),
         timeZone: timeZone
@@ -382,8 +408,9 @@ final class ResetHistoryStore: ObservableObject {
   }
 
   private func refreshAtBoundary(_ boundary: Date, timeZone: TimeZone) {
-    guard isDashboardActive else { return }
     boundaryTask = nil
+    boundaryTimeZoneIdentifier = nil
+    guard isDashboardActive else { return }
     lastTriggeredBoundary = boundary
     if activeQuery != nil {
       pendingFreshness.insert(.boundary)
