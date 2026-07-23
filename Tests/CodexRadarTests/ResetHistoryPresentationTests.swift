@@ -86,8 +86,35 @@ struct ResetHistoryPresentationTests {
   }
 
   @Test
+  func mapsResponseRevisionIndependentlyFromLatestMonth() throws {
+    let firstHistory = try decodeHistory(
+      resetHistoryJSON(generatedAt: "2026-07-19T09:00:00Z")
+    )
+    let secondHistory = try decodeHistory(
+      resetHistoryJSON(generatedAt: "2026-07-19T10:00:00Z")
+    )
+
+    let firstPresentation = ResetHistoryPresentation(
+      history: firstHistory,
+      selectedRange: .sixMonths,
+      locale: Locale(identifier: "en_US")
+    )
+    let secondPresentation = ResetHistoryPresentation(
+      history: secondHistory,
+      selectedRange: .sixMonths,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(firstPresentation.months.last?.id == secondPresentation.months.last?.id)
+    #expect(firstPresentation.responseRevision == firstHistory.generatedAt)
+    #expect(secondPresentation.responseRevision == secondHistory.generatedAt)
+    #expect(firstPresentation.responseRevision != secondPresentation.responseRevision)
+  }
+
+  @Test
   func formatsLabelsAndRecentRowsInResponseTimeZone() throws {
-    let history = try decodeHistory(
+    let resetAt = "2025-12-31T10:30:00Z"
+    let kiritimatiHistory = try decodeHistory(
       resetHistoryJSON(
         range: "all",
         startYear: 2025,
@@ -96,21 +123,46 @@ struct ResetHistoryPresentationTests {
         timeZoneIdentifier: "Pacific/Kiritimati",
         generatedAt: "2026-01-01T00:00:00Z",
         recent: """
-          {"id":"reset-1","reset_at":"2025-12-31T10:30:00Z"}
+          {"id":"reset-1","reset_at":"\(resetAt)"}
+          """
+      )
+    )
+    let losAngelesHistory = try decodeHistory(
+      resetHistoryJSON(
+        range: "all",
+        startYear: 2025,
+        startMonth: 12,
+        monthCount: 1,
+        timeZoneIdentifier: "America/Los_Angeles",
+        generatedAt: "2026-01-01T00:00:00Z",
+        recent: """
+          {"id":"reset-1","reset_at":"\(resetAt)"}
           """
       )
     )
 
-    let presentation = ResetHistoryPresentation(
-      history: history,
+    let kiritimatiPresentation = ResetHistoryPresentation(
+      history: kiritimatiHistory,
+      selectedRange: .all,
+      locale: Locale(identifier: "en_US")
+    )
+    let losAngelesPresentation = ResetHistoryPresentation(
+      history: losAngelesHistory,
       selectedRange: .all,
       locale: Locale(identifier: "en_US")
     )
 
-    #expect(TimeZone.current.identifier != history.timeZone)
-    #expect(presentation.months.map(\.label) == ["Dec 25", "Jan 26"])
-    #expect(presentation.rangeDescription == "Dec 2025 – Jan 2026")
-    #expect(presentation.recent.first?.dateTime == "Jan 1, 2026 at 12:30\u{202F}AM")
+    #expect(kiritimatiHistory.recent.first?.resetAt == losAngelesHistory.recent.first?.resetAt)
+    #expect(kiritimatiPresentation.months.map(\.label) == ["Dec 25", "Jan 26"])
+    #expect(losAngelesPresentation.months.map(\.label) == ["Dec 25"])
+    #expect(kiritimatiPresentation.rangeDescription == "Dec 2025 – Jan 2026")
+    #expect(losAngelesPresentation.rangeDescription == "Dec 2025 – Dec 2025")
+    #expect(
+      kiritimatiPresentation.recent.first?.dateTime == "Jan 1, 2026 at 12:30\u{202F}AM"
+    )
+    #expect(
+      losAngelesPresentation.recent.first?.dateTime == "Dec 31, 2025 at 2:30\u{202F}AM"
+    )
   }
 }
 

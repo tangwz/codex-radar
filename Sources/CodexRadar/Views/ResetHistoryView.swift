@@ -91,7 +91,9 @@ struct ResetHistoryView: View {
           )
         ) {
           ForEach(ResetHistoryRange.allCases) { range in
-            Text(rangeLabel(range)).tag(range)
+            Text(rangeLabel(range))
+              .accessibilityLabel(Text(rangeAccessibilityLabel(range)))
+              .tag(range)
           }
         }
         .pickerStyle(.segmented)
@@ -121,7 +123,7 @@ struct ResetHistoryView: View {
           .onAppear {
             scrollToLatestMonth(in: presentation, with: scrollProxy)
           }
-          .onChange(of: presentation.months.last?.id) {
+          .onChange(of: presentation.responseRevision) {
             scrollToLatestMonth(in: presentation, with: scrollProxy)
           }
         }
@@ -155,7 +157,10 @@ struct ResetHistoryView: View {
     with proxy: ScrollViewProxy
   ) {
     guard let latestMonthID = presentation.months.last?.id else { return }
-    proxy.scrollTo(latestMonthID, anchor: .trailing)
+    Task { @MainActor in
+      await Task.yield()
+      proxy.scrollTo(latestMonthID, anchor: .trailing)
+    }
   }
 
   private func rangeLabel(_ range: ResetHistoryRange) -> LocalizedStringKey {
@@ -164,6 +169,15 @@ struct ResetHistoryView: View {
     case .sixMonths: "6M"
     case .twelveMonths: "12M"
     case .all: "All"
+    }
+  }
+
+  private func rangeAccessibilityLabel(_ range: ResetHistoryRange) -> LocalizedStringKey {
+    switch range {
+    case .threeMonths: "3 months"
+    case .sixMonths: "6 months"
+    case .twelveMonths: "12 months"
+    case .all: "All months"
     }
   }
 
