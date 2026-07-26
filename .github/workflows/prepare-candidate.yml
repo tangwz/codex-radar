@@ -43,6 +43,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Swift Testing 124.4 can crash when AppKit-facing and core suites share a process.
           appkit_test_suites='MenuActionLayoutTests|MenuBarControllerTests|MenuBarPanelActionsTests|SettingsWindowBridgeTests'
           swift test --no-parallel --filter "$appkit_test_suites"
           swift test --no-parallel --skip "$appkit_test_suites"
