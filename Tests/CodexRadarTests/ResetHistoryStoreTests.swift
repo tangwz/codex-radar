@@ -1433,11 +1433,12 @@ private func eventually(
   _ message: String,
   condition: () async -> Bool
 ) async {
-  for _ in 0..<1_000 {
+  let deadline = ContinuousClock.now + .seconds(2)
+  while ContinuousClock.now < deadline {
     if await condition() {
       return
     }
-    await Task.yield()
+    try? await Task.sleep(for: .milliseconds(1))
   }
   Issue.record(Comment(rawValue: message))
 }
