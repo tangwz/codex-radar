@@ -376,10 +376,10 @@ private struct MenuResetPredictionCard: View {
     )
 
     Text(text)
-    .font(.caption.weight(.medium))
-    .foregroundStyle(secondaryText)
-    .accessibilityLabel(Text("Last reset"))
-    .accessibilityValue(Text(text))
+      .font(.caption.weight(.medium))
+      .foregroundStyle(secondaryText)
+      .accessibilityLabel(Text("Last reset"))
+      .accessibilityValue(Text(text))
   }
 
   private var emptyStateTitleKey: String {

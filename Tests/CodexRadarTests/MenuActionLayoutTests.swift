@@ -69,11 +69,22 @@ struct MenuActionLayoutTests {
     )
 
     let store = makeStore()
-    let menuBarView = MenuBarView(store: store, actions: actions)
-    let rootView = MenuBarPanelRootView(store: store, actions: actions)
+    let historyStore = ResetHistoryStore()
+    let menuBarView = MenuBarView(
+      store: store,
+      historyStore: historyStore,
+      actions: actions
+    )
+    let rootView = MenuBarPanelRootView(
+      store: store,
+      historyStore: historyStore,
+      actions: actions
+    )
 
     #expect(menuBarView.store === store)
+    #expect(menuBarView.historyStore === historyStore)
     #expect(rootView.store === store)
+    #expect(rootView.historyStore === historyStore)
   }
 }
 
