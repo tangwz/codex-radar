@@ -43,7 +43,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift test --no-parallel
+          swift test --no-parallel --filter MenuBarControllerTests
+          swift test --no-parallel --skip MenuBarControllerTests
           bash Tests/ScriptTests/release_common_tests.sh
           bash Tests/ScriptTests/package_verification_tests.sh
           bash Tests/ScriptTests/update_feed_tests.sh
