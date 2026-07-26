@@ -43,8 +43,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift test --no-parallel --filter MenuBarControllerTests
-          swift test --no-parallel --skip MenuBarControllerTests
+          appkit_test_suites='MenuActionLayoutTests|MenuBarControllerTests|MenuBarPanelActionsTests|SettingsWindowBridgeTests'
+          swift test --no-parallel --filter "$appkit_test_suites"
+          swift test --no-parallel --skip "$appkit_test_suites"
           bash Tests/ScriptTests/release_common_tests.sh
           bash Tests/ScriptTests/package_verification_tests.sh
           bash Tests/ScriptTests/update_feed_tests.sh
