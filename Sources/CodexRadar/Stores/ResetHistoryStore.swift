@@ -115,11 +115,18 @@ final class ResetHistoryStore: ObservableObject {
   func refresh(timeZone: TimeZone) {
     guard isDashboardActive else { return }
     let query: Query
-    if let activeQuery,
-      activeQuery.timeZoneIdentifier == timeZone.identifier,
-      activeQuery.fetchRange.covers(activeQuery.targetRange)
-    {
-      query = activeQuery
+    if let activeQuery {
+      if activeQuery.timeZoneIdentifier == timeZone.identifier,
+        activeQuery.fetchRange.covers(activeQuery.targetRange)
+      {
+        query = activeQuery
+      } else {
+        query = Query(
+          timeZoneIdentifier: timeZone.identifier,
+          fetchRange: activeQuery.targetRange.requestedRange,
+          targetRange: activeQuery.targetRange
+        )
+      }
     } else {
       query = Query(
         timeZoneIdentifier: timeZone.identifier,

@@ -148,6 +148,64 @@ struct ResetHistoryDecodingTests {
     )
   }
 
+  @Test
+  func rejectsCurrentAggregatesBelowMatchingRecentCount() {
+    let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+    let current = resetHistoryCurrentIntervals(
+      generatedAt: generatedAt,
+      timeZoneIdentifier: "Asia/Shanghai"
+    )
+    let week = resetHistoryJSON().replacingOccurrences(
+      of:
+        "\"week\":{\"from\":\"\(current.weekFrom)\",\"to\":\"\(current.weekTo)\",\"count\":2}",
+      with:
+        "\"week\":{\"from\":\"\(current.weekFrom)\",\"to\":\"\(current.weekTo)\",\"count\":1}"
+    )
+    let currentMonthSummary = resetHistoryMonthSummaryJSON(
+      year: 2026,
+      month: 7,
+      timeZoneIdentifier: "Asia/Shanghai"
+    )
+    let insufficientMonthSummary = resetHistoryMonthSummaryJSON(
+      year: 2026,
+      month: 7,
+      timeZoneIdentifier: "Asia/Shanghai",
+      count: 1
+    )
+    let month = resetHistoryJSON(currentMonthCount: 1).replacingOccurrences(
+      of: currentMonthSummary,
+      with: insufficientMonthSummary
+    )
+
+    expectDecodingFailure(week)
+    expectDecodingFailure(month)
+  }
+
+  @Test
+  func rejectsMonthSummaryBelowMatchingRecentCount() {
+    let recent = """
+      {"id":"reset-2","reset_at":"2026-02-10T08:00:00Z"},
+      {"id":"reset-1","reset_at":"2026-02-09T08:00:00Z"}
+      """
+    let february = resetHistoryMonthSummaryJSON(
+      year: 2026,
+      month: 2,
+      timeZoneIdentifier: "Asia/Shanghai"
+    )
+    let insufficientFebruary = resetHistoryMonthSummaryJSON(
+      year: 2026,
+      month: 2,
+      timeZoneIdentifier: "Asia/Shanghai",
+      count: 1
+    )
+    let json = resetHistoryJSON(recent: recent).replacingOccurrences(
+      of: february,
+      with: insufficientFebruary
+    )
+
+    expectDecodingFailure(json)
+  }
+
   @Test(arguments: [
     resetHistoryJSON(timeZoneIdentifier: "Invalid/Zone"),
     resetHistoryJSON().replacingOccurrences(of: "\"count\":2", with: "\"count\":-1"),

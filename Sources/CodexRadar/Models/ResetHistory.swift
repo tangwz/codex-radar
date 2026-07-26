@@ -176,6 +176,31 @@ struct ResetHistory: Decodable, Equatable, Sendable {
         description: "Recent reset events must use stable descending order."
       )
     }
+    guard
+      current.week.count >= recentCount(from: current.week.from, to: current.week.to),
+      current.month.count >= recentCount(from: current.month.from, to: current.month.to)
+    else {
+      throw invalidValue(
+        forKey: .current,
+        in: container,
+        description: "Current counts cannot be lower than matching recent reset events."
+      )
+    }
+    guard months.allSatisfy({
+      $0.count >= recentCount(from: $0.from, to: $0.to)
+    }) else {
+      throw invalidValue(
+        forKey: .months,
+        in: container,
+        description: "Month counts cannot be lower than matching recent reset events."
+      )
+    }
+  }
+
+  private func recentCount(from: Date, to: Date) -> Int {
+    recent.count { event in
+      event.resetAt >= from && event.resetAt < to
+    }
   }
 
   private func monthComponents(from identifier: String) -> DateComponents? {

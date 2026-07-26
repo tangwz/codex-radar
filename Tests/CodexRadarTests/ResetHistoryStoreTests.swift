@@ -345,6 +345,39 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func timeZoneChangePreservesInFlightExpansionTarget() async {
+    let context = makeContext()
+    let utc = TimeZone(identifier: "UTC")!
+    await loadInitialHistory(context)
+
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+
+    context.store.refresh(timeZone: utc)
+    await expectCallCount(3, fetcher: context.fetcher)
+
+    #expect(context.store.pendingRange == .twelveMonths)
+    #expect(
+      await context.fetcher.requests.last
+        == HistoryRequest(timeZoneIdentifier: utc.identifier, range: .twelveMonths)
+    )
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .twelveMonths)))
+    await settle()
+    #expect(context.store.history?.timeZone == context.zone.identifier)
+    #expect(context.store.pendingRange == .twelveMonths)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .twelveMonths, timeZone: utc.identifier)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.selectedRange == .twelveMonths)
+    #expect(context.store.history?.timeZone == utc.identifier)
+  }
+
+  @MainActor
+  @Test
   func failedTimeZoneRequestSchedulesFutureBoundaryInRequestedTimeZone() async throws {
     let now = Date(timeIntervalSince1970: 1_700_000_000)
     let context = makeContext(now: { now })
