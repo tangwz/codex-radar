@@ -22,11 +22,36 @@ struct MenuRefreshAction {
   }
 }
 
+struct MenuBarPanelRootView: View {
+  @ObservedObject var store: DashboardStore
+  let historyStore: ResetHistoryStore
+  let actions: MenuBarPanelActions
+  @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
+  @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
+
+  private var selectedLocale: Locale {
+    AppLanguage(rawValue: language)?.locale ?? .current
+  }
+
+  private var preferredColorScheme: ColorScheme? {
+    AppAppearance.resolve(appearance).colorScheme
+  }
+
+  var body: some View {
+    MenuBarView(
+      store: store,
+      historyStore: historyStore,
+      actions: actions
+    )
+    .environment(\.locale, selectedLocale)
+    .preferredColorScheme(preferredColorScheme)
+  }
+}
+
 struct MenuBarView: View {
   @ObservedObject var store: DashboardStore
   let historyStore: ResetHistoryStore
-  @ObservedObject var settingsSelection: SettingsSelection
-  @Environment(\.openSettings) private var openSettings
+  let actions: MenuBarPanelActions
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.timeZone) private var timeZone
 
@@ -59,7 +84,8 @@ struct MenuBarView: View {
         forecast: store.forecast,
         isRefreshing: store.isRefreshing,
         isInitialForecastLoad: store.isInitialForecastLoad,
-        theme: theme
+        theme: theme,
+        openSource: actions.openSource
       )
 
       HStack(spacing: 10) {
@@ -122,7 +148,7 @@ struct MenuBarView: View {
 
     case .dashboard:
       Button {
-        showSettings(.dashboard)
+        actions.openSettings(.dashboard)
       } label: {
         MenuActionRow(
           title: "Dashboard",
@@ -136,7 +162,7 @@ struct MenuBarView: View {
 
     case .settings:
       Button {
-        showSettings(.settings)
+        actions.openSettings(.settings)
       } label: {
         MenuActionRow(
           title: "Settings",
@@ -150,7 +176,7 @@ struct MenuBarView: View {
 
     case .about:
       Button {
-        showSettings(.about)
+        actions.openSettings(.about)
       } label: {
         MenuActionRow(
           title: "About",
@@ -162,19 +188,13 @@ struct MenuBarView: View {
 
     case .quit:
       Button {
-        NSApplication.shared.terminate(nil)
+        actions.quit()
       } label: {
         MenuActionRow(title: "Quit", systemImage: "power", shortcut: "⌘Q", theme: theme)
       }
       .buttonStyle(.plain)
       .keyboardShortcut("q", modifiers: .command)
     }
-  }
-
-  private func showSettings(_ pane: SettingsPane) {
-    settingsSelection.show(pane)
-    openSettings()
-    NSApp.activate(ignoringOtherApps: true)
   }
 }
 
@@ -183,6 +203,7 @@ private struct MenuResetPredictionCard: View {
   let isRefreshing: Bool
   let isInitialForecastLoad: Bool
   let theme: MenuBarTheme
+  let openSource: (URL) -> Void
   @Environment(\.locale) private var locale
 
   private var presentation: ResetForecastPresentation {
@@ -263,7 +284,9 @@ private struct MenuResetPredictionCard: View {
       recentResetContent
 
       if let sourceURL = presentation.sourceURL {
-        Link(destination: sourceURL) {
+        Button {
+          openSource(sourceURL)
+        } label: {
           PredictionSourceChip(theme: theme)
         }
         .buttonStyle(.plain)
@@ -499,35 +522,6 @@ enum MenuBarIconConfiguration {
     image.size = NSSize(width: sideLength, height: sideLength)
     return image
   }()
-}
-
-struct MenuBarLabel: View {
-  let hasResetAlert: Bool
-
-  var body: some View {
-    ZStack(alignment: .topTrailing) {
-      Image(nsImage: MenuBarIconConfiguration.image)
-        .resizable()
-        .renderingMode(.original)
-        .interpolation(.high)
-        .scaledToFit()
-        .padding(MenuBarIconConfiguration.contentInset)
-        .frame(
-          width: MenuBarIconConfiguration.sideLength,
-          height: MenuBarIconConfiguration.sideLength
-        )
-      if hasResetAlert {
-        Circle()
-          .fill(.red)
-          .frame(width: 6, height: 6)
-          .offset(x: 2, y: -2)
-      }
-    }
-    .accessibilityLabel(
-      hasResetAlert
-        ? LocalizedStringKey("Codex reset incoming")
-        : LocalizedStringKey("Codex reset monitoring"))
-  }
 }
 
 private struct MenuMetric: View {

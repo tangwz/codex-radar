@@ -54,4 +54,39 @@ struct MenuActionLayoutTests {
   func reusesTheMenuBarIconImageInstance() {
     #expect(MenuBarIconConfiguration.image === MenuBarIconConfiguration.image)
   }
+
+  @Test
+  @MainActor
+  func constructsTheMenuBarViewWithInjectedPanelActions() {
+    let actions = MenuBarPanelActions(
+      dismissPanel: {},
+      openURL: { _ in true },
+      selectSettingsPane: { _ in },
+      activateApplication: {},
+      openSettingsWindow: { true },
+      terminateApplication: {},
+      reportFailure: { _ in }
+    )
+
+    let store = makeStore()
+    let menuBarView = MenuBarView(store: store, actions: actions)
+    let rootView = MenuBarPanelRootView(store: store, actions: actions)
+
+    #expect(menuBarView.store === store)
+    #expect(rootView.store === store)
+  }
+}
+
+@MainActor
+private func makeStore() -> DashboardStore {
+  DashboardStore(
+    scanSessions: { [] },
+    fetchForecast: { _ in .notModified },
+    prepareNotifications: {},
+    observeForecast: { _ in },
+    formatForecastIssue: { $0 ?? "" },
+    pollingSchedule: ResetPollingSchedule(jitter: { 0 }),
+    sleep: { _ in },
+    observesWakeEvents: false
+  )
 }
