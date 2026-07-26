@@ -50,12 +50,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     let makeStatusItem: @MainActor () -> NSStatusItem
     let removeStatusItem: @MainActor (NSStatusItem) -> Void
     let makePopover: @MainActor () -> NSPopover
+    let activateApplication: @MainActor () -> Void
     let localizedString: @MainActor (String) -> String
 
     init(
       makeStatusItem: @escaping @MainActor () -> NSStatusItem,
       removeStatusItem: @escaping @MainActor (NSStatusItem) -> Void,
       makePopover: @escaping @MainActor () -> NSPopover,
+      activateApplication: @escaping @MainActor () -> Void,
       localizedString: @escaping @MainActor (String) -> String = {
         AppLocalization.string($0)
       }
@@ -63,6 +65,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
       self.makeStatusItem = makeStatusItem
       self.removeStatusItem = removeStatusItem
       self.makePopover = makePopover
+      self.activateApplication = activateApplication
       self.localizedString = localizedString
     }
 
@@ -75,6 +78,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
       },
       makePopover: {
         NSPopover()
+      },
+      activateApplication: {
+        NSApp.activate(ignoringOtherApps: true)
       },
       localizedString: {
         AppLocalization.string($0)
@@ -144,7 +150,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     switch MenuBarPanelCommand.resolve(isShown: popover.isShown) {
     case .show:
-      NSApp.activate(ignoringOtherApps: true)
+      dependencies.activateApplication()
       popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
       button.highlight(true)
     case .dismiss:

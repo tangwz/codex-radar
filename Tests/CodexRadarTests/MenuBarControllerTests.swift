@@ -14,6 +14,35 @@ struct MenuBarControllerTests {
   }
 
   @Test
+  func activatesApplicationBeforeShowingPanel() throws {
+    var events: [String] = []
+    let popover = TestPopover(
+      onShow: {
+        events.append("showPopover")
+      }
+    )
+    let controller = MenuBarController(
+      store: makeStore(),
+      rootView: AnyView(EmptyView()),
+      dependencies: MenuBarController.Dependencies(
+        makeStatusItem: TestStatusItem.init,
+        removeStatusItem: { _ in },
+        makePopover: { popover },
+        activateApplication: {
+          events.append("activateApplication")
+        }
+      )
+    )
+    defer { controller.uninstall() }
+    controller.install()
+
+    controller.togglePanel()
+
+    #expect(events == ["activateApplication", "showPopover"])
+    #expect(popover.isShown)
+  }
+
+  @Test
   func rendersStableNormalAndAlertStatusImages() throws {
     let normal = MenuBarStatusIconRenderer.image(hasResetAlert: false)
     let alert = MenuBarStatusIconRenderer.image(hasResetAlert: true)
@@ -27,19 +56,18 @@ struct MenuBarControllerTests {
 
   @Test
   func installsOnlyOnceAndRemovesOnlyOnce() throws {
-    _ = NSApplication.shared
     var created = 0
     var removed = 0
     let dependencies = MenuBarController.Dependencies(
       makeStatusItem: {
         created += 1
-        return NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        return TestStatusItem()
       },
-      removeStatusItem: {
+      removeStatusItem: { _ in
         removed += 1
-        NSStatusBar.system.removeStatusItem($0)
       },
-      makePopover: NSPopover.init
+      makePopover: NSPopover.init,
+      activateApplication: {}
     )
     let controller = MenuBarController(
       store: makeStore(),
@@ -69,14 +97,14 @@ struct MenuBarControllerTests {
 
   @Test
   func installsWithLocalizedAccessibilityLabel() throws {
-    _ = NSApplication.shared
     let defaults = UserDefaults.standard
     let previousLanguage = defaults.object(forKey: AppLanguage.defaultsKey)
     defer { restoreLanguage(previousLanguage) }
     defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.defaultsKey)
     let controller = MenuBarController(
       store: makeStore(),
-      rootView: AnyView(EmptyView())
+      rootView: AnyView(EmptyView()),
+      dependencies: makeDependencies()
     )
     defer { controller.uninstall() }
 
@@ -88,7 +116,6 @@ struct MenuBarControllerTests {
 
   @Test
   func togglesPopoverAndSynchronizesButtonHighlight() throws {
-    _ = NSApplication.shared
     let popover = TestPopover()
     let controller = makeController(popover: popover)
     defer { controller.uninstall() }
@@ -110,7 +137,6 @@ struct MenuBarControllerTests {
 
   @Test
   func dismissesOrClearsHighlightFromCurrentPopoverVisibility() throws {
-    _ = NSApplication.shared
     let popover = TestPopover()
     let controller = makeController(popover: popover)
     defer { controller.uninstall() }
@@ -132,7 +158,6 @@ struct MenuBarControllerTests {
 
   @Test
   func keepsHighlightWhenDelayedCloseArrivesAfterReopen() throws {
-    _ = NSApplication.shared
     let popover = TestPopover(deliversCloseNotification: false)
     let controller = makeController(popover: popover)
     defer { controller.uninstall() }
@@ -152,7 +177,6 @@ struct MenuBarControllerTests {
 
   @Test
   func ignoresCloseNotificationFromDifferentPopover() throws {
-    _ = NSApplication.shared
     let popover = TestPopover()
     let controller = makeController(popover: popover)
     defer { controller.uninstall() }
@@ -170,7 +194,6 @@ struct MenuBarControllerTests {
 
   @Test
   func updatesStatusPresentationWhenForecastChanges() async throws {
-    _ = NSApplication.shared
     let forecast = resetAlertForecast()
     let store = DashboardStore(
       scanSessions: { [] },
@@ -184,7 +207,8 @@ struct MenuBarControllerTests {
     )
     let controller = MenuBarController(
       store: store,
-      rootView: AnyView(EmptyView())
+      rootView: AnyView(EmptyView()),
+      dependencies: makeDependencies()
     )
     defer { controller.uninstall() }
     controller.install()
@@ -202,16 +226,12 @@ struct MenuBarControllerTests {
 
   @Test
   func updatesAccessibilityLabelWhenDefaultsChange() async throws {
-    _ = NSApplication.shared
     let labels = MutableLocalizedString(value: "Monitoring label")
     let dependencies = MenuBarController.Dependencies(
-      makeStatusItem: {
-        NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-      },
-      removeStatusItem: {
-        NSStatusBar.system.removeStatusItem($0)
-      },
+      makeStatusItem: TestStatusItem.init,
+      removeStatusItem: { _ in },
       makePopover: NSPopover.init,
+      activateApplication: {},
       localizedString: { _ in labels.value }
     )
     let controller = MenuBarController(
@@ -256,15 +276,19 @@ private func makeController(popover: NSPopover) -> MenuBarController {
   MenuBarController(
     store: makeStore(),
     rootView: AnyView(EmptyView()),
-    dependencies: MenuBarController.Dependencies(
-      makeStatusItem: {
-        NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-      },
-      removeStatusItem: {
-        NSStatusBar.system.removeStatusItem($0)
-      },
-      makePopover: { popover }
-    )
+    dependencies: makeDependencies(popover: popover)
+  )
+}
+
+@MainActor
+private func makeDependencies(
+  popover: NSPopover = NSPopover()
+) -> MenuBarController.Dependencies {
+  MenuBarController.Dependencies(
+    makeStatusItem: TestStatusItem.init,
+    removeStatusItem: { _ in },
+    makePopover: { popover },
+    activateApplication: {}
   )
 }
 
@@ -306,11 +330,16 @@ private func resetAlertForecast() -> ResetForecast {
 private final class TestPopover: NSPopover {
   private var testIsShown = false
   private let deliversCloseNotification: Bool
+  private let onShow: @MainActor () -> Void
   private(set) var showCount = 0
   private(set) var closeCount = 0
 
-  init(deliversCloseNotification: Bool = true) {
+  init(
+    deliversCloseNotification: Bool = true,
+    onShow: @escaping @MainActor () -> Void = {}
+  ) {
     self.deliversCloseNotification = deliversCloseNotification
+    self.onShow = onShow
     super.init()
   }
 
@@ -327,6 +356,7 @@ private final class TestPopover: NSPopover {
     of positioningView: NSView,
     preferredEdge: NSRectEdge
   ) {
+    onShow()
     testIsShown = true
     showCount += 1
   }
@@ -349,5 +379,14 @@ private final class MutableLocalizedString {
 
   init(value: String) {
     self.value = value
+  }
+}
+
+@MainActor
+private final class TestStatusItem: NSStatusItem {
+  private let testButton = NSStatusBarButton(frame: .zero)
+
+  override var button: NSStatusBarButton? {
+    testButton
   }
 }
