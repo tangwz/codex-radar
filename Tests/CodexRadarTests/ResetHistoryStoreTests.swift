@@ -51,6 +51,29 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func initialRequestRetargetsCoveredSelectionsWithoutRestarting() async {
+    let context = makeContext()
+
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    context.store.selectRange(.sixMonths, timeZone: context.zone)
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    await settle()
+
+    #expect(await context.fetcher.callCount == 1)
+    #expect(context.store.pendingRange == .threeMonths)
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.selectedRange == .threeMonths)
+    #expect(context.store.history?.range == .sixMonths)
+  }
+
+  @MainActor
+  @Test
   func coveredSelectionsDoNotRequestMoreData() async {
     let context = makeContext()
     await loadInitialHistory(context)

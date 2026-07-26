@@ -182,6 +182,24 @@ final class ResetHistoryStore: ObservableObject {
   }
 
   private func request(_ query: Query, trigger: RequestTrigger) {
+    if trigger == .ordinary,
+      let activeQuery,
+      activeQuery.timeZoneIdentifier == query.timeZoneIdentifier,
+      activeQuery.fetchRange.covers(query.targetRange)
+    {
+      self.activeQuery = Query(
+        timeZoneIdentifier: activeQuery.timeZoneIdentifier,
+        fetchRange: activeQuery.fetchRange,
+        targetRange: query.targetRange
+      )
+      pendingRange =
+        history?.timeZone == query.timeZoneIdentifier
+          && history?.range.covers(query.targetRange) == true
+        ? nil
+        : query.targetRange
+      return
+    }
+
     if activeQuery == query {
       switch trigger {
       case .ordinary:

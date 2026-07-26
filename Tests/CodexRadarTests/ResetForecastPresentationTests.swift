@@ -111,6 +111,47 @@ struct ResetForecastPresentationTests {
   }
 
   @Test
+  func recentResetTextUsesAuthoritativeHistoryStates() {
+    let locale = Locale(identifier: "en_US")
+    let unavailable = ResetForecastPresentation(
+      forecast: presentationForecast(
+        status: .monitoring,
+        action: .none,
+        lastReset: .unavailable
+      )
+    )
+    let empty = ResetForecastPresentation(
+      forecast: presentationForecast(
+        status: .monitoring,
+        action: .none,
+        lastReset: .none
+      )
+    )
+
+    #expect(
+      unavailable.recentResetText(
+        isRefreshing: false,
+        locale: locale,
+        bundle: .module
+      ) == "Reset time unavailable"
+    )
+    #expect(
+      unavailable.recentResetText(
+        isRefreshing: true,
+        locale: locale,
+        bundle: .module
+      ) == "Fetching reset time"
+    )
+    #expect(
+      empty.recentResetText(
+        isRefreshing: false,
+        locale: locale,
+        bundle: .module
+      ) == "No reset history"
+    )
+  }
+
+  @Test
   func missingSourceURLRemainsAbsent() {
     let presentation = ResetForecastPresentation(
       forecast: presentationForecast(status: .monitoring, action: .none)

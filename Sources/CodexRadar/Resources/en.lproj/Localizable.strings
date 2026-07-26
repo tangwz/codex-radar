@@ -14,6 +14,7 @@
 "Fetching reset time" = "Fetching reset time";
 "No reset history" = "No reset history";
 "Reset time unavailable" = "Reset time unavailable";
+"Last reset" = "Last reset";
 "Source unavailable" = "Source unavailable";
 "No reset signal" = "No reset signal";
 "Possible reset signal" = "Possible reset signal";

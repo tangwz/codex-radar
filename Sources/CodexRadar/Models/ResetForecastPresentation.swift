@@ -54,4 +54,21 @@ struct ResetForecastPresentation: Equatable {
   var hasResetAlert: Bool {
     !stale && status == .announced
   }
+
+  func recentResetText(
+    isRefreshing: Bool,
+    locale: Locale,
+    bundle: Bundle = .main
+  ) -> String {
+    switch lastResetDisplay {
+    case .resetAt(let value):
+      DisplayFormatting.absoluteDate(value, locale: locale)
+    case .none:
+      String(localized: "No reset history", bundle: bundle, locale: locale)
+    case .unavailable where isRefreshing:
+      String(localized: "Fetching reset time", bundle: bundle, locale: locale)
+    case .unavailable:
+      String(localized: "Reset time unavailable", bundle: bundle, locale: locale)
+    }
+  }
 }

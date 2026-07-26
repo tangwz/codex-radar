@@ -49,10 +49,24 @@ struct ResetForecastCard: View {
 
       timeContent
 
-      Text(LocalizedStringKey(summaryKey))
+      Text(
+        presentation.recentResetText(
+          isRefreshing: false,
+          locale: locale
+        )
+      )
         .font(.body)
         .foregroundStyle(.secondary)
         .lineLimit(3)
+        .accessibilityLabel(Text("Last reset"))
+        .accessibilityValue(
+          Text(
+            presentation.recentResetText(
+              isRefreshing: false,
+              locale: locale
+            )
+          )
+        )
 
       if let sourceURL = presentation.sourceURL {
         Divider()
@@ -164,13 +178,4 @@ struct ResetForecastCard: View {
     }
   }
 
-  private var summaryKey: String {
-    if presentation.stale { return "The reset source cannot be verified right now." }
-    return switch presentation.status {
-    case .monitoring: "Monitoring for the next reset signal."
-    case .candidate: "Tibo is discussing a possible reset."
-    case .announced: "Tibo has announced a reset."
-    case .completed: "Tibo has confirmed the reset is complete."
-    }
-  }
 }

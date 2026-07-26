@@ -321,20 +321,16 @@ private struct MenuResetPredictionCard: View {
 
   @ViewBuilder
   private var recentResetContent: some View {
-    Group {
-      switch presentation.lastResetDisplay {
-      case .resetAt(let value):
-        Text(DisplayFormatting.absoluteDate(value, locale: locale))
-      case .none:
-        Text("No reset history")
-      case .unavailable where isRefreshing:
-        Text("Fetching reset time")
-      case .unavailable:
-        Text("Reset time unavailable")
-      }
-    }
+    let text = presentation.recentResetText(
+      isRefreshing: isRefreshing,
+      locale: locale
+    )
+
+    Text(text)
     .font(.caption.weight(.medium))
     .foregroundStyle(secondaryText)
+    .accessibilityLabel(Text("Last reset"))
+    .accessibilityValue(Text(text))
   }
 
   private var emptyStateTitleKey: String {

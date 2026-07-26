@@ -129,6 +129,7 @@ struct AppLocalizationTests {
       ("Reset history unavailable", "重置历史暂不可用"),
       ("Retry", "重试"),
       ("Reset history is temporarily unavailable.", "重置历史暂时不可用。"),
+      ("Last reset", "最近一次重置"),
     ]
 
     for (key, simplifiedChinese) in translations {
