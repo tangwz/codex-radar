@@ -131,11 +131,12 @@ func resetHistoryJSON(
     derivedCurrentMonthCount = 0
   }
   let resolvedCurrentMonthCount = currentMonthCount ?? derivedCurrentMonthCount
+  let formatter = ISO8601DateFormatter()
   let resolvedRecent =
     recent.isEmpty
     ? """
-    {"id":"reset-2","reset_at":"2026-07-19T09:21:34Z"},
-    {"id":"reset-1","reset_at":"2026-07-19T08:21:34Z"}
+    {"id":"reset-2","reset_at":"\(formatter.string(from: generatedAtDate.addingTimeInterval(-3_600)))"},
+    {"id":"reset-1","reset_at":"\(formatter.string(from: generatedAtDate.addingTimeInterval(-7_200)))"}
     """
     : recent
 

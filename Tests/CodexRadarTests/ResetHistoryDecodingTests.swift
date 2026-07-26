@@ -137,6 +137,17 @@ struct ResetHistoryDecodingTests {
     expectDecodingFailure(resetHistoryJSON(recent: recent))
   }
 
+  @Test
+  func rejectsRecentEventAfterGeneratedAt() {
+    expectDecodingFailure(
+      resetHistoryJSON(
+        recent: """
+          {"id":"reset-future","reset_at":"2026-07-19T09:00:01Z"}
+          """
+      )
+    )
+  }
+
   @Test(arguments: [
     resetHistoryJSON(timeZoneIdentifier: "Invalid/Zone"),
     resetHistoryJSON().replacingOccurrences(of: "\"count\":2", with: "\"count\":-1"),

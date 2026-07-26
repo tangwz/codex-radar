@@ -156,6 +156,13 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       throw invalidValue(
         forKey: .recent, in: container, description: "Recent reset event IDs must be unique.")
     }
+    guard recent.allSatisfy({ $0.resetAt <= generatedAt }) else {
+      throw invalidValue(
+        forKey: .recent,
+        in: container,
+        description: "Recent reset events cannot be newer than generated_at."
+      )
+    }
     let orderedRecent = recent.sorted { lhs, rhs in
       if lhs.resetAt != rhs.resetAt {
         return lhs.resetAt > rhs.resetAt
