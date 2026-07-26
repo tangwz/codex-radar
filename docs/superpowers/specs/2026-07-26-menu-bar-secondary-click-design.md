@@ -19,7 +19,7 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 
 ### 采用 `NSStatusItem` 与 `NSPopover`
 
-由 AppKit 管理菜单栏入口和鼠标事件，使用一个 transient `NSPopover` 承载现有 SwiftUI `MenuBarView`。左键 target-action 与右键 click recognizer 汇合到同一个 toggle 动作。
+由 AppKit 管理菜单栏入口和鼠标事件，使用一个 transient `NSPopover` 承载现有 SwiftUI `MenuBarView`。status button 通过 `sendAction(on:)` 把左右键 mouse-up 交给同一个 target-action 和 toggle 动作。
 
 该方案能够可靠区分鼠标按键，同时继续把面板内容留在 SwiftUI 中。代价是应用入口从纯 SwiftUI scene 变成小范围 AppKit 与 SwiftUI 混合架构。
 
@@ -53,7 +53,7 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 
 `MenuBarController` 是 AppKit presentation adapter，不是第二个 view model。它只拥有：
 
-- `NSStatusItem`、`NSPopover`、hosting controller 和 gesture recognizer 等 AppKit 对象。
+- `NSStatusItem`、`NSPopover` 和 hosting controller 等 AppKit 对象。
 - status button 的图标与高亮等展示状态。
 - 打开、关闭、锚定和清理面板的生命周期逻辑。
 - 向应用 composition root 提供幂等的面板关闭能力。
@@ -66,7 +66,7 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 
 ## 点击与面板状态
 
-左键由 status button 的标准 target-action 触发。右键由只接受 secondary button 的 `NSClickGestureRecognizer` 触发；macOS 产生的 Control-左键沿 secondary-click 路径处理。两条事件路径不得包含各自的展示逻辑，只调用同一个 `togglePanel()`。
+status button 使用 `sendAction(on: [.leftMouseUp, .rightMouseUp])` 让主键与辅助键抬起触发同一个 target-action selector；macOS 产生的 Control-左键沿 secondary-click 路径处理。controller 只保留这一个 selector，并由它调用 `togglePanel()`，不得为不同按键复制展示逻辑。
 
 `togglePanel()` 只根据 popover 当前状态执行以下动作：
 

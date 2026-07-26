@@ -96,7 +96,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
   private var lastHasResetAlert: Bool?
 
   private(set) var statusItem: NSStatusItem?
-  private(set) var secondaryClickRecognizer: NSClickGestureRecognizer?
 
   init(
     store: DashboardStore,
@@ -132,17 +131,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     button.imagePosition = .imageOnly
     button.target = self
     button.action = #selector(handleStatusItemClick(_:))
-
-    let secondaryClickRecognizer = NSClickGestureRecognizer(
-      target: self,
-      action: #selector(handleStatusItemClick(_:))
-    )
-    secondaryClickRecognizer.buttonMask = 0x2
-    button.addGestureRecognizer(secondaryClickRecognizer)
+    button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
     statusItem = item
     self.popover = popover
-    self.secondaryClickRecognizer = secondaryClickRecognizer
     observePresentationState()
     refreshStatusItem()
   }
@@ -182,11 +174,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     if let button = statusItem?.button {
       button.target = nil
       button.action = nil
-      if let secondaryClickRecognizer {
-        button.removeGestureRecognizer(secondaryClickRecognizer)
-      }
     }
-    secondaryClickRecognizer = nil
 
     if let statusItem {
       dependencies.removeStatusItem(statusItem)

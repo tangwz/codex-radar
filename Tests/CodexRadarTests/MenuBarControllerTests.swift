@@ -52,16 +52,14 @@ struct MenuBarControllerTests {
     controller.install()
 
     let button = try #require(controller.statusItem?.button)
-    let secondaryClickRecognizer = try #require(controller.secondaryClickRecognizer)
+    let expectedActionMask: NSEvent.EventTypeMask = [.leftMouseUp, .rightMouseUp]
+    let installedActionMask = button.sendAction(on: expectedActionMask)
+    button.sendAction(
+      on: NSEvent.EventTypeMask(rawValue: UInt64(installedActionMask))
+    )
     #expect(created == 1)
     #expect(button.target === controller)
-    #expect(secondaryClickRecognizer.buttonMask == 0x2)
-    #expect(button.action == secondaryClickRecognizer.action)
-    #expect(
-      button.gestureRecognizers.contains {
-        $0 === secondaryClickRecognizer
-      }
-    )
+    #expect(installedActionMask == Int(expectedActionMask.rawValue))
 
     controller.uninstall()
     controller.uninstall()

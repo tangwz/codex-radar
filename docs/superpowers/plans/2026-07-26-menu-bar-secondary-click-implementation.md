@@ -738,16 +738,14 @@ struct MenuBarControllerTests {
     controller.install()
 
     let button = try #require(controller.statusItem?.button)
-    let secondaryClickRecognizer = try #require(controller.secondaryClickRecognizer)
+    let expectedActionMask: NSEvent.EventTypeMask = [.leftMouseUp, .rightMouseUp]
+    let installedActionMask = button.sendAction(on: expectedActionMask)
+    button.sendAction(
+      on: NSEvent.EventTypeMask(rawValue: UInt64(installedActionMask))
+    )
     #expect(created == 1)
     #expect(button.target === controller)
-    #expect(secondaryClickRecognizer.buttonMask == 0x2)
-    #expect(button.action == secondaryClickRecognizer.action)
-    #expect(
-      button.gestureRecognizers.contains {
-        $0 === secondaryClickRecognizer
-      }
-    )
+    #expect(installedActionMask == Int(expectedActionMask.rawValue))
 
     controller.uninstall()
     controller.uninstall()
@@ -858,7 +856,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
   private var lastHasResetAlert: Bool?
 
   private(set) var statusItem: NSStatusItem?
-  private(set) var secondaryClickRecognizer: NSClickGestureRecognizer?
 
   init(
     store: DashboardStore,
@@ -894,17 +891,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     button.imagePosition = .imageOnly
     button.target = self
     button.action = #selector(handleStatusItemClick(_:))
-
-    let secondaryClickRecognizer = NSClickGestureRecognizer(
-      target: self,
-      action: #selector(handleStatusItemClick(_:))
-    )
-    secondaryClickRecognizer.buttonMask = 0x2
-    button.addGestureRecognizer(secondaryClickRecognizer)
+    button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
     statusItem = item
     self.popover = popover
-    self.secondaryClickRecognizer = secondaryClickRecognizer
     observePresentationState()
     refreshStatusItem()
   }
@@ -944,11 +934,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     if let button = statusItem?.button {
       button.target = nil
       button.action = nil
-      if let secondaryClickRecognizer {
-        button.removeGestureRecognizer(secondaryClickRecognizer)
-      }
     }
-    secondaryClickRecognizer = nil
 
     if let statusItem {
       dependencies.removeStatusItem(statusItem)
@@ -998,7 +984,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 }
 ```
 
-The status button target-action handles ordinary primary clicks. The secondary recognizer handles both physical right-clicks and macOS Control-left-click translation. Both paths call the same selector, so they cannot accumulate separate presentation behavior.
+The status button uses `sendAction(on: [.leftMouseUp, .rightMouseUp])` so physical primary clicks, physical secondary clicks, and macOS Control-left-click translation all invoke the same target-action selector. The selector is the only presentation event path and calls `togglePanel()`.
 
 - [ ] **Step 5: Format and run the controller tests**
 
