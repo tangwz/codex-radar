@@ -5,7 +5,6 @@ import Testing
 @testable import CodexRadar
 
 @MainActor
-@Suite(.serialized)
 struct MenuBarControllerTests {
   @Test
   func resolvesOneToggleCommandFromPopoverVisibility() {
