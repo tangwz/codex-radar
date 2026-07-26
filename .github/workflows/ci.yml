@@ -68,3 +68,12 @@ jobs:
           bash Tests/ScriptTests/update_feed_tests.sh
           find script -name '*.sh' -print0 | xargs -0 -n1 bash -n
           ./script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false
+
+      - name: Upload test crash diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-crash-diagnostics-${{ github.run_id }}
+          path: ~/Library/Logs/DiagnosticReports
+          if-no-files-found: warn
+          retention-days: 1
