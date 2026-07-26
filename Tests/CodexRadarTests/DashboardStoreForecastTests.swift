@@ -180,6 +180,31 @@ struct DashboardStoreForecastTests {
 
   @MainActor
   @Test
+  func initialForecastLoadEndsAfterLegacyResponse() async {
+    let fetcher = ControlledForecastFetcher()
+    let store = makeStore(fetch: { try await fetcher.fetch(etag: $0) })
+
+    let initialRefresh = Task { await store.refreshForecast() }
+    await expectForecastCallCount(1, fetcher: fetcher)
+
+    #expect(store.isInitialForecastLoad)
+
+    await fetcher.completeNext(
+      with: .success(.updated(storeForecast(signalID: nil), etag: nil)))
+    await initialRefresh.value
+
+    let laterRefresh = Task { await store.refreshForecast() }
+    await expectForecastCallCount(2, fetcher: fetcher)
+
+    #expect(store.isRefreshing)
+    #expect(!store.isInitialForecastLoad)
+
+    await fetcher.completeNext(with: .success(.notModified))
+    await laterRefresh.value
+  }
+
+  @MainActor
+  @Test
   func recoveryDuringInFlightFetchQueuesOneNonConcurrentRefresh() async {
     let fetcher = ControlledForecastFetcher()
     let store = makeStore(fetch: { try await fetcher.fetch(etag: $0) })
@@ -454,6 +479,20 @@ private actor ControlledForecastFetcher {
     guard !continuations.isEmpty else { return }
     continuations.removeFirst().resume(returning: outcome)
   }
+}
+
+private func expectForecastCallCount(
+  _ count: Int,
+  fetcher: ControlledForecastFetcher
+) async {
+  let deadline = ContinuousClock.now + .seconds(2)
+  while ContinuousClock.now < deadline {
+    if await fetcher.callCount >= count {
+      return
+    }
+    try? await Task.sleep(for: .milliseconds(1))
+  }
+  Issue.record("Timed out waiting for forecast request count \(count).")
 }
 
 private actor PollingSleepRecorder {

@@ -11,14 +11,38 @@ enum MenuActionID: String, CaseIterable, Hashable {
   static let applicationActions = MenuActionID.allCases
 }
 
+@MainActor
+struct MenuRefreshAction {
+  let refreshDashboard: () async -> Void
+  let refreshHistory: () -> Void
+
+  func perform() async {
+    refreshHistory()
+    await refreshDashboard()
+  }
+}
+
 struct MenuBarView: View {
   @ObservedObject var store: DashboardStore
+  let historyStore: ResetHistoryStore
   @ObservedObject var settingsSelection: SettingsSelection
   @Environment(\.openSettings) private var openSettings
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.timeZone) private var timeZone
 
   private var theme: MenuBarTheme {
     MenuBarTheme(colorScheme: colorScheme)
+  }
+
+  private var refreshAction: MenuRefreshAction {
+    MenuRefreshAction(
+      refreshDashboard: {
+        await store.refresh()
+      },
+      refreshHistory: {
+        historyStore.refresh(timeZone: timeZone)
+      }
+    )
   }
 
   private var todayTokens: Int {
@@ -34,6 +58,7 @@ struct MenuBarView: View {
       MenuResetPredictionCard(
         forecast: store.forecast,
         isRefreshing: store.isRefreshing,
+        isInitialForecastLoad: store.isInitialForecastLoad,
         theme: theme
       )
 
@@ -81,7 +106,7 @@ struct MenuBarView: View {
     switch action {
     case .refresh:
       Button {
-        Task { await store.refresh() }
+        Task { await refreshAction.perform() }
       } label: {
         MenuActionRow(
           title: "Refresh",
@@ -156,6 +181,7 @@ struct MenuBarView: View {
 private struct MenuResetPredictionCard: View {
   let forecast: ResetForecast
   let isRefreshing: Bool
+  let isInitialForecastLoad: Bool
   let theme: MenuBarTheme
   @Environment(\.locale) private var locale
 
@@ -322,7 +348,7 @@ private struct MenuResetPredictionCard: View {
   @ViewBuilder
   private var recentResetContent: some View {
     let text = presentation.recentResetText(
-      isRefreshing: isRefreshing,
+      isInitialLoad: isInitialForecastLoad,
       locale: locale
     )
 

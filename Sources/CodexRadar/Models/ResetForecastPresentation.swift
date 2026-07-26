@@ -56,7 +56,7 @@ struct ResetForecastPresentation: Equatable {
   }
 
   func recentResetText(
-    isRefreshing: Bool,
+    isInitialLoad: Bool,
     locale: Locale,
     bundle: Bundle = .main
   ) -> String {
@@ -65,7 +65,7 @@ struct ResetForecastPresentation: Equatable {
       DisplayFormatting.absoluteDate(value, locale: locale)
     case .none:
       String(localized: "No reset history", bundle: bundle, locale: locale)
-    case .unavailable where isRefreshing:
+    case .unavailable where isInitialLoad:
       String(localized: "Fetching reset time", bundle: bundle, locale: locale)
     case .unavailable:
       String(localized: "Reset time unavailable", bundle: bundle, locale: locale)

@@ -52,7 +52,11 @@ struct CodexRadarApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      MenuBarView(store: store, settingsSelection: settingsSelection)
+      MenuBarView(
+        store: store,
+        historyStore: historyStore,
+        settingsSelection: settingsSelection
+      )
         .environment(\.locale, selectedLocale)
         .preferredColorScheme(preferredColorScheme)
     } label: {

@@ -4,6 +4,26 @@ import Testing
 @testable import CodexRadar
 
 struct MenuActionLayoutTests {
+  @MainActor
+  @Test
+  func refreshActionInvokesBothDataSources() async {
+    var dashboardRefreshCount = 0
+    var historyRefreshCount = 0
+    let action = MenuRefreshAction(
+      refreshDashboard: {
+        dashboardRefreshCount += 1
+      },
+      refreshHistory: {
+        historyRefreshCount += 1
+      }
+    )
+
+    await action.perform()
+
+    #expect(dashboardRefreshCount == 1)
+    #expect(historyRefreshCount == 1)
+  }
+
   @Test
   func keepsOnlyApplicationActionsInTheMenuList() {
     #expect(MenuActionID.allCases == [.refresh, .dashboard, .settings, .about, .quit])

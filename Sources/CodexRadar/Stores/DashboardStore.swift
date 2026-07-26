@@ -35,6 +35,10 @@ final class DashboardStore: ObservableObject {
   private(set) var forecastETag: String?
   private(set) var consecutiveForecastFailures = 0
 
+  var isInitialForecastLoad: Bool {
+    isRefreshing && lastUpdated == nil
+  }
+
   private let scanSessions: @Sendable () throws -> [TokenUsageEvent]
   private let fetchForecast: @Sendable (String?) async throws -> ResetForecastFetchResult
   private let prepareNotifications: @MainActor @Sendable () async -> Void

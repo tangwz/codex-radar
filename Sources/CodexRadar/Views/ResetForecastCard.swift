@@ -51,7 +51,7 @@ struct ResetForecastCard: View {
 
       Text(
         presentation.recentResetText(
-          isRefreshing: false,
+          isInitialLoad: false,
           locale: locale
         )
       )
@@ -62,7 +62,7 @@ struct ResetForecastCard: View {
         .accessibilityValue(
           Text(
             presentation.recentResetText(
-              isRefreshing: false,
+              isInitialLoad: false,
               locale: locale
             )
           )

@@ -15,6 +15,14 @@ struct AppLocalizationTests {
   }
 
   @Test
+  func localizesNoResetHistoryForSimplifiedChinese() {
+    #expect(
+      AppLocalization.string("No reset history", language: .simplifiedChinese, bundle: .module)
+        == "暂无重置记录"
+    )
+  }
+
+  @Test
   func localizesUpdateControlsInEnglish() {
     #expect(localized("Updates", language: .english) == "Updates")
     #expect(
@@ -43,6 +51,38 @@ struct AppLocalizationTests {
       )
         == "Quit CodexRadar, then move it to /Applications or ~/Applications before checking for updates."
     )
+  }
+
+  @Test
+  func localizesResetStatisticsLabelsForBothLanguages() {
+    let translations = [
+      ("Reset statistics", "重置统计"),
+      ("This week", "本周"),
+      ("Resets by month", "按月重置次数"),
+      ("Time range", "时间范围"),
+      ("All", "全部"),
+      ("3 months", "3 个月"),
+      ("6 months", "6 个月"),
+      ("12 months", "12 个月"),
+      ("All months", "全部月份"),
+      ("About monthly reset statistics", "关于每月重置统计"),
+      ("Months follow natural boundaries in your selected time zone.", "月份按所选时区的自然月边界统计。"),
+      ("Recent resets", "最近重置"),
+      ("Latest 5", "最近 5 条"),
+      ("Loading reset statistics", "正在加载重置统计"),
+      ("Reset history unavailable", "重置历史暂不可用"),
+      ("Retry", "重试"),
+      ("Reset history is temporarily unavailable.", "重置历史暂时不可用。"),
+      ("Last reset", "最近一次重置"),
+    ]
+
+    for (key, simplifiedChinese) in translations {
+      #expect(AppLocalization.string(key, language: .english, bundle: .module) == key)
+      #expect(
+        AppLocalization.string(key, language: .simplifiedChinese, bundle: .module)
+          == simplifiedChinese
+      )
+    }
   }
 
   @Test
@@ -99,45 +139,5 @@ struct AppLocalizationTests {
 
   private func localized(_ key: String, language: AppLanguage) -> String {
     AppLocalization.string(key, language: language, bundle: .module)
-  }
-
-  @Test
-  func localizesNoResetHistoryForSimplifiedChinese() {
-    #expect(
-      AppLocalization.string("No reset history", language: .simplifiedChinese, bundle: .module)
-        == "暂无重置记录"
-    )
-  }
-
-  @Test
-  func localizesResetStatisticsLabelsForBothLanguages() {
-    let translations = [
-      ("Reset statistics", "重置统计"),
-      ("This week", "本周"),
-      ("Resets by month", "按月重置次数"),
-      ("Time range", "时间范围"),
-      ("All", "全部"),
-      ("3 months", "3 个月"),
-      ("6 months", "6 个月"),
-      ("12 months", "12 个月"),
-      ("All months", "全部月份"),
-      ("About monthly reset statistics", "关于每月重置统计"),
-      ("Months follow natural boundaries in your selected time zone.", "月份按所选时区的自然月边界统计。"),
-      ("Recent resets", "最近重置"),
-      ("Latest 5", "最近 5 条"),
-      ("Loading reset statistics", "正在加载重置统计"),
-      ("Reset history unavailable", "重置历史暂不可用"),
-      ("Retry", "重试"),
-      ("Reset history is temporarily unavailable.", "重置历史暂时不可用。"),
-      ("Last reset", "最近一次重置"),
-    ]
-
-    for (key, simplifiedChinese) in translations {
-      #expect(AppLocalization.string(key, language: .english, bundle: .module) == key)
-      #expect(
-        AppLocalization.string(key, language: .simplifiedChinese, bundle: .module)
-          == simplifiedChinese
-      )
-    }
   }
 }

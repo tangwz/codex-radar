@@ -130,21 +130,21 @@ struct ResetForecastPresentationTests {
 
     #expect(
       unavailable.recentResetText(
-        isRefreshing: false,
+        isInitialLoad: false,
         locale: locale,
         bundle: .module
       ) == "Reset time unavailable"
     )
     #expect(
       unavailable.recentResetText(
-        isRefreshing: true,
+        isInitialLoad: true,
         locale: locale,
         bundle: .module
       ) == "Fetching reset time"
     )
     #expect(
       empty.recentResetText(
-        isRefreshing: false,
+        isInitialLoad: false,
         locale: locale,
         bundle: .module
       ) == "No reset history"
