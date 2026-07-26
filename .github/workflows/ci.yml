@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift test
+          swift test --no-parallel
           bash Tests/ScriptTests/release_common_tests.sh
           bash Tests/ScriptTests/package_verification_tests.sh
           bash Tests/ScriptTests/update_feed_tests.sh
