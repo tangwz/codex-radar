@@ -50,6 +50,21 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     let makeStatusItem: @MainActor () -> NSStatusItem
     let removeStatusItem: @MainActor (NSStatusItem) -> Void
     let makePopover: @MainActor () -> NSPopover
+    let localizedString: @MainActor (String) -> String
+
+    init(
+      makeStatusItem: @escaping @MainActor () -> NSStatusItem,
+      removeStatusItem: @escaping @MainActor (NSStatusItem) -> Void,
+      makePopover: @escaping @MainActor () -> NSPopover,
+      localizedString: @escaping @MainActor (String) -> String = {
+        AppLocalization.string($0)
+      }
+    ) {
+      self.makeStatusItem = makeStatusItem
+      self.removeStatusItem = removeStatusItem
+      self.makePopover = makePopover
+      self.localizedString = localizedString
+    }
 
     static let live = Self(
       makeStatusItem: {
@@ -60,6 +75,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
       },
       makePopover: {
         NSPopover()
+      },
+      localizedString: {
+        AppLocalization.string($0)
       }
     )
   }
@@ -178,6 +196,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
   }
 
   func popoverDidClose(_ notification: Notification) {
+    guard notification.object as? NSPopover === popover, popover?.isShown == false else {
+      return
+    }
     statusItem?.button?.highlight(false)
   }
 
@@ -214,6 +235,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
       hasResetAlert
       ? "Codex reset incoming"
       : "Codex reset monitoring"
-    button.setAccessibilityTitle(AppLocalization.string(accessibilityKey))
+    button.setAccessibilityLabel(dependencies.localizedString(accessibilityKey))
   }
 }

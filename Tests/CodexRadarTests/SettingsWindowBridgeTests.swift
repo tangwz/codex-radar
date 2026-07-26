@@ -1,3 +1,4 @@
+import AppKit
 import Testing
 
 @testable import CodexRadar
@@ -48,5 +49,34 @@ struct SettingsWindowBridgeTests {
     )
 
     #expect(!opener.open(preferred: .notification))
+  }
+
+  @Test
+  func keepaliveWindowIsOrderedOutAndExcludedFromAccessibility() {
+    _ = NSApplication.shared
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false
+    )
+    defer { window.close() }
+    let hostedContent = NSView(frame: window.contentView?.bounds ?? .zero)
+    window.contentView = hostedContent
+    window.orderFront(nil)
+    #expect(window.isVisible)
+    let configurator = KeepaliveWindowConfiguratorView()
+
+    hostedContent.addSubview(configurator)
+
+    #expect(!window.isVisible)
+    #expect(window.contentView === hostedContent)
+    #expect(configurator.window === window)
+    #expect(!window.isAccessibilityElement())
+    #expect(window.isAccessibilityHidden())
+    #expect(!hostedContent.isAccessibilityElement())
+    #expect(hostedContent.isAccessibilityHidden())
+    #expect(!configurator.isAccessibilityElement())
+    #expect(configurator.isAccessibilityHidden())
   }
 }

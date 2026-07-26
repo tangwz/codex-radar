@@ -94,7 +94,14 @@ final class KeepaliveWindowConfiguratorView: NSView {
     window.hasShadow = false
     window.ignoresMouseEvents = true
     window.canHide = false
+    window.setAccessibilityElement(false)
+    window.setAccessibilityHidden(true)
+    window.contentView?.setAccessibilityElement(false)
+    window.contentView?.setAccessibilityHidden(true)
+    setAccessibilityElement(false)
+    setAccessibilityHidden(true)
     window.setContentSize(NSSize(width: 1, height: 1))
     window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
+    window.orderOut(nil)
   }
 }
