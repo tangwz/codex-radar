@@ -25,7 +25,7 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 
 ### 采用 `NSStatusItem` 与 `NSMenu`
 
-该方案与 CodexBar 类似，由 AppKit 原生菜单接管点击和展开行为，再用 `NSHostingView` 承载复杂内容。它天然适合左右键打开同一菜单，但会把现有 `.window` 风格面板改成菜单跟踪模型，影响视觉、焦点、键盘和交互控件行为。
+该方案与 CodexBar 类似，由 AppKit 原生菜单接管点击和展开行为，再用 `NSHostingView` 承载复杂内容。它天然适合由标准 `NSMenuItem` 组成的命令列表，但会把现有 `.window` 风格面板改成菜单跟踪模型。若继续保留动态卡片、进度动画和交互控件，就必须额外处理 custom menu item 的尺寸测量、tracking run loop、事件转发、刷新协调和 accessibility；menu tracking 期间的动态 resize 也不适合作为普通 SwiftUI layout 使用。
 
 ### 探测 `MenuBarExtra` 的私有视图层级
 
@@ -49,6 +49,21 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 
 `NSPopover` 使用 transient behavior，并锚定在 status button 下方。面板内容继续保持 300pt 固定宽度；不复制 `MenuBarExtra` 的私有窗口实现，只依赖系统 popover 提供的定位、关闭和焦点行为。
 
+## 可维护性边界
+
+`MenuBarController` 是 AppKit presentation adapter，不是第二个 view model。它只拥有：
+
+- `NSStatusItem`、`NSPopover`、hosting controller 和 gesture recognizer 等 AppKit 对象。
+- status button 的图标与高亮等展示状态。
+- 打开、关闭、锚定和清理面板的生命周期逻辑。
+- 向应用 composition root 提供幂等的面板关闭能力。
+
+`DashboardStore` 继续独占 forecast、token events、refresh 状态和 monitoring 生命周期；SwiftUI root view 继续从这些 observable models 直接派生内容。controller 可以观察 `hasResetAlert` 这类只用于 status item 展示的派生结果，但不得复制 forecast、token、refresh 或 action enablement 状态。
+
+语言、外观和 Settings pane 仍由现有 `AppStorage` 与 `SettingsSelection` 持有。SwiftUI root wrapper 读取语言与外观，应用 composition root 更新 pane；controller 不持有这些值的可写副本。popover 的 `isShown` 是面板展示状态的唯一事实来源，不增加镜像 Boolean。
+
+未来增加图表、筛选、账号切换、滚动内容或其他交互控件时，继续放在 SwiftUI 面板内部，不扩大 AppKit bridge。只有当产品明确把 Menu Bar Panel 收缩为完全由标准命令项组成的菜单时，才重新评估 `NSMenu`；不得通过不断增加 custom menu item glue 逐步把 controller 演化成菜单 UI 框架。
+
 ## 点击与面板状态
 
 左键由 status button 的标准 target-action 触发。右键由只接受 secondary button 的 `NSClickGestureRecognizer` 触发；macOS 产生的 Control-左键沿 secondary-click 路径处理。两条事件路径不得包含各自的展示逻辑，只调用同一个 `togglePanel()`。
@@ -58,15 +73,30 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 - `isShown == false`：锚定 status button 展示 popover，并高亮按钮。
 - `isShown == true`：关闭 popover；关闭回调统一清除按钮高亮。
 
+controller 提供幂等的 `dismissPanel()`：无论关闭来自 toggle、外部点击还是离开面板的 action，最终都通过 popover delegate 清除按钮高亮。不得假设 transient behavior 会在打开其他 menu、panel 或 window 时自动关闭。
+
 不增加全局鼠标监听，不用双击执行额外动作，也不维护独立的“期望打开”状态。popover 是展示状态的唯一事实来源，避免事件与 UI 状态漂移。
 
 ## SwiftUI 面板与设置路由
 
 现有 `MenuBarView`、action rows、forecast card 和 token metrics 保持不变。新增一个轻量 root wrapper，读取 `AppLanguage.defaultsKey` 和 `AppAppearance.defaultsKey`，向面板注入 locale 与 preferred color scheme，使已经创建的 popover 仍能实时响应设置变化。
 
-`MenuBarView` 不再直接依赖 scene 提供的 `@Environment(\.openSettings)`，而是接收内部的 `openSettingsPane(SettingsPane)` 动作。该动作先更新共享 `SettingsSelection`，再激活应用并请求 SwiftUI `Settings` scene。
+`MenuBarView` 不再直接依赖 scene 提供的 `@Environment(\.openSettings)`，也不直接调用 `NSWorkspace` 或 `NSApp.terminate`。它接收一个窄的 `MenuBarPanelActions`，只暴露当前面板需要的外部动作：
+
+- `openSource(URL)`
+- `openSettings(SettingsPane)`
+- `quit()`
+
+`MenuBarPanelActions` 在应用 composition root 中组装：dismiss callback 来自 controller，URL、Settings 和 termination 副作用来自现有应用服务。controller 不解释 URL、pane 或业务动作。组合后的动作遵循统一顺序：
+
+- Source URL：先 `dismissPanel()`，再用 `NSWorkspace` 打开 URL。
+- Dashboard、Settings、About：先 `dismissPanel()`，再更新共享 `SettingsSelection`、激活应用并请求 SwiftUI `Settings` scene。
+- Quit：先 `dismissPanel()`，再终止应用。
+- Refresh：继续直接调用现有 `DashboardStore.refresh()`，保持面板打开并展示现有 progress 状态，不进入 `MenuBarPanelActions`。
 
 由于 AppKit 承载的 hosting controller 不处于 `MenuBarExtra` scene 环境中，应用增加最小的 SwiftUI lifecycle bridge 来转发 typed `openSettings` 请求。AppKit `showPreferencesWindow:` action 只作为 bridge 不可用时的兼容回退，不能成为唯一设置入口。失败时记录错误，不回滚已经选择的 pane，也不创建自定义 Settings window。
+
+任何外部路由失败后，popover 都保持关闭；不得为了恢复现场自动重新打开。这样可以避免 transient close 与异步路由结果竞争。
 
 ## 图标与状态更新
 
@@ -78,6 +108,8 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 
 - status button 创建失败时不创建 popover event handler，并记录不可恢复的入口错误。
 - popover 展示前再次确认 status button 存在，避免使用已经释放的 anchor view。
+- `dismissPanel()` 必须可重复调用，并允许 popover delegate 在所有关闭路径下执行同一清理逻辑。
+- Source URL 打开失败时记录错误，popover 保持关闭。
 - Settings bridge 未处理请求时尝试 AppKit fallback；两条路径都失败时记录错误并保持应用运行。
 - controller 的安装必须幂等，避免 SwiftUI scene 更新或重复 lifecycle 回调创建多个菜单栏图标。
 - `DashboardStore.startMonitoring()` 保持现有幂等语义，不引入第二个监控循环。
@@ -100,6 +132,9 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 - 左键、右键和 Control-左键解析为同一个 toggle intent。
 - 面板关闭时 toggle 产生 show command，打开时产生 close command。
 - controller 重复安装不会创建第二个 status item。
+- Source URL、Dashboard、Settings、About 和 Quit 的 action 顺序均为 dismiss 在前、外部副作用在后。
+- Refresh 不调用 dismiss，并在 in-flight 期间继续通过 SwiftUI 状态更新 progress。
+- 外部路由失败后不重新打开 popover。
 - reset alert 状态切换会更新普通与红点图标，逻辑尺寸保持稳定。
 - Settings pane 路由继续更新共享 selection。
 - SwiftPM build 与现有测试全部通过。
@@ -110,6 +145,7 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 - 点击面板外部后自动关闭，再次点击任一路径可正常打开。
 - 验证 status button 的打开高亮和关闭复位。
 - 验证 Refresh、Dashboard、Settings、About、Quit 及现有快捷键。
+- 验证打开 Source URL、Dashboard、Settings 或 About 后原 popover 已关闭，不依赖获得焦点后的隐式关闭。
 - 验证 English、简体中文、Light Mode、Dark Mode 和跟随系统设置。
 - 验证普通图标、reset 红点与 accessibility label。
 - 验证进程中只存在一个 Codex Radar 菜单栏图标。
@@ -121,4 +157,5 @@ Codex Radar 当前使用 SwiftUI `MenuBarExtra` 的 `.window` 样式展示 Menu 
 - 不调整 forecast、通知、token 扫描或更新机制。
 - 不改变 Settings Window 的页面结构与尺寸。
 - 不使用全局事件监听、私有 API 或 SwiftUI 私有视图层级探测。
+- 不在 `MenuBarController` 中复制业务状态或实现 SwiftUI 内容布局。
 - 不保证 `NSPopover` 的系统 chrome 与 `MenuBarExtra` 私有容器逐像素一致。
