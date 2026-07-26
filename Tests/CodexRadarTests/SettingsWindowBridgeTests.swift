@@ -52,7 +52,7 @@ struct SettingsWindowBridgeTests {
   }
 
   @Test
-  func keepaliveWindowIsOrderedOutAndExcludedFromAccessibility() {
+  func keepaliveWindowIsOrderedOutAfterScenePresentationAndExcludedFromAccessibility() async {
     _ = NSApplication.shared
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
@@ -63,11 +63,12 @@ struct SettingsWindowBridgeTests {
     defer { window.close() }
     let hostedContent = NSView(frame: window.contentView?.bounds ?? .zero)
     window.contentView = hostedContent
+    let configurator = KeepaliveWindowConfiguratorView()
+    hostedContent.addSubview(configurator)
+
     window.orderFront(nil)
     #expect(window.isVisible)
-    let configurator = KeepaliveWindowConfiguratorView()
-
-    hostedContent.addSubview(configurator)
+    await advanceMainQueue()
 
     #expect(!window.isVisible)
     #expect(window.contentView === hostedContent)
@@ -78,5 +79,14 @@ struct SettingsWindowBridgeTests {
     #expect(hostedContent.isAccessibilityHidden())
     #expect(!configurator.isAccessibilityElement())
     #expect(configurator.isAccessibilityHidden())
+  }
+}
+
+@MainActor
+private func advanceMainQueue() async {
+  await withCheckedContinuation { continuation in
+    DispatchQueue.main.async {
+      continuation.resume()
+    }
   }
 }

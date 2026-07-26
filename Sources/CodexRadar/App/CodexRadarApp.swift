@@ -53,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     menuBarController = nil
   }
 
+  @MainActor
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    false
+  }
+
   func userNotificationCenter(
     _ center: UNUserNotificationCenter,
     willPresent notification: UNNotification

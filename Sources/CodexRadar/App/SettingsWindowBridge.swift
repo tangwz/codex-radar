@@ -102,6 +102,8 @@ final class KeepaliveWindowConfiguratorView: NSView {
     setAccessibilityHidden(true)
     window.setContentSize(NSSize(width: 1, height: 1))
     window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
-    window.orderOut(nil)
+    DispatchQueue.main.async { [weak window] in
+      window?.orderOut(nil)
+    }
   }
 }
