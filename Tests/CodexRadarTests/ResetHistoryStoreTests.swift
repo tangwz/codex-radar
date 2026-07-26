@@ -213,6 +213,48 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func cachedWiderSelectionReplacesRefreshThatCannotCoverIt() async {
+    let context = makeContext()
+    let cachedAt = Date(timeIntervalSince1970: 1_700_000_100)
+    let narrowAt = Date(timeIntervalSince1970: 1_700_000_200)
+    let refreshedAt = Date(timeIntervalSince1970: 1_700_000_300)
+    await loadInitialHistory(context)
+
+    context.store.selectRange(.all, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(
+      with: .success(history(range: .all, generatedAt: cachedAt)))
+    await expectStoreIdle(context.store)
+
+    context.store.selectRange(.threeMonths, timeZone: context.zone)
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(3, fetcher: context.fetcher)
+    context.store.selectRange(.twelveMonths, timeZone: context.zone)
+    await expectCallCount(4, fetcher: context.fetcher)
+
+    #expect(context.store.selectedRange == .twelveMonths)
+    #expect(context.store.isLoading)
+    #expect(
+      await context.fetcher.requests.map(\.range)
+        == [.sixMonths, .all, .sixMonths, .twelveMonths])
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .sixMonths, generatedAt: narrowAt)))
+    await settle()
+    #expect(context.store.history?.generatedAt == cachedAt)
+    #expect(context.store.isLoading)
+
+    await context.fetcher.completeNext(
+      with: .success(history(range: .twelveMonths, generatedAt: refreshedAt)))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.history?.generatedAt == refreshedAt)
+    #expect(context.store.selectedRange == .twelveMonths)
+    #expect(await context.fetcher.callCount == 4)
+  }
+
+  @MainActor
+  @Test
   func explicitAllRefreshReplacesActiveQueryThatCannotCoverTarget() async throws {
     let context = makeContext()
     let cachedAt = Date(timeIntervalSince1970: 1_700_000_100)
@@ -701,6 +743,7 @@ struct ResetHistoryStoreTests {
 
     #expect(context.store.selectedRange == .all)
     #expect(await context.fetcher.requests.last?.range == .sixMonths)
+    #expect(await context.fetcher.callCount == 3)
 
     await context.fetcher.completeNext(
       with: .success(history(range: .sixMonths, generatedAt: narrowAt)))

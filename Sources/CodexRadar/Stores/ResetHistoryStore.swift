@@ -136,11 +136,24 @@ final class ResetHistoryStore: ObservableObject {
       history?.range.covers(range) == true
     {
       let canceledExpansion = cancelExpansionRequestIfNeeded()
-      retargetOrdinaryRequestIfNeeded(to: range)
+      let replacesInsufficientRefresh =
+        ordinaryRequestCannotCover(range)
+      if !replacesInsufficientRefresh {
+        retargetOrdinaryRequestIfNeeded(to: range)
+      }
       selectedRange = range
       pendingRange = nil
       if canceledExpansion {
         reloadAfterCanceledRequestIfNeeded(timeZone: timeZone)
+      } else if replacesInsufficientRefresh {
+        request(
+          Query(
+            timeZoneIdentifier: timeZone.identifier,
+            fetchRange: range.requestedRange,
+            targetRange: range
+          ),
+          trigger: .ordinary
+        )
       }
       return
     }
@@ -319,6 +332,15 @@ final class ResetHistoryStore: ObservableObject {
       fetchRange: activeQuery.fetchRange,
       targetRange: range
     )
+  }
+
+  private func ordinaryRequestCannotCover(_ range: ResetHistoryRange) -> Bool {
+    guard
+      let activeQuery,
+      carriedFreshness.isEmpty,
+      pendingFreshness.isEmpty
+    else { return false }
+    return !activeQuery.fetchRange.covers(range)
   }
 
   private func cancelBoundaryRefreshIfTimeZoneChanged(to timeZoneIdentifier: String) {
