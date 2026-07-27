@@ -21,7 +21,7 @@ if [[ "$activation_ref" =~ ^release/appcast-(v[0-9]+\.[0-9]+\.[0-9]+)-at-([0-9a-
 elif [[ "$activation_ref" == release/appcast-* ]]; then
   die "invalid activation PR branch"
 else
-  if git -C "$target_dir" diff --name-only "$main_sha...$head_sha" |
+  if git -C "$target_dir" diff --no-renames --name-only "$main_sha...$head_sha" |
     /usr/bin/grep -Fx appcast.xml >/dev/null; then
     die "appcast.xml may only change through a Production Feed activation PR"
   fi
@@ -49,7 +49,7 @@ commit_count="$(git -C "$target_dir" rev-list --count "$main_sha..$head_sha")"
 [[ "$commit_count" == 1 ]] || die "activation PR must contain exactly one commit"
 [[ "$(git -C "$target_dir" rev-parse "$head_sha^")" == "$main_sha" ]] ||
   die "activation PR must be based on the current main commit"
-changed_files="$(git -C "$target_dir" diff --name-only "$main_sha...$head_sha")"
+changed_files="$(git -C "$target_dir" diff --no-renames --name-only "$main_sha...$head_sha")"
 [[ "$changed_files" == appcast.xml ]] ||
   die "activation PR must change only appcast.xml"
 [[ -f "$target_dir/appcast.xml" && ! -L "$target_dir/appcast.xml" ]] ||

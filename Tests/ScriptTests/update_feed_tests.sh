@@ -741,9 +741,18 @@ expect_failure "appcast.xml may only change through a Production Feed activation
     ACTIVATION_TARGET_DIR="$activation_target" \
     "$ACTIVATION_PR_VERIFY_SCRIPT"
 
+git -C "$activation_target" reset --hard origin/main >/dev/null
+git -C "$activation_target" mv appcast.xml archived.xml
+git -C "$activation_target" commit -m "Rename feed outside activation policy" >/dev/null
+expect_failure "appcast.xml may only change through a Production Feed activation PR" \
+  /usr/bin/env \
+    ACTIVATION_REF=feature/renamed-appcast \
+    ACTIVATION_TARGET_DIR="$activation_target" \
+    "$ACTIVATION_PR_VERIFY_SCRIPT"
+
 for required_activation_verifier_text in \
   'rev-list --count' \
-  'diff --name-only' \
+  'diff --no-renames --name-only' \
   'gh release verify "$tag"' \
   'verify_update_artifacts.sh' \
   '--feed "$target_dir/appcast.xml"' \
