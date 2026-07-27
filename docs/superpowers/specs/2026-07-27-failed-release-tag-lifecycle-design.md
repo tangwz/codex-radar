@@ -100,9 +100,12 @@ bootstrap 准备与 Production Feed 激活以状态而不是固定版本判定�
 
 - Production Feed 必须不存在；
 - Candidate 的版本与 build 仍须通过通用格式和一致性校验；
+- Candidate 的 App Version 与 build number 必须分别严格高于所有其他受保护 `v*` tag 所指向提交中的 `version.env`；
 - 签名前 GitHub Release 历史必须为空；
 - 公开后和 CAS 写入前，除当前 Candidate 外不得存在其他 Release；
 - 写入前必须再次确认 Production Feed 仍返回 404。
+
+workflow 在签名前获取全部 `refs/tags/v*` 并校验上述 identity 单调性；bootstrap CAS 激活前重新获取并再次校验，覆盖两个阶段之间出现新 burned tag 的竞态。tag 缺少合法 `version.env` 或 identity 不满足严格递增时均 fail closed。
 
 ## 手册修改
 
@@ -130,6 +133,7 @@ bootstrap 准备与 Production Feed 激活以状态而不是固定版本判定�
 - 强制 refspec `git push origin +:refs/tags/<tag>` 也必须被识别为 tag 删除；
 - Candidate tag push rerun 必须在签名和 Draft Release 创建前失败；
 - 首个 bootstrap tag burned 后，更高版本和 build 的新 tag 在 feed 与 Release 历史均为空时仍可 bootstrap；
+- bootstrap 新 identity 必须在签名前和 CAS 激活前两次与全部其他 `v*` tag identity 比较；
 - 激活阶段继续禁止删除 Release 或 tag；
 - 发布手册必须包含永久保留失败 tag、创建更高版本新 tag 和 Release-only cleanup 的指导。
 
@@ -138,7 +142,7 @@ bootstrap 准备与 Production Feed 激活以状态而不是固定版本判定�
 ```bash
 bash Tests/ScriptTests/update_feed_tests.sh
 bash -n Tests/ScriptTests/update_feed_tests.sh
-ruby -e 'require "yaml"; YAML.safe_load_file(".github/workflows/publish-update.yml", aliases: true)'
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/prepare-candidate.yml"), aliases: true); YAML.safe_load(File.read(".github/workflows/publish-update.yml"), aliases: true)'
 ```
 
 ## 风险与控制

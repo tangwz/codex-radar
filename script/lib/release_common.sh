@@ -33,6 +33,77 @@ validate_release_tag() {
   [[ "$1" == "v$MARKETING_VERSION" ]] || die "tag must equal v$MARKETING_VERSION"
 }
 
+normalize_decimal() {
+  local value="$1"
+
+  while [[ "${#value}" -gt 1 && "$value" == 0* ]]; do
+    value="${value#0}"
+  done
+  printf '%s\n' "$value"
+}
+
+decimal_is_greater() {
+  local left right
+
+  left="$(normalize_decimal "$1")"
+  right="$(normalize_decimal "$2")"
+  if [[ "${#left}" -ne "${#right}" ]]; then
+    [[ "${#left}" -gt "${#right}" ]]
+  else
+    [[ "$left" > "$right" ]]
+  fi
+}
+
+semantic_version_is_greater() {
+  local left="$1" right="$2"
+  local left_major left_minor left_patch right_major right_minor right_patch
+
+  IFS=. read -r left_major left_minor left_patch <<<"$left"
+  IFS=. read -r right_major right_minor right_patch <<<"$right"
+  if [[ "$(normalize_decimal "$left_major")" != "$(normalize_decimal "$right_major")" ]]; then
+    decimal_is_greater "$left_major" "$right_major"
+    return
+  fi
+  if [[ "$(normalize_decimal "$left_minor")" != "$(normalize_decimal "$right_minor")" ]]; then
+    decimal_is_greater "$left_minor" "$right_minor"
+    return
+  fi
+  decimal_is_greater "$left_patch" "$right_patch"
+}
+
+validate_bootstrap_identity_against_tags() {
+  local candidate_tag="$1" repository="${2:-.}"
+  local candidate_version="$MARKETING_VERSION" candidate_build="$BUILD_NUMBER"
+  local ref tag config tagged_version tagged_build
+
+  [[ "$candidate_tag" == "v$candidate_version" ]] ||
+    die "bootstrap tag must equal v$candidate_version" || return 1
+  git -C "$repository" rev-parse --git-dir >/dev/null 2>&1 ||
+    die "bootstrap tag history requires a Git repository" || return 1
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    tag="${ref#refs/tags/}"
+    [[ "$tag" == "$candidate_tag" ]] && continue
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+      die "protected release tag has an invalid name: $tag" || return 1
+    config="$(git -C "$repository" show "$ref:version.env" 2>/dev/null)" ||
+      die "protected release tag lacks version.env: $tag" || return 1
+    load_version_config <(printf '%s\n' "$config") || return 1
+    tagged_version="$MARKETING_VERSION"
+    tagged_build="$BUILD_NUMBER"
+    MARKETING_VERSION="$candidate_version"
+    BUILD_NUMBER="$candidate_build"
+    [[ "$tag" == "v$tagged_version" ]] ||
+      die "protected release tag does not match its version.env: $tag" || return 1
+    semantic_version_is_greater "$candidate_version" "$tagged_version" ||
+      die "bootstrap App Version must be greater than burned tag $tag" || return 1
+    decimal_is_greater "$candidate_build" "$tagged_build" ||
+      die "bootstrap build number must be greater than burned tag $tag" || return 1
+  done < <(git -C "$repository" for-each-ref --format='%(refname)' 'refs/tags/v*')
+  MARKETING_VERSION="$candidate_version"
+  BUILD_NUMBER="$candidate_build"
+}
+
 release_asset_basename() {
   printf '%s-v%s-macos-universal' "$APP_NAME" "$MARKETING_VERSION"
 }

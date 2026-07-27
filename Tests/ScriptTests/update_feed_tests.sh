@@ -432,6 +432,8 @@ after_secret = sign_steps[(secret_index + 1)..].to_s
 [
   "Sparkle-2.9.4.tar.xz",
   "ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9",
+  "refs/tags/v*:refs/tags/v*",
+  "validate_bootstrap_identity_against_tags",
   "prepare_appcast_inputs.sh",
   "production-download-url-prefix",
   "qualification-download-url-prefix"
@@ -622,7 +624,8 @@ end
   "releases/download/$TAG",
   "gh release verify \"$TAG\"",
   "release_is_draft=",
-  "gh release delete \"$TAG\" --yes"
+  "gh release delete \"$TAG\" --yes",
+  'validate_bootstrap_identity_against_tags "$TAG"'
 ].each do |snippet|
   reject("publish-update.yml lacks publish verification: #{snippet}") unless publish_run.include?(snippet)
 end
@@ -672,6 +675,7 @@ end
   "409",
   "422",
   "releases?per_page=100",
+  'validate_bootstrap_identity_against_tags "$TAG"',
   "releases/download/$TAG",
   "--mode published",
   "gh release verify \"$TAG\"",
