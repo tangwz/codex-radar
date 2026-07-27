@@ -575,9 +575,21 @@ end
   "releases/download/$TAG",
   "gh release verify \"$TAG\"",
   "release_is_draft=",
-  "gh release delete \"$TAG\" --yes --cleanup-tag"
+  "gh release delete \"$TAG\" --yes"
 ].each do |snippet|
   reject("publish-update.yml lacks publish verification: #{snippet}") unless publish_run.include?(snippet)
+end
+forbidden_tag_delete = publish_run.lines.any? do |line|
+  line.include?("--cleanup-tag") ||
+    line.match?(/\bgit push\b.*\s--delete(?:\s|$)/) ||
+    line.match?(/\bgit push\b.*:refs\/tags\//) ||
+    (
+      line.match?(/\bgh api\b.*git\/refs\/tags\//) &&
+      line.match?(/(?:--method|-X)\s+DELETE\b/)
+    )
+end
+if forbidden_tag_delete
+  reject("publish-update.yml must never delete a protected release tag")
 end
 draft_download = publish_run.index("gh release download \"$TAG\"")
 draft_verify = publish_run.index("verify_update_artifacts.sh")
@@ -923,6 +935,39 @@ PYTHON
 expect_failure 'publish-update.yml lacks publish verification: gh release download "$TAG"' \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_without_draft_download"
+
+publish_with_cleanup_tag="$fixture_root/publish-with-cleanup-tag.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_cleanup_tag" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+pathlib.Path(sys.argv[2]).write_text(
+    source.replace(needle, needle + " --cleanup-tag")
+)
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_cleanup_tag"
+
+publish_with_tag_push_delete="$fixture_root/publish-with-tag-push-delete.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_tag_push_delete" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = needle + '\n                git push origin --delete "$TAG"'
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_push_delete"
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
