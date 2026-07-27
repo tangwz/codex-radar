@@ -31,22 +31,21 @@ struct MenuActionLayoutTests {
   }
 
   @Test
-  func usesAFullBleedColorMenuBarIcon() {
-    #expect(MenuBarIconConfiguration.assetName == "MenuBarIcon")
-    #expect(MenuBarIconConfiguration.sideLength == 18)
-    #expect(MenuBarIconConfiguration.contentInset == 0)
-  }
-
-  @Test
   @MainActor
-  func providesMenuBarIconAtConfiguredLogicalSize() {
+  func providesTemplateRadarMenuBarIcon() throws {
+    let image = MenuBarIconConfiguration.image
+    let data = try #require(image.tiffRepresentation)
+
+    #expect(MenuBarIconConfiguration.sideLength == 18)
     #expect(
-      MenuBarIconConfiguration.image.size
+      image.size
         == NSSize(
           width: MenuBarIconConfiguration.sideLength,
           height: MenuBarIconConfiguration.sideLength
         )
     )
+    #expect(image.isTemplate)
+    #expect(data.isEmpty == false)
   }
 
   @Test

@@ -505,21 +505,41 @@ private struct PredictionSourceChip: View {
 }
 
 enum MenuBarIconConfiguration {
-  static let assetName = "MenuBarIcon"
   static let sideLength: CGFloat = 18
-  static let contentInset: CGFloat = 0
+
+  private static let strokeWidth: CGFloat = 1.5
+  private static let center = NSPoint(x: 9, y: 9)
 
   @MainActor
   static let image: NSImage = {
-    let resourceURL =
-      Bundle.main.url(forResource: assetName, withExtension: "png")
-      ?? Bundle.module.url(forResource: assetName, withExtension: "png")
+    let size = NSSize(width: sideLength, height: sideLength)
+    let image = NSImage(size: size, flipped: false) { _ in
+      NSColor.black.setStroke()
+      NSColor.black.setFill()
 
-    let image =
-      resourceURL.flatMap(NSImage.init(contentsOf:))
-      ?? NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
-      ?? NSImage(size: NSSize(width: sideLength, height: sideLength))
-    image.size = NSSize(width: sideLength, height: sideLength)
+      let ringFrames = [
+        NSRect(x: 1.25, y: 1.25, width: 15.5, height: 15.5),
+        NSRect(x: 5, y: 5, width: 8, height: 8),
+      ]
+      for frame in ringFrames {
+        let ring = NSBezierPath(ovalIn: frame)
+        ring.lineWidth = strokeWidth
+        ring.stroke()
+      }
+
+      let sweep = NSBezierPath()
+      sweep.lineWidth = strokeWidth
+      sweep.lineCapStyle = .round
+      sweep.move(to: center)
+      sweep.line(to: NSPoint(x: 13.8, y: 14.1))
+      sweep.stroke()
+
+      NSBezierPath(
+        ovalIn: NSRect(x: 8, y: 8, width: 2, height: 2)
+      ).fill()
+      return true
+    }
+    image.isTemplate = true
     return image
   }()
 }
