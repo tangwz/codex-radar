@@ -759,6 +759,9 @@ if activate_run.include?("repos/$GITHUB_REPOSITORY/pulls") ||
     activate_run.include?("gh workflow run")
   reject("feed activation must leave PR creation to the operator")
 end
+if activate_run.include?("gh release delete") || activate_run.include?("git push --delete")
+  reject("feed activation must never delete a public Release or tag")
+end
 if publish_run.include?("ditto -x") || activate_run.include?("ditto -x")
   reject("publish workflow must not extract an archive before Ed25519 verification")
 end
@@ -788,8 +791,6 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
   "burned",
   "bootstrap 0.1.0 (1)",
   "首装引导验收",
-  "Production Feed activation PR",
-  "Codex agent review",
   "Protect immutable release tags",
   "gh release delete v0.2.0 --yes",
   "identity reservation",
@@ -887,6 +888,11 @@ for required_activation_verifier_text in \
     "$ACTIVATION_PR_VERIFY_SCRIPT" >/dev/null ||
     fail "verify_activation_pr.sh lacks required policy: $required_activation_verifier_text"
 done
+if /usr/bin/grep -F \
+  '[[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]' \
+  "$ACTIVATION_PR_VERIFY_SCRIPT" >/dev/null; then
+  fail "verify_activation_pr.sh must not restore a fixed bootstrap identity"
+fi
 
 expect_failure "usage:" "$HALT_SCRIPT"
 expect_failure "usage:" "$HALT_SCRIPT" --previous-commit
