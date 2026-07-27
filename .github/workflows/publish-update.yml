@@ -157,9 +157,9 @@ jobs:
             if [[ "$status" -ne 0 ]]; then
               release_is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
               if [[ "$release_is_draft" == false ]]; then
-                echo "Public verification failed; burning $TAG and deleting its Release and tag." >&2
-                if ! gh release delete "$TAG" --yes --cleanup-tag; then
-                  echo "Automatic cleanup failed; Release Operator intervention is required." >&2
+                echo "Public verification failed; deleting the Release and retaining burned tag $TAG." >&2
+                if ! gh release delete "$TAG" --yes; then
+                  echo "Automatic Release cleanup failed; Release Operator must delete the Release without deleting tag $TAG." >&2
                 fi
               elif [[ "$release_is_draft" != true ]]; then
                 echo "Release state is unknown; Release Operator intervention is required." >&2
