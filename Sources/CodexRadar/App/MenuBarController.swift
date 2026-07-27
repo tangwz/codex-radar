@@ -20,13 +20,25 @@ final class MenuBarResetAlertBadgeView: NSView {
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
     wantsLayer = true
-    layer?.backgroundColor = NSColor.systemRed.cgColor
     layer?.cornerRadius = Self.diameter / 2
     isHidden = true
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
+  }
+
+  override var wantsUpdateLayer: Bool {
+    true
+  }
+
+  override func updateLayer() {
+    layer?.backgroundColor = NSColor.systemRed.cgColor
+  }
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {

@@ -65,6 +65,26 @@ struct MenuBarControllerTests {
   }
 
   @Test
+  func updatesResetAlertBadgeColorWhenAppearanceChanges() throws {
+    let aquaAppearance = try #require(NSAppearance(named: .aqua))
+    let darkAquaAppearance = try #require(NSAppearance(named: .darkAqua))
+    let badge = MenuBarResetAlertBadgeView()
+
+    badge.appearance = aquaAppearance
+    badge.needsDisplay = true
+    badge.displayIfNeeded()
+    let aquaColor = try #require(badge.layer?.backgroundColor)
+    #expect(aquaColor == systemRedColor(for: aquaAppearance))
+
+    badge.needsDisplay = false
+    badge.appearance = darkAquaAppearance
+    badge.displayIfNeeded()
+    let darkAquaColor = try #require(badge.layer?.backgroundColor)
+    #expect(darkAquaColor == systemRedColor(for: darkAquaAppearance))
+    #expect(darkAquaColor != aquaColor)
+  }
+
+  @Test
   func installsOnlyOnceAndRemovesOnlyOnce() throws {
     var created = 0
     var removed = 0
@@ -268,6 +288,14 @@ struct MenuBarControllerTests {
 
     #expect(button.accessibilityLabel() == "Updated monitoring label")
   }
+}
+
+private func systemRedColor(for appearance: NSAppearance) -> CGColor {
+  var color = NSColor.clear.cgColor
+  appearance.performAsCurrentDrawingAppearance {
+    color = NSColor.systemRed.cgColor
+  }
+  return color
 }
 
 @MainActor
