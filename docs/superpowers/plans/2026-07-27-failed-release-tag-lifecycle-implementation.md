@@ -36,6 +36,7 @@
 - `docs/superpowers/plans/2026-07-19-secure-automatic-updates-implementation.md`: is retained as implementation history, but its actionable release cleanup statements must describe the repository's final invariant accurately.
 - `.github/workflows/prepare-candidate.yml`: rejects tag push reruns before signing. Candidate qualification still occurs after this workflow completes, so the operator owns Draft Release cleanup.
 - `script/prepare_appcast_inputs.sh`: accepts a higher-version bootstrap after a burned initial tag only while the Production Feed and GitHub Release history remain empty.
+- `script/lib/release_common.sh`: compares a bootstrap Candidate with `version.env` at every other protected `v*` tag using overflow-safe numeric ordering.
 - GitHub repository rulesets: no change. The active `v*` update/deletion protection without bypass is the invariant this implementation accommodates.
 
 ---
@@ -398,7 +399,7 @@ git push origin +:refs/tags/$TAG
 
 删除 `0.1.0 (1)` 的硬编码资格判断。bootstrap 只允许在 Production Feed 不存在且 GitHub Release 历史为空时准备；公开 Candidate 后的两次检查都忽略当前 Candidate，但不得发现其他 Release，并在无 blob SHA 写入前再次确认 feed 仍返回 404。
 
-保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。添加 fixture，证明首个 tag burned 后，更高版本和 build 的新 tag 仍可建立首份 feed。
+保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。签名前读取所有其他 `v*` tag 的 `version.env`，要求 App Version 和 build number 均严格增加；bootstrap CAS 激活前重新获取 tags 并再次比较。添加 fixture，证明首个 tag burned 后，更高版本和 build 的新 tag 仍可建立首份 feed，而相同或更低 identity 被拒绝。
 
 - [ ] **Step 4: Verify the remediation**
 
@@ -408,6 +409,7 @@ Run:
 bash -n Tests/ScriptTests/update_feed_tests.sh
 bash -n script/prepare_appcast_inputs.sh
 ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/prepare-candidate.yml"), aliases: true); YAML.safe_load(File.read(".github/workflows/publish-update.yml"), aliases: true)'
+bash Tests/ScriptTests/release_common_tests.sh
 bash Tests/ScriptTests/update_feed_tests.sh
 git diff --check
 ```
