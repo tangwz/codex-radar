@@ -518,7 +518,7 @@ release_url="https://github.com/tangwz/codex-radar/releases/download/v${MARKETIN
 ```
 
 Qualification uses `ARCHIVE_NAME` as a relative enclosure. First implementation has no external release-notes file. Read the current Production Feed only to assert build monotonicity and minimum OS compatibility.
-Accept a `--bootstrap` flag only when the Production Feed is absent and GitHub Release history is empty. The intended first attempt is App Version `0.1.0`, build `1`, but if that tag is burned before feed activation, a higher version and build under a new tag remains eligible. Every Candidate, including ordinary candidates after the first feed exists, compares its identity with `version.env` at every other protected `v*` tag before signing and requires both values to be strictly greater.
+Accept a `--bootstrap` flag only when the Production Feed is absent and GitHub Release history is empty. The intended first attempt is App Version `0.1.0`, build `1`, but if that tag is burned before feed activation, a higher version and build under a new tag remains eligible. Every Candidate, including ordinary candidates after the first feed exists, requires its App Version to exceed the version encoded by every other protected `vX.Y.Z` tag before signing and its build number to exceed every valid build found in those tag commits. The protected tag name is the canonical historical App Version; missing, invalid, or mismatched metadata App Versions must not permanently block later releases.
 
 - [ ] **Step 3: Implement post-signing validation**
 

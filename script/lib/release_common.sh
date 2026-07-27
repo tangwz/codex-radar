@@ -74,7 +74,7 @@ semantic_version_is_greater() {
 validate_release_identity_against_tags() {
   local candidate_tag="$1" repository="${2:-.}"
   local candidate_version="$MARKETING_VERSION" candidate_build="$BUILD_NUMBER"
-  local ref tag tag_version config tagged_identity tagged_version tagged_build
+  local ref tag tag_version config tagged_build
 
   [[ "$candidate_tag" == "v$candidate_version" ]] ||
     die "release tag must equal v$candidate_version" || return 1
@@ -89,13 +89,12 @@ validate_release_identity_against_tags() {
     semantic_version_is_greater "$candidate_version" "$tag_version" ||
       die "release App Version must be greater than burned tag $tag" || return 1
     config="$(git -C "$repository" show "$ref:version.env" 2>/dev/null)" || continue
-    tagged_identity="$(
+    tagged_build="$(
       load_version_config <(printf '%s\n' "$config") >/dev/null 2>&1 &&
-        printf '%s\t%s\n' "$MARKETING_VERSION" "$BUILD_NUMBER"
+        printf '%s\n' "$BUILD_NUMBER"
     )" || continue
-    IFS=$'\t' read -r tagged_version tagged_build <<<"$tagged_identity"
-    semantic_version_is_greater "$candidate_version" "$tagged_version" ||
-      die "release App Version must be greater than metadata at burned tag $tag" || return 1
+    # The protected tag name is the canonical historical App Version. Valid
+    # metadata contributes only the build consumed by that failed attempt.
     decimal_is_greater "$candidate_build" "$tagged_build" ||
       die "release build number must be greater than burned tag $tag" || return 1
   done < <(git -C "$repository" for-each-ref --format='%(refname)' 'refs/tags/v*')
