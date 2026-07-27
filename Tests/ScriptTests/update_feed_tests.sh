@@ -688,7 +688,12 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
   "bootstrap 0.1.0 (1)",
   "首装引导验收",
   "Production Feed activation PR",
-  "Codex agent review"
+  "Codex agent review",
+  "Protect immutable release tags",
+  "gh release delete v0.2.0 --yes",
+  "--cleanup-tag",
+  "git push --delete",
+  "v<MARKETING_VERSION>"
 ].each do |snippet|
   reject("docs/releasing.md lacks required guidance: #{snippet}") unless releasing.include?(snippet)
 end

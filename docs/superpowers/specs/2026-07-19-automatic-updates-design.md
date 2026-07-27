@@ -268,11 +268,11 @@ SwiftPM 依赖精确锁定到 Sparkle `2.9.4` 并提交 `Package.resolved`。该
 14. 重新获取 raw feed，验证 feed signature、版本、enclosure URL 和资产签名。
 15. raw feed 生效后，该版本成为 Production Update，并可对外宣布自动更新已发布。
 
-Candidate Release 资格失败时，Release Operator 运行受控清理命令删除不可见的 Draft Release 和 tag；公开后的 Immutable Pre-release 若未通过第 12 步，workflow 删除该 Release 和 tag。两种失败都会永久作废对应 App Version、build number 和 tag，修复必须使用更高版本重新发布；任何阶段都不得用相同版本标识重新构建或重试。删除或公开复验的自动操作失败时停止 workflow 并要求 Release Operator 介入，不激活生产 feed。
+`v*` tag 一经推送即永久保留。Candidate Release 资格失败时，Release Operator 运行受控清理命令，只删除不可见的 Draft Release；公开后的 Immutable Pre-release 若未通过第 12 步，workflow 只删除该 Release。两种失败都会永久作废对应 App Version、build number 和 tag，修复必须同时提高版本和 build number，并使用匹配的新 tag；任何阶段都不得用相同版本标识重新构建或重试。Release 自动删除或公开复验失败时停止 workflow 并要求 Release Operator 介入，不激活 Production Feed。
 
 第 13 步 CAS 成功后若第 14 步因 raw 缓存或临时网络故障超时，发布进入 Activation Pending：不回滚 feed、不删除 Release，也不宣布完成。安全重跑只能确认仓库 blob 仍是同一候选 appcast 并继续复验 raw URL，不得重新生成或改写 appcast。raw URL 返回候选精确字节后才完成发布；若返回既不是 CAS 前旧 feed 也不是候选 feed 的内容，立即停止并要求 Release Operator 调查。
 
-本协议在自动更新启用后取代早期 GitHub Release 设计中的 Draft 复用和“失败时不自动删除”规则；已经公开并成功进入生产 feed 的 Release 仍然不可删除、替换或复用。
+本协议在自动更新启用后取代早期 GitHub Release 设计中的 Draft 复用规则；已经公开并成功进入 Production Feed 的 Release 仍然不可删除、替换或复用。
 
 ## 版本与并发规则
 
@@ -281,7 +281,7 @@ Candidate Release 资格失败时，Release Operator 运行受控清理命令删
 - 最终 Info.plist 的 `CFBundleVersion`、版本配置和 appcast 的 `sparkle:version` 必须完全一致。
 - 新 build 必须严格高于生产 appcast 中最高 build。
 - feed 中不得出现重复 build 或同一 build 指向不同资产。
-- 一旦 `v*` tag 触发发布，App Version、build number 和 tag 即被该次构建占用；无论失败发生在 Draft 资格测试还是公开复验阶段，都必须永久作废这组三个标识。
+- 一旦 `v*` tag 触发发布，App Version、build number 和 tag 即被该次构建占用；无论失败发生在 Draft 创建前、Draft 资格测试还是公开复验阶段，都必须永久作废这组三个标识并保留原 tag。下一次尝试必须同时提高版本和 build number，并创建匹配的新 tag。
 - 生产 appcast 仍为单 entry 时，候选应用的最低系统版本必须与当前 Production Update 一致；任何提高都直接终止发布，直到多 entry 兼容策略另行设计并落地。
 - GitHub Contents API 更新现有 appcast 时必须提交当前 blob SHA。
 - HTTP 409、422 或任何 SHA 冲突都终止发布；workflow 重新读取最新 feed 后由安全重跑继续，不执行强制覆盖。
