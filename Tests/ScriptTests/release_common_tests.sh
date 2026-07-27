@@ -30,16 +30,18 @@ printf 'MARKETING_VERSION=0.2.0\nBUILD_NUMBER=2\n' >"$tag_repository/version.env
 git -C "$tag_repository" add version.env
 git -C "$tag_repository" commit -qm "release: add second identity"
 git -C "$tag_repository" tag v0.2.0
+
+load_version_config "$fixture_dir/valid.env"
+validate_release_identity_against_tags "v0.2.0" "$tag_repository"
+
 git -C "$tag_repository" tag vtest
+git -C "$tag_repository" tag v0.2.1
 
 printf 'MARKETING_VERSION=0.3.0\nBUILD_NUMBER=3\n' >"$fixture_dir/higher.env"
 load_version_config "$fixture_dir/higher.env"
 validate_release_identity_against_tags "v0.3.0" "$tag_repository"
 [[ "$MARKETING_VERSION" == "0.3.0" ]]
 [[ "$BUILD_NUMBER" == "3" ]]
-
-load_version_config "$fixture_dir/valid.env"
-validate_release_identity_against_tags "v0.2.0" "$tag_repository"
 
 printf 'MARKETING_VERSION=0.1.5\nBUILD_NUMBER=3\n' >"$fixture_dir/lower-version.env"
 load_version_config "$fixture_dir/lower-version.env"
