@@ -36,7 +36,7 @@
 
 - `release` Environment 仅允许 `v*` tag，并在签名 job 启动前要求 operator 审批。
 - 当前单人发布阶段允许发起者自审；增加第二位可信 operator 后，启用 required reviewer 并禁止自审。
-- 为 `main` 启用 review、CI、CODEOWNERS 和分支保护。
+- 为 `main` 启用强制 PR、严格 CI、review thread resolution、CODEOWNERS 路由和分支保护。GitHub approval 数量保持为零，CODEOWNER approval 不作为合并门禁；Release Operator 在其他 Codex agent review 完成且 CI 通过后，可以自行合并自己的 PR。
 - 在首次公开自动更新前启用 Immutable Releases。
 
 ## 准备 Candidate
@@ -61,9 +61,13 @@ workflow 会重新下载 Draft 的四个资产，独立复验 tag、版本、com
 
 公开资产复验失败时，workflow 会尝试删除刚公开的 Release 和 tag；对应的 App Version、build number 和 tag 随即 burned，不能重新使用。如果自动清理失败，停止发布并由 Release Operator 介入，Production Feed 不得推进。
 
-公开复验通过后，workflow 读取 `main/appcast.xml` 的精确字节和当前 blob SHA。只有当前字节仍与预期上一份 signed feed 完全一致时，才通过 GitHub Contents API compare-and-swap 写入候选 feed；HTTP 409、422 或任何第三种字节状态都立即终止，禁止强制覆盖。bootstrap `0.1.0 (1)` 是唯一允许在 feed 返回 404 时无 blob SHA 创建的版本，并且写入前会再次确认没有其他 Release 历史且 feed 仍不存在。
+公开复验通过后，workflow 只读取一次当前 `main` commit SHA，并使用该不可变 SHA 读取 `appcast.xml` 的精确字节和 blob SHA。只有这些字节仍与预期上一份 signed feed 完全一致时，才从同一个 SHA 创建 `release/appcast-v<version>-at-<main-sha-prefix>` 分支，并通过 GitHub Contents API 把候选精确字节写入该分支。workflow 随后验证分支的唯一 parent 是已验证的 `main` SHA、相对 `main` 不落后且只领先一个 commit、唯一变更是 `appcast.xml`，再输出手工创建 Production Feed activation PR 的 compare URL。若等待期间 `main` 前进，旧 PR 会安全地失效；重新运行原 activation job 会基于新的不可变 `main` SHA 创建新分支和 compare URL，无需重写或删除旧分支。HTTP 409、422、预存在的非预期分支、额外文件变更或任何第三种 feed 字节状态都立即终止，禁止强制覆盖。bootstrap `0.1.0 (1)` 是唯一允许在 feed 返回 404 时无 blob SHA 创建的版本，并且写入分支前会再次确认没有其他 Release 历史且 feed 仍不存在。
 
-CAS 成功后，公开 Release 和 tag 永远不得自动删除或回滚。workflow 会有限次轮询固定 raw URL：旧 feed 字节只表示缓存尚未收敛；候选精确字节表示发布完成；任何其他字节必须由 Release Operator 调查。轮询超时进入 `Activation Pending`，不代表发布失败，也不允许回滚。此时只在原 workflow run 中选择重新运行失败的 job，使它确认仓库 blob 已经是同一候选并继续只读复验 raw URL；不要新建一次 workflow dispatch，也不要重新写 feed。
+workflow 准备 activation branch 后会进入 `Activation PR Pending`。Release Operator 必须使用 warning 中的 compare URL 手工创建 PR；当前仓库禁止 `GITHUB_TOKEN` 创建 PR，因此 PR 作者明确是 Release Operator。这个用户动作会触发 required `validate` check。受信任 workflow 使用 `pull_request_target` 中来自目标 `main` 的 policy 和 verifier 校验不可变 PR head，并通过 GitHub Actions Checks API 把 `validate` 结果明确发布到该 head SHA；policy、target tests 和 Checks API reporter 分属不同 runner，PR 代码不能污染带 `checks: write` 的 runner。activation PR 的 `validate` 会在合并时重新证明：head 直接基于最新 `main` 且只有一个 commit、唯一变更为 `appcast.xml`、候选字节与公开 Immutable Release 完全一致、签名与资产完整性有效，并且当前 Production Feed 仍是允许升级的上一版本。Release Operator 让其他 Codex agent review 该 PR、解决所有 review thread并等待 `validate` 通过后，可以自行合并。合并后只在原 workflow run 中重新运行失败的 activation job；job 会确认 `main/appcast.xml` 已经是同一候选，再继续只读复验固定 raw URL。不要新建一次 workflow dispatch，也不要重新生成或重写 feed。
+
+当前门禁只承诺可信 Release Operator 在同一个仓库内创建的 PR。GitHub required status check 只能绑定 check 名称和 GitHub Actions App，不能绑定具体 workflow，因此这个单人仓库模型明确依赖 operator 不新增或修改 workflow 来伪造同名 `validate`；其他 Codex agent review 是合并前的独立审查，但不是 GitHub approval。`actions/checkout` v7 对 `pull_request_target` 的 fork head 保持默认拒绝，不通过 `allow-unsafe-pr-checkout` 绕过。若未来开放不可信或 fork contribution，必须改用组织级 Required Workflows 或独立 GitHub App 身份，并另建无特权的普通 `pull_request` CI 路径，不得把当前 operator-only gate 当作 hostile-contributor security boundary。
+
+activation PR 合并后，公开 Release 和 tag 永远不得自动删除或回滚。workflow 会有限次轮询固定 raw URL：旧 feed 字节只表示缓存尚未收敛；候选精确字节表示发布完成；任何其他字节必须由 Release Operator 调查。轮询超时进入 `Activation Pending`，不代表发布失败，也不允许回滚。此时仍然只在原 workflow run 中重新运行失败的 job，使它确认仓库 blob 已经是同一候选并继续只读复验 raw URL。
 
 ## 失败与密钥事件
 

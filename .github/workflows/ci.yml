@@ -4,22 +4,95 @@ on:
   push:
     branches:
       - main
-  pull_request:
+  pull_request_target:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  validate:
+  start-validation-check:
+    name: start-validation-check
+    runs-on: macos-15
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    outputs:
+      check_id: ${{ steps.required_check.outputs.check_id }}
+    steps:
+      - name: Start required validation check
+        id: required_check
+        shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request_target ]]; then
+            [[ "$BASE_REF" == main ]]
+          fi
+          check_id="$(gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" \
+            -f name=validate \
+            -f head_sha="$TARGET_SHA" \
+            -f status=in_progress \
+            --jq .id)"
+          [[ "$check_id" =~ ^[0-9]+$ ]]
+          echo "check_id=$check_id" >>"$GITHUB_OUTPUT"
+
+  trusted-policy:
+    name: trusted-policy
+    needs: start-validation-check
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out trusted validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          path: trusted-source
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+
+      - name: Check out target revision
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          path: target-source
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Enforce trusted activation policy
+        shell: bash
+        env:
+          ACTIVATION_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          ACTIVATION_TARGET_DIR: ${{ github.workspace }}/target-source
+          GH_TOKEN: ${{ github.token }}
+        run: trusted-source/script/verify_activation_pr.sh
+
+  target-validation:
+    name: target-validation
+    needs: trusted-policy
     runs-on: macos-15
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - name: Check out repository
+      - name: Check out target revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          path: target-source
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install verified actionlint
         shell: bash
@@ -51,15 +124,18 @@ jobs:
 
       - name: Lint workflows
         shell: bash
+        working-directory: target-source
         run: |
           find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
             xargs -0 "$RUNNER_TEMP/actionlint/actionlint"
 
       - name: Build with strict concurrency
+        working-directory: target-source
         run: swift build -c release -Xswiftc -strict-concurrency=complete
 
       - name: Run validation suite
         shell: bash
+        working-directory: target-source
         run: |
           set -euo pipefail
           # Swift Testing 124.4 can crash when AppKit-facing and core suites share a process.
@@ -71,3 +147,33 @@ jobs:
           bash Tests/ScriptTests/update_feed_tests.sh
           find script -name '*.sh' -print0 | xargs -0 -n1 bash -n
           ./script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false
+
+  finalize-validation:
+    name: finalize-validation
+    if: ${{ always() && needs.start-validation-check.outputs.check_id != '' }}
+    needs:
+      - start-validation-check
+      - trusted-policy
+      - target-validation
+    runs-on: macos-15
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    steps:
+      - name: Complete required validation check
+        shell: bash
+        env:
+          CHECK_ID: ${{ needs.start-validation-check.outputs.check_id }}
+          GH_TOKEN: ${{ github.token }}
+          POLICY_RESULT: ${{ needs.trusted-policy.result }}
+          TARGET_RESULT: ${{ needs.target-validation.result }}
+        run: |
+          set -euo pipefail
+          conclusion=failure
+          if [[ "$POLICY_RESULT" == success && "$TARGET_RESULT" == success ]]; then
+            conclusion=success
+          fi
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" \
+            -f status=completed \
+            -f conclusion="$conclusion" >/dev/null
