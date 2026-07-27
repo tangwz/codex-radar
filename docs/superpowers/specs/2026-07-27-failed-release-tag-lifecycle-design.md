@@ -31,7 +31,7 @@
 - 对应 App Version 和 build number 永久视为已使用；
 - 同一 tag 的 workflow 不得通过替换资产重新尝试发布；
 - `prepare-candidate` 的 tag push 路径只允许第一次 workflow attempt，rerun 不得进入签名 Environment 或创建 Draft Release；
-- 所有 Candidate 都必须在签名前与其他受保护 `v*` tag identity 比较，不得只依赖当前 Production Feed；
+- 所有 Candidate 都必须在签名前与其他语法合法的受保护 `vX.Y.Z` tag identity 比较，不得只依赖当前 Production Feed；
 - 签名前 identity 校验成功是 Candidate 的 reservation point；之后创建的 tag 不追溯性地使该 Candidate 失效；
 - 后续尝试必须先在 `main` 提交更高且未使用的 `MARKETING_VERSION` 与严格递增的 `BUILD_NUMBER`，再创建匹配的新 tag。
 
@@ -50,7 +50,7 @@
 
 不得重新运行失败 tag 来生成新的签名资产或创建新的 Draft Release。
 
-如果失败发生在首个 Production Feed 激活前，固定的首发版本也已经 burned。新的更高 App Version、递增 build number 和新 tag 在 Production Feed 仍不存在、失败 Release 已删除且 GitHub Release 历史为空时继续作为 bootstrap；bootstrap 资格不得依赖 `0.1.0 (1)` 常量。
+如果失败发生在首个 Production Feed 激活前，固定的首发版本也已经 burned。新的更高 App Version、递增 build number 和新 tag 在 Production Feed 仍不存在、失败 Release 已删除且 GitHub Release 历史为空时继续作为 bootstrap；bootstrap 资格不得依赖 `0.1.0 (1)` 常量。重试提交还必须把 `README.md` 的 bootstrap URL、ZIP 和 checksum 文件名同步更新为新版本。
 
 ### Candidate Draft 创建后失败
 
@@ -103,9 +103,10 @@ Production Feed compare-and-swap 成功后，既有 Activation Pending 和 Distr
 所有 Candidate 的 release identity 校验遵循：
 
 - Candidate 的版本与 build 仍须通过通用格式和一致性校验；
-- Candidate 的 App Version 与 build number 必须分别严格高于所有其他受保护 `v*` tag 所指向提交中的 `version.env`；
+- Candidate 的 App Version 与 build number 必须分别严格高于所有其他语法合法的受保护 `vX.Y.Z` tag 所指向提交中的 `version.env`；
 - identity 校验在签名前执行并建立 reservation；
-- tag 缺少合法 `version.env` 或 identity 不满足严格递增时均 fail closed。
+- 语法合法的 release tag 缺少合法 `version.env` 或 identity 不满足严格递增时均 fail closed；
+- malformed `v*` tag 仍由 ruleset 永久保护，但不属于 release identity history；它自己的 Candidate workflow 会在签名前因 tag 格式不合法而失败。
 
 bootstrap 额外以状态而不是固定版本判定资格：
 
@@ -130,7 +131,8 @@ Actions concurrency 只能串行化 workflow，不能原子化外部 tag push �
 - 不运行 `gh release delete --cleanup-tag`；
 - 不移动或重新推送旧 tag；
 - 新 tag 必须继续满足 `v<MARKETING_VERSION>`，因此需要新的 App Version，而不是添加 Candidate 或 retry 后缀；
-- `BUILD_NUMBER` 必须严格递增。
+- `BUILD_NUMBER` 必须严格递增；
+- bootstrap 重试必须同步更新 `README.md` 的版本固定安装链接与 checksum 文件名。
 
 ## 测试策略
 
@@ -140,12 +142,13 @@ Actions concurrency 只能串行化 workflow，不能原子化外部 tag push �
 - 整个发布 workflow 禁止 `--cleanup-tag`；
 - 整个发布 workflow 禁止 `git push --delete` 和其他 tag 删除命令；
 - 强制 refspec `git push origin +:refs/tags/<tag>` 也必须被识别为 tag 删除；
+- 对 tag namespace 执行 `git push --prune` 也必须被识别为 tag 删除；
 - Candidate tag push rerun 必须在签名和 Draft Release 创建前失败；
 - 首个 bootstrap tag burned 后，更高版本和 build 的新 tag 在 feed 与 Release 历史均为空时仍可 bootstrap；
-- bootstrap 与普通 Candidate 都必须在签名前与全部其他 `v*` tag identity 比较并建立 identity reservation；
+- bootstrap 与普通 Candidate 都必须在签名前与全部其他合法 `vX.Y.Z` tag identity 比较并建立 identity reservation，malformed `v*` tag 不得阻塞后续发布；
 - 两个发布 workflow 必须使用带 `queue: max` 的仓库级共享 concurrency；
 - 激活阶段继续禁止删除 Release 或 tag；
-- 发布手册必须包含永久保留失败 tag、创建更高版本新 tag 和 Release-only cleanup 的指导。
+- 发布手册必须包含永久保留失败 tag、创建更高版本新 tag、同步更新 README 安装链接和 Release-only cleanup 的指导。
 
 验证命令：
 

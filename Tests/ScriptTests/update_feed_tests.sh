@@ -119,11 +119,14 @@ def protected_tag_deletion?(run)
       line.match?(/(?:\A|\s)(?:--delete|-d)\b/) ||
       line.match?(/(?:\A|\s)["']?\+?:refs\/tags\//)
     )
+    git_push_prune = git_push &&
+      line.match?(/(?:\A|\s)--prune\b/) &&
+      line.match?(/refs\/tags\//)
     tag_api_delete = line.match?(/\bgh\s+api\b/) &&
       line.match?(/git\/refs\/tags\//) &&
       line.match?(/(?:\A|\s)(?:--method(?:=|\s+)|-X\s*)DELETE(?:\s|\z)/)
 
-    release_cleanup_tag || git_push_delete || tag_api_delete
+    release_cleanup_tag || git_push_delete || git_push_prune || tag_api_delete
   end
 end
 
@@ -743,7 +746,10 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
   "identity reservation",
   "--cleanup-tag",
   "git push --delete",
-  "v<MARKETING_VERSION>"
+  "v<MARKETING_VERSION>",
+  "README.md",
+  "Production Feed activation PR",
+  "Codex agent review"
 ].each do |snippet|
   reject("docs/releasing.md lacks required guidance: #{snippet}") unless releasing.include?(snippet)
 end
@@ -838,9 +844,15 @@ expect_failure "usage:" "$HALT_SCRIPT" --previous-commit
 expect_failure "previous commit must be a full Git commit SHA" \
   "$HALT_SCRIPT" --previous-commit not-a-commit
 
+readme_marketing_version="$(
+  /usr/bin/sed -n 's/^MARKETING_VERSION=//p' "$ROOT_DIR/version.env"
+)"
+[[ "$readme_marketing_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+  fail "version.env lacks a valid MARKETING_VERSION"
+readme_archive="CodexRadar-v${readme_marketing_version}-macos-universal.zip"
 for required_readme_text in \
-  'releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip' \
-  'CodexRadar-v0.1.0-macos-universal.zip.sha256' \
+  "releases/download/v${readme_marketing_version}/${readme_archive}" \
+  "${readme_archive}.sha256" \
   'ad-hoc' \
   'Open Anyway'; do
   /usr/bin/grep -F "$required_readme_text" "$README_FILE" >/dev/null ||
@@ -1061,6 +1073,22 @@ expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
   "$publish_with_forced_tag_delete_refspec"
+
+publish_with_tag_prune="$fixture_root/publish-with-tag-prune.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_tag_prune" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = needle + "\n                git push --prune origin 'refs/tags/*:refs/tags/*'"
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_prune"
 
 publish_with_activation_tag_delete_refspec="$fixture_root/publish-with-activation-tag-delete-refspec.yml"
 /usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_activation_tag_delete_refspec" <<'PYTHON'

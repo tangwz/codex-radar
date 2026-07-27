@@ -42,7 +42,7 @@
 
 ## 准备 Candidate
 
-1. 更新 `version.env`，确保 `MARKETING_VERSION` 未使用过，`BUILD_NUMBER` 严格递增。
+1. 更新 `version.env`，确保 `MARKETING_VERSION` 未使用过，`BUILD_NUMBER` 严格递增；同时把 `README.md` 的 bootstrap Release URL、ZIP 和 checksum 文件名更新为同一个 `v<MARKETING_VERSION>`。
 2. 从 `main` 对目标提交创建 `v<MARKETING_VERSION>` tag 并推送。
 3. `prepare-candidate` 先在无 secret 的只读 job 中测试并构建 Universal 2 ZIP；只有 tag 路径会进入 `release` Environment。
 4. workflow 完成后确认 Release 仍为 Draft，并下载保留七天的 qualification Artifact。
@@ -76,7 +76,7 @@ activation PR 合并后，公开 Release 和 tag 永远不得自动删除或回�
 
 ## 失败与密钥事件
 
-tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag；workflow 会拒绝该 tag 的 rerun。提高 App Version 和 build number 后创建新 tag。若尚未建立 Production Feed，新 tag 在满足空 Release 历史门禁时仍可作为 bootstrap。
+tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag；workflow 会拒绝该 tag 的 rerun。提高 App Version 和 build number、同步更新 `README.md` 的 bootstrap 下载 URL 与文件名后创建新 tag。若尚未建立 Production Feed，新 tag 在满足空 Release 历史门禁时仍可作为 bootstrap。
 
 Candidate 资格测试失败或证据不足时，只删除不可见的 Draft Release。以下示例中的 tag 必须替换为本次失败的实际 tag：
 
