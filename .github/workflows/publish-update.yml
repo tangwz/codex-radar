@@ -284,7 +284,7 @@ jobs:
             --sparkle-source "$sparkle_source"
           gh release verify "$TAG"
 
-      - name: Compare and swap Production Feed
+      - name: Prepare Production Feed activation PR
         shell: bash
         run: |
           set -euo pipefail
@@ -296,7 +296,9 @@ jobs:
           archive_name="$(release_asset_basename).zip"
           candidate_feed=dist/activation-inputs/candidate-appcast.xml
 
-          api_url="https://api.github.com/repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=main"
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]]
+          api_url="https://api.github.com/repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=$main_sha"
           current_status="$(curl --silent --show-error --location \
             --header "Authorization: Bearer $GH_TOKEN" \
             --header 'Accept: application/vnd.github+json' \
@@ -341,13 +343,6 @@ jobs:
               ;;
             cas_state=ready)
               [[ -n "$current_blob_sha" ]]
-              candidate_content="$(/usr/bin/base64 <"$candidate_feed" | tr -d '\n')"
-              jq -n \
-                --arg message "Activate $TAG Production Feed" \
-                --arg content "$candidate_content" \
-                --arg sha "$current_blob_sha" \
-                '{message:$message, content:$content, sha:$sha, branch:"main"}' \
-                >dist/feed-update.json
               ;;
             cas_state=ready-bootstrap)
               [[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]
@@ -361,12 +356,6 @@ jobs:
                 --output dist/bootstrap-second-feed-response.json \
                 --write-out '%{http_code}' "$api_url")"
               [[ "$second_status" == 404 ]]
-              candidate_content="$(/usr/bin/base64 <"$candidate_feed" | tr -d '\n')"
-              jq -n \
-                --arg message "Bootstrap $TAG Production Feed" \
-                --arg content "$candidate_content" \
-                '{message:$message, content:$content, branch:"main"}' \
-                >dist/feed-update.json
               ;;
             *)
               echo "Unknown CAS state: $cas_output" >&2
@@ -375,6 +364,74 @@ jobs:
           esac
 
           if [[ "$cas_output" != cas_state=already-active ]]; then
+            main_short_sha="${main_sha:0:12}"
+            branch="release/appcast-$TAG-at-$main_short_sha"
+            branch_ref="refs/heads/$branch"
+            if ! branch_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" \
+              --jq .object.sha 2>/dev/null)"; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref="$branch_ref" \
+                -f sha="$main_sha" >/dev/null
+              branch_sha="$main_sha"
+            fi
+            [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
+
+            branch_status="$(curl --silent --show-error --location \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --output dist/branch-feed-response.json \
+              --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=$branch")"
+            branch_blob_sha=""
+            case "$branch_status" in
+              200)
+                jq -r .content dist/branch-feed-response.json | tr -d '\n' | \
+                  /usr/bin/base64 -D >dist/branch-appcast.xml
+                if /usr/bin/cmp -s dist/branch-appcast.xml "$candidate_feed"; then
+                  branch_feed_state=ready
+                else
+                  branch_blob_sha="$(jq -er .sha dist/branch-feed-response.json)"
+                  [[ "$cas_output" == cas_state=ready &&
+                    "$branch_sha" == "$main_sha" &&
+                    "$branch_blob_sha" == "$current_blob_sha" ]] ||
+                    {
+                      echo "Existing activation branch is not the verified main snapshot" >&2
+                      exit 1
+                    }
+                  branch_feed_state=write
+                fi
+                ;;
+              404)
+                [[ "$cas_output" == cas_state=ready-bootstrap &&
+                  "$branch_sha" == "$main_sha" ]]
+                branch_feed_state=write
+                ;;
+              *)
+                echo "Unable to read activation branch feed: HTTP $branch_status" >&2
+                exit 1
+                ;;
+            esac
+
+            if [[ "$branch_feed_state" == write ]]; then
+              candidate_content="$(/usr/bin/base64 <"$candidate_feed" | tr -d '\n')"
+              if [[ -n "$branch_blob_sha" ]]; then
+                jq -n \
+                  --arg message "Activate $TAG Production Feed" \
+                  --arg content "$candidate_content" \
+                  --arg sha "$branch_blob_sha" \
+                  --arg branch "$branch" \
+                  '{message:$message, content:$content, sha:$sha, branch:$branch}' \
+                  >dist/feed-update.json
+              else
+                jq -n \
+                  --arg message "Bootstrap $TAG Production Feed" \
+                  --arg content "$candidate_content" \
+                  --arg branch "$branch" \
+                  '{message:$message, content:$content, branch:$branch}' \
+                  >dist/feed-update.json
+              fi
+
             put_status="$(curl --silent --show-error \
               --request PUT \
               --header "Authorization: Bearer $GH_TOKEN" \
@@ -395,6 +452,29 @@ jobs:
                 exit 1
                 ;;
             esac
+            fi
+
+            branch_content="$(gh api \
+              "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=$branch" --jq .content | tr -d '\n')"
+            printf '%s' "$branch_content" | /usr/bin/base64 -D >dist/activation-branch-appcast.xml
+            /usr/bin/cmp -s dist/activation-branch-appcast.xml "$candidate_feed"
+            activation_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" \
+              --jq .object.sha)"
+            activation_parent="$(gh api \
+              "repos/$GITHUB_REPOSITORY/git/commits/$activation_sha" --jq .parents[0].sha)"
+            [[ "$activation_parent" == "$main_sha" ]]
+            gh api "repos/$GITHUB_REPOSITORY/compare/main...$branch" \
+              >dist/activation-branch-compare.json
+            jq -e --arg main_sha "$main_sha" \
+              '.ahead_by == 1 and .behind_by == 0 and .total_commits == 1 and
+                .base_commit.sha == $main_sha and .merge_base_commit.sha == $main_sha' \
+              dist/activation-branch-compare.json >/dev/null
+            jq -e '.files | length == 1 and .[0].filename == "appcast.xml"' \
+              dist/activation-branch-compare.json >/dev/null
+
+            pr_url="https://github.com/$GITHUB_REPOSITORY/compare/main...$branch?expand=1"
+            echo "::warning title=Activation PR Pending::Open the Production Feed activation PR at $pr_url. Merge it after Codex agent review and the required validate check pass, then re-run this failed job."
+            exit 1
           fi
 
       - name: Poll raw Production Feed

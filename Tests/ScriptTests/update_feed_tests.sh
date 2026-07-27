@@ -6,6 +6,7 @@ PREPARE_SCRIPT="$ROOT_DIR/script/prepare_appcast_inputs.sh"
 VERIFY_SCRIPT="$ROOT_DIR/script/verify_update_artifacts.sh"
 QUALIFY_SCRIPT="$ROOT_DIR/script/qualify_update.sh"
 HALT_SCRIPT="$ROOT_DIR/script/halt_distribution.sh"
+ACTIVATION_PR_VERIFY_SCRIPT="$ROOT_DIR/script/verify_activation_pr.sh"
 SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
@@ -30,6 +31,10 @@ README_FILE="$ROOT_DIR/README.md"
 }
 [[ -x "$HALT_SCRIPT" ]] || {
   echo "halt_distribution.sh does not exist" >&2
+  exit 1
+}
+[[ -x "$ACTIVATION_PR_VERIFY_SCRIPT" ]] || {
+  echo "verify_activation_pr.sh does not exist" >&2
   exit 1
 }
 [[ -d "$SPARKLE_SOURCE" ]] || {
@@ -176,7 +181,16 @@ end
 ci = File.read(ci_path, encoding: "UTF-8")
 required_ci_snippets = [
   "permissions:\n  contents: read",
+  "checks: write",
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "pull_request: {}",
+  "pull_request_target:",
+  "branches:\n      - main",
+  "path: trusted-source",
+  "path: target-source",
+  '"repos/$GITHUB_REPOSITORY/check-runs"',
+  "-f name=validate",
+  "run: trusted-source/script/verify_activation_pr.sh",
   "swift build -c release -Xswiftc -strict-concurrency=complete",
   "swift test",
   "bash Tests/ScriptTests/release_common_tests.sh",
@@ -193,6 +207,119 @@ required_ci_snippets = [
 ]
 required_ci_snippets.each do |snippet|
   reject("ci.yml lacks required content: #{snippet}") unless ci.include?(snippet)
+end
+ci_document = YAML.safe_load(
+  ci,
+  permitted_classes: [],
+  permitted_symbols: [],
+  aliases: true,
+  filename: ci_path
+) || {}
+ci_triggers = fetch_key(ci_document, "on")
+pull_request_target = fetch_key(ci_triggers, "pull_request_target")
+unless fetch_key(pull_request_target, "branches") == ["main"]
+  reject("CI trusted pull_request_target policy must be restricted to main")
+end
+unless fetch_key(ci_triggers, "pull_request").is_a?(Hash)
+  reject("CI bootstrap must temporarily retain the pull_request trigger")
+end
+jobs = fetch_key(ci_document, "jobs")
+bootstrap_job = fetch_key(jobs, "validate")
+start_job = fetch_key(jobs, "start-validation-check")
+trusted_job = fetch_key(jobs, "trusted-policy")
+target_job = fetch_key(jobs, "target-validation")
+finalize_job = fetch_key(jobs, "finalize-validation")
+start_steps = fetch_key(start_job, "steps")
+trusted_steps = fetch_key(trusted_job, "steps")
+target_steps = fetch_key(target_job, "steps")
+finalize_steps = fetch_key(finalize_job, "steps")
+bootstrap_steps = fetch_key(bootstrap_job, "steps")
+unless bootstrap_steps.is_a?(Array) && start_steps.is_a?(Array) && trusted_steps.is_a?(Array) &&
+    target_steps.is_a?(Array) && finalize_steps.is_a?(Array)
+  reject("CI validation jobs are missing")
+end
+bootstrap_name = fetch_key(bootstrap_job, "name").to_s
+bootstrap_condition = fetch_key(bootstrap_job, "if").to_s
+unless bootstrap_name.include?("'validate' || 'bootstrap-disabled'") &&
+    bootstrap_name.include?("github.event.pull_request.number == 9") &&
+    bootstrap_condition.include?("github.event_name == 'pull_request'") &&
+    bootstrap_condition.include?("github.event.pull_request.number == 9") &&
+    bootstrap_condition.include?("github.event.pull_request.head.ref == 'codex/enforce-main-release-gates'") &&
+    bootstrap_condition.include?("github.event.pull_request.head.repo.full_name == github.repository") &&
+    fetch_key(fetch_key(bootstrap_job, "permissions"), "contents") == "read" &&
+    fetch_key(fetch_key(bootstrap_job, "permissions"), "checks").nil?
+  reject("CI bootstrap validate job must be isolated to the trusted migration PR with read-only contents")
+end
+bootstrap_run = bootstrap_steps.map { |step| fetch_key(step, "run") }.compact.join("\n")
+[
+  "swift build -c release -Xswiftc -strict-concurrency=complete",
+  "bash Tests/ScriptTests/update_feed_tests.sh",
+  "./script/package_app.sh"
+].each do |snippet|
+  reject("CI bootstrap validate job lacks: #{snippet}") unless bootstrap_run.include?(snippet)
+end
+unless fetch_key(fetch_key(start_job, "permissions"), "checks") == "write" &&
+    fetch_key(fetch_key(start_job, "permissions"), "contents").nil?
+  reject("CI check creation job must have only checks:write")
+end
+unless fetch_key(start_job, "if").to_s.include?("github.event_name != 'pull_request'")
+  reject("CI privileged check creation must not run in the PR-owned bootstrap workflow")
+end
+unless fetch_key(fetch_key(trusted_job, "permissions"), "contents") == "read" &&
+    fetch_key(fetch_key(trusted_job, "permissions"), "checks").nil?
+  reject("CI trusted policy job must not have checks:write")
+end
+unless fetch_key(fetch_key(target_job, "permissions"), "contents") == "read" &&
+    fetch_key(fetch_key(target_job, "permissions"), "checks").nil?
+  reject("CI target validation job must not have checks:write")
+end
+unless fetch_key(fetch_key(finalize_job, "permissions"), "checks") == "write" &&
+    fetch_key(fetch_key(finalize_job, "permissions"), "contents").nil?
+  reject("CI finalize job must have only checks:write")
+end
+trusted_checkout = trusted_steps.find { |step| fetch_key(step, "name") == "Check out trusted validation policy" }
+target_checkout = target_steps.find { |step| fetch_key(step, "name") == "Check out target revision" }
+trusted_gate = trusted_steps.find { |step| fetch_key(step, "name") == "Enforce trusted activation policy" }
+start_check = start_steps.find { |step| fetch_key(step, "name") == "Start required validation check" }
+complete_check = finalize_steps.find { |step| fetch_key(step, "name") == "Complete required validation check" }
+reject("CI trusted policy checkout is missing") unless fetch_key(fetch_key(trusted_checkout, "with"), "path") == "trusted-source"
+unless fetch_key(fetch_key(trusted_checkout, "with"), "persist-credentials") == false
+  reject("CI trusted policy checkout must not persist credentials")
+end
+unless fetch_key(fetch_key(trusted_checkout, "with"), "ref") == "${{ github.event.pull_request.base.sha || github.sha }}"
+  reject("CI trusted policy must come from the immutable base SHA")
+end
+reject("CI target checkout is missing") unless fetch_key(fetch_key(target_checkout, "with"), "path") == "target-source"
+unless fetch_key(fetch_key(target_checkout, "with"), "persist-credentials") == false
+  reject("CI target checkout must not expose credentials to PR-owned code")
+end
+unless fetch_key(fetch_key(target_checkout, "with"), "ref") == "${{ github.event.pull_request.head.sha || github.sha }}"
+  reject("CI target checkout must use the immutable PR head SHA")
+end
+unless fetch_key(trusted_gate, "run") == "trusted-source/script/verify_activation_pr.sh"
+  reject("CI activation policy must execute from trusted-source")
+end
+unless fetch_key(start_check, "run").to_s.include?("-f head_sha=\"$TARGET_SHA\"") &&
+    fetch_key(start_check, "run").to_s.include?("-f name=validate") &&
+    fetch_key(start_check, "run").to_s.include?('[[ "$BASE_REF" == main ]]')
+  reject("CI must create the required validate check on the immutable target SHA")
+end
+unless fetch_key(finalize_job, "if").to_s.include?("always()") &&
+    fetch_key(complete_check, "run").to_s.include?("-f conclusion=\"$conclusion\"") &&
+    fetch_key(complete_check, "run").to_s.include?('"$POLICY_RESULT" == success') &&
+    fetch_key(complete_check, "run").to_s.include?('"$TARGET_RESULT" == success')
+  reject("CI must complete the required validate check on every job outcome")
+end
+unless fetch_key(target_job, "needs") == "trusted-policy"
+  reject("CI target-owned build and tests must wait for trusted policy")
+end
+unless fetch_key(trusted_job, "needs") == "start-validation-check"
+  reject("CI trusted policy must run after the required check is created")
+end
+if target_steps.any? { |step| fetch_key(fetch_key(step, "env"), "GH_TOKEN") } ||
+    start_steps.any? { |step| fetch_key(step, "uses") } ||
+    finalize_steps.any? { |step| fetch_key(step, "uses") }
+  reject("CI must isolate PR-owned execution from privileged checks API steps")
 end
 
 reject("prepare-candidate.yml does not exist") unless File.file?(candidate_path)
@@ -400,6 +527,10 @@ end
 unless fetch_key(fetch_key(activate_job, "permissions"), "contents").to_s == "write"
   reject("activate-production-feed must grant contents: write")
 end
+if fetch_key(fetch_key(activate_job, "permissions"), "pull-requests") ||
+    fetch_key(fetch_key(activate_job, "permissions"), "actions")
+  reject("activate-production-feed must not create PRs or dispatch workflows")
+end
 unless fetch_key(activate_job, "needs").to_s == "publish-and-verify"
   reject("feed activation must depend on public verification")
 end
@@ -508,10 +639,15 @@ end
   "cas_state=already-active",
   "cas_state=ready-bootstrap",
   "cas_state=ready",
-  "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=main",
   "current_blob_sha",
   'sha:$sha',
-  'branch:"main"',
+  'branch="release/appcast-$TAG-at-$main_short_sha"',
+  "repos/$GITHUB_REPOSITORY/git/refs",
+  'contents/appcast.xml?ref=$main_sha',
+  "compare/main...$branch",
+  '.files | length == 1 and .[0].filename == "appcast.xml"',
+  'https://github.com/$GITHUB_REPOSITORY/compare/main...$branch?expand=1',
+  "Production Feed activation PR",
   "409",
   "422",
   "0.1.0",
@@ -525,6 +661,13 @@ end
   "unknown Production Feed bytes"
 ].each do |snippet|
   reject("publish-update.yml lacks feed activation policy: #{snippet}") unless activate_run.include?(snippet)
+end
+if activate_run.include?('branch:"main"')
+  reject("feed activation must not write appcast.xml directly to main")
+end
+if activate_run.include?("repos/$GITHUB_REPOSITORY/pulls") ||
+    activate_run.include?("gh workflow run")
+  reject("feed activation must leave PR creation to the operator")
 end
 if activate_run.include?("gh release delete") || activate_run.include?("git push --delete")
   reject("feed activation must never delete a public Release or tag")
@@ -557,7 +700,9 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
   "encrypted offline backup",
   "burned",
   "bootstrap 0.1.0 (1)",
-  "首装引导验收"
+  "首装引导验收",
+  "Production Feed activation PR",
+  "Codex agent review"
 ].each do |snippet|
   reject("docs/releasing.md lacks required guidance: #{snippet}") unless releasing.include?(snippet)
 end
@@ -595,6 +740,57 @@ expect_failure() {
     fail "fixture did not report: $expected_message"
   }
 }
+
+expect_failure "invalid activation PR branch" \
+  /usr/bin/env ACTIVATION_REF=release/appcast-vinvalid "$ACTIVATION_PR_VERIFY_SCRIPT"
+
+activation_remote="$fixture_root/activation-policy-remote.git"
+activation_target="$fixture_root/activation-policy-target"
+git init --bare --initial-branch=main "$activation_remote" >/dev/null
+git clone "$activation_remote" "$activation_target" >/dev/null
+git -C "$activation_target" config user.name "Codex Radar Tests"
+git -C "$activation_target" config user.email "tests@codex-radar.invalid"
+printf '%s\n' "initial" >"$activation_target/README.md"
+printf '%s\n' "previous feed" >"$activation_target/appcast.xml"
+git -C "$activation_target" add README.md appcast.xml
+git -C "$activation_target" commit -m "Add initial policy fixture" >/dev/null
+git -C "$activation_target" push origin main >/dev/null
+/usr/bin/env \
+  ACTIVATION_REF=feature/example \
+  ACTIVATION_TARGET_DIR="$activation_target" \
+  "$ACTIVATION_PR_VERIFY_SCRIPT"
+git -C "$activation_target" switch -c feature/appcast >/dev/null
+printf '%s\n' "mutated feed" >"$activation_target/appcast.xml"
+git -C "$activation_target" add appcast.xml
+git -C "$activation_target" commit -m "Mutate feed outside activation policy" >/dev/null
+expect_failure "appcast.xml may only change through a Production Feed activation PR" \
+  /usr/bin/env \
+    ACTIVATION_REF=feature/appcast \
+    ACTIVATION_TARGET_DIR="$activation_target" \
+    "$ACTIVATION_PR_VERIFY_SCRIPT"
+
+git -C "$activation_target" reset --hard origin/main >/dev/null
+git -C "$activation_target" mv appcast.xml archived.xml
+git -C "$activation_target" commit -m "Rename feed outside activation policy" >/dev/null
+expect_failure "appcast.xml may only change through a Production Feed activation PR" \
+  /usr/bin/env \
+    ACTIVATION_REF=feature/renamed-appcast \
+    ACTIVATION_TARGET_DIR="$activation_target" \
+    "$ACTIVATION_PR_VERIFY_SCRIPT"
+
+for required_activation_verifier_text in \
+  'rev-list --count' \
+  'diff --no-renames --name-only' \
+  'gh release verify "$tag"' \
+  'verify_update_artifacts.sh' \
+  '--feed "$target_dir/appcast.xml"' \
+  '--mode published' \
+  '--mode previous' \
+  'origin/main:appcast.xml'; do
+  /usr/bin/grep -F -- "$required_activation_verifier_text" \
+    "$ACTIVATION_PR_VERIFY_SCRIPT" >/dev/null ||
+    fail "verify_activation_pr.sh lacks required policy: $required_activation_verifier_text"
+done
 
 expect_failure "usage:" "$HALT_SCRIPT"
 expect_failure "usage:" "$HALT_SCRIPT" --previous-commit
