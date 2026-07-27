@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-  pull_request: {}
   pull_request_target:
     branches:
       - main
@@ -17,75 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Temporary bootstrap for the PR that installs the pull_request_target workflow on main.
-  validate:
-    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 9 && github.event.pull_request.head.ref == 'codex/enforce-main-release-gates' && github.event.pull_request.head.repo.full_name == github.repository && 'validate' || 'bootstrap-disabled' }}
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 9 && github.event.pull_request.head.ref == 'codex/enforce-main-release-gates' && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: macos-15
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - name: Check out target revision
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Install verified actionlint
-        shell: bash
-        run: |
-          set -euo pipefail
-          base_url="https://github.com/rhysd/actionlint/releases/download/v1.7.12/"
-          case "$(uname -m)" in
-            arm64)
-              archive="actionlint_1.7.12_darwin_arm64.tar.gz"
-              archive_sha="aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
-              ;;
-            x86_64)
-              archive="actionlint_1.7.12_darwin_amd64.tar.gz"
-              archive_sha="5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644"
-              ;;
-            *)
-              echo "unsupported actionlint architecture: $(uname -m)" >&2
-              exit 1
-              ;;
-          esac
-          archive_path="$RUNNER_TEMP/$archive"
-          install_dir="$RUNNER_TEMP/actionlint"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --output "$archive_path" "$base_url$archive"
-          printf '%s  %s\n' "$archive_sha" "$archive_path" | shasum -a 256 -c -
-          mkdir -p "$install_dir"
-          tar -xzf "$archive_path" -C "$install_dir"
-          "$install_dir/actionlint" -version
-
-      - name: Lint workflows
-        shell: bash
-        run: |
-          find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
-            xargs -0 "$RUNNER_TEMP/actionlint/actionlint"
-
-      - name: Build with strict concurrency
-        run: swift build -c release -Xswiftc -strict-concurrency=complete
-
-      - name: Run validation suite
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Swift Testing 124.4 can crash when AppKit-facing and core suites share a process.
-          appkit_test_suites='MenuActionLayoutTests|MenuBarControllerTests|MenuBarPanelActionsTests|SettingsWindowBridgeTests'
-          swift test --no-parallel --filter "$appkit_test_suites"
-          swift test --no-parallel --skip "$appkit_test_suites"
-          bash Tests/ScriptTests/release_common_tests.sh
-          bash Tests/ScriptTests/package_verification_tests.sh
-          bash Tests/ScriptTests/update_feed_tests.sh
-          find script -name '*.sh' -print0 | xargs -0 -n1 bash -n
-          ./script/package_app.sh --output dist/ci --configuration release --architectures "$(uname -m)" --updates-enabled false
-
   start-validation-check:
     name: start-validation-check
-    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-15
     timeout-minutes: 5
     permissions:

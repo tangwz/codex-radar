@@ -183,7 +183,6 @@ required_ci_snippets = [
   "permissions:\n  contents: read",
   "checks: write",
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-  "pull_request: {}",
   "pull_request_target:",
   "branches:\n      - main",
   "path: trusted-source",
@@ -220,11 +219,8 @@ pull_request_target = fetch_key(ci_triggers, "pull_request_target")
 unless fetch_key(pull_request_target, "branches") == ["main"]
   reject("CI trusted pull_request_target policy must be restricted to main")
 end
-unless fetch_key(ci_triggers, "pull_request").is_a?(Hash)
-  reject("CI bootstrap must temporarily retain the pull_request trigger")
-end
+reject("CI must not execute a PR-owned workflow") unless fetch_key(ci_triggers, "pull_request").nil?
 jobs = fetch_key(ci_document, "jobs")
-bootstrap_job = fetch_key(jobs, "validate")
 start_job = fetch_key(jobs, "start-validation-check")
 trusted_job = fetch_key(jobs, "trusted-policy")
 target_job = fetch_key(jobs, "target-validation")
@@ -233,37 +229,13 @@ start_steps = fetch_key(start_job, "steps")
 trusted_steps = fetch_key(trusted_job, "steps")
 target_steps = fetch_key(target_job, "steps")
 finalize_steps = fetch_key(finalize_job, "steps")
-bootstrap_steps = fetch_key(bootstrap_job, "steps")
-unless bootstrap_steps.is_a?(Array) && start_steps.is_a?(Array) && trusted_steps.is_a?(Array) &&
+unless start_steps.is_a?(Array) && trusted_steps.is_a?(Array) &&
     target_steps.is_a?(Array) && finalize_steps.is_a?(Array)
   reject("CI validation jobs are missing")
-end
-bootstrap_name = fetch_key(bootstrap_job, "name").to_s
-bootstrap_condition = fetch_key(bootstrap_job, "if").to_s
-unless bootstrap_name.include?("'validate' || 'bootstrap-disabled'") &&
-    bootstrap_name.include?("github.event.pull_request.number == 9") &&
-    bootstrap_condition.include?("github.event_name == 'pull_request'") &&
-    bootstrap_condition.include?("github.event.pull_request.number == 9") &&
-    bootstrap_condition.include?("github.event.pull_request.head.ref == 'codex/enforce-main-release-gates'") &&
-    bootstrap_condition.include?("github.event.pull_request.head.repo.full_name == github.repository") &&
-    fetch_key(fetch_key(bootstrap_job, "permissions"), "contents") == "read" &&
-    fetch_key(fetch_key(bootstrap_job, "permissions"), "checks").nil?
-  reject("CI bootstrap validate job must be isolated to the trusted migration PR with read-only contents")
-end
-bootstrap_run = bootstrap_steps.map { |step| fetch_key(step, "run") }.compact.join("\n")
-[
-  "swift build -c release -Xswiftc -strict-concurrency=complete",
-  "bash Tests/ScriptTests/update_feed_tests.sh",
-  "./script/package_app.sh"
-].each do |snippet|
-  reject("CI bootstrap validate job lacks: #{snippet}") unless bootstrap_run.include?(snippet)
 end
 unless fetch_key(fetch_key(start_job, "permissions"), "checks") == "write" &&
     fetch_key(fetch_key(start_job, "permissions"), "contents").nil?
   reject("CI check creation job must have only checks:write")
-end
-unless fetch_key(start_job, "if").to_s.include?("github.event_name != 'pull_request'")
-  reject("CI privileged check creation must not run in the PR-owned bootstrap workflow")
 end
 unless fetch_key(fetch_key(trusted_job, "permissions"), "contents") == "read" &&
     fetch_key(fetch_key(trusted_job, "permissions"), "checks").nil?
