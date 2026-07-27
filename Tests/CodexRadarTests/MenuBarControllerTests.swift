@@ -42,15 +42,26 @@ struct MenuBarControllerTests {
   }
 
   @Test
-  func rendersStableNormalAndAlertStatusImages() throws {
-    let normal = MenuBarStatusIconRenderer.image(hasResetAlert: false)
-    let alert = MenuBarStatusIconRenderer.image(hasResetAlert: true)
-    let normalData = try #require(normal.tiffRepresentation)
-    let alertData = try #require(alert.tiffRepresentation)
+  func installsOnePassiveResetAlertBadge() throws {
+    let controller = MenuBarController(
+      store: makeStore(),
+      rootView: AnyView(EmptyView()),
+      dependencies: makeDependencies()
+    )
+    defer { controller.uninstall() }
 
-    #expect(normal.size == NSSize(width: 18, height: 18))
-    #expect(alert.size == normal.size)
-    #expect(normalData != alertData)
+    controller.install()
+    controller.install()
+
+    let button = try #require(controller.statusItem?.button)
+    let badge = try #require(controller.resetAlertBadgeView)
+    #expect(button.image === MenuBarIconConfiguration.image)
+    #expect(
+      button.subviews.filter { $0 is MenuBarResetAlertBadgeView }.count == 1
+    )
+    #expect(badge.superview === button)
+    #expect(badge.isHidden)
+    #expect(badge.hitTest(NSPoint(x: 1, y: 1)) == nil)
   }
 
   @Test
@@ -212,7 +223,9 @@ struct MenuBarControllerTests {
     defer { controller.uninstall() }
     controller.install()
     let button = try #require(controller.statusItem?.button)
-    let initialImageData = try #require(button.image?.tiffRepresentation)
+    let initialImage = try #require(button.image)
+    let badge = try #require(controller.resetAlertBadgeView)
+    #expect(badge.isHidden)
 
     await store.refreshForecast()
     await waitUntil {
@@ -220,7 +233,8 @@ struct MenuBarControllerTests {
     }
 
     #expect(button.accessibilityLabel() == AppLocalization.string("Codex reset incoming"))
-    #expect(button.image?.tiffRepresentation != initialImageData)
+    #expect(button.image === initialImage)
+    #expect(badge.isHidden == false)
   }
 
   @Test

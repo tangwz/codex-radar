@@ -12,34 +12,25 @@ enum MenuBarPanelCommand: Equatable {
   }
 }
 
-enum MenuBarStatusIconRenderer {
-  static let alertDiameter: CGFloat = 6
+@MainActor
+final class MenuBarResetAlertBadgeView: NSView {
+  static let diameter: CGFloat = 6
 
-  @MainActor
-  static func image(hasResetAlert: Bool) -> NSImage {
-    let base = MenuBarIconConfiguration.image
-    base.isTemplate = false
-    guard hasResetAlert else { return base }
+  init() {
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.systemRed.cgColor
+    layer?.cornerRadius = Self.diameter / 2
+    isHidden = true
+  }
 
-    let size = NSSize(
-      width: MenuBarIconConfiguration.sideLength,
-      height: MenuBarIconConfiguration.sideLength
-    )
-    let image = NSImage(size: size, flipped: false) { rect in
-      base.draw(in: rect)
-      NSColor.systemRed.setFill()
-      NSBezierPath(
-        ovalIn: NSRect(
-          x: rect.maxX - alertDiameter,
-          y: rect.maxY - alertDiameter,
-          width: alertDiameter,
-          height: alertDiameter
-        )
-      ).fill()
-      return true
-    }
-    image.isTemplate = false
-    return image
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
   }
 }
 
@@ -102,6 +93,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
   private var lastHasResetAlert: Bool?
 
   private(set) var statusItem: NSStatusItem?
+  private(set) var resetAlertBadgeView: MenuBarResetAlertBadgeView?
 
   init(
     store: DashboardStore,
@@ -133,13 +125,28 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     popover.delegate = self
     popover.contentViewController = hostingController
 
+    button.image = MenuBarIconConfiguration.image
     button.imageScaling = .scaleProportionallyDown
     button.imagePosition = .imageOnly
     button.target = self
     button.action = #selector(handleStatusItemClick(_:))
     button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
+    let resetAlertBadgeView = MenuBarResetAlertBadgeView()
+    button.addSubview(resetAlertBadgeView)
+    NSLayoutConstraint.activate([
+      resetAlertBadgeView.widthAnchor.constraint(
+        equalToConstant: MenuBarResetAlertBadgeView.diameter
+      ),
+      resetAlertBadgeView.heightAnchor.constraint(
+        equalToConstant: MenuBarResetAlertBadgeView.diameter
+      ),
+      resetAlertBadgeView.topAnchor.constraint(equalTo: button.topAnchor, constant: 2),
+      resetAlertBadgeView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -2),
+    ])
+
     statusItem = item
+    self.resetAlertBadgeView = resetAlertBadgeView
     self.popover = popover
     observePresentationState()
     refreshStatusItem()
@@ -182,6 +189,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
       button.action = nil
     }
 
+    resetAlertBadgeView?.removeFromSuperview()
+    resetAlertBadgeView = nil
+
     if let statusItem {
       dependencies.removeStatusItem(statusItem)
       self.statusItem = nil
@@ -217,11 +227,16 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
   }
 
   private func refreshStatusItem() {
-    guard let button = statusItem?.button else { return }
+    guard
+      let button = statusItem?.button,
+      let resetAlertBadgeView
+    else {
+      return
+    }
 
     let hasResetAlert = ResetForecastPresentation(forecast: store.forecast).hasResetAlert
     if lastHasResetAlert != hasResetAlert {
-      button.image = MenuBarStatusIconRenderer.image(hasResetAlert: hasResetAlert)
+      resetAlertBadgeView.isHidden = !hasResetAlert
       lastHasResetAlert = hasResetAlert
     }
 
