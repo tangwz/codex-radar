@@ -844,15 +844,39 @@ expect_failure "usage:" "$HALT_SCRIPT" --previous-commit
 expect_failure "previous commit must be a full Git commit SHA" \
   "$HALT_SCRIPT" --previous-commit not-a-commit
 
-readme_marketing_version="$(
-  /usr/bin/sed -n 's/^MARKETING_VERSION=//p' "$ROOT_DIR/version.env"
-)"
-[[ "$readme_marketing_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-  fail "version.env lacks a valid MARKETING_VERSION"
-readme_archive="CodexRadar-v${readme_marketing_version}-macos-universal.zip"
+/usr/bin/python3 - "$README_FILE" <<'PYTHON'
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+zip_links = re.findall(
+    r"releases/download/(v[0-9]+\.[0-9]+\.[0-9]+)/"
+    r"(CodexRadar-v([0-9]+\.[0-9]+\.[0-9]+)-macos-universal\.zip)(?=>)",
+    source,
+)
+checksum_links = re.findall(
+    r"releases/download/(v[0-9]+\.[0-9]+\.[0-9]+)/"
+    r"(CodexRadar-v([0-9]+\.[0-9]+\.[0-9]+)-macos-universal\.zip\.sha256)(?=>)",
+    source,
+)
+if not zip_links and not checksum_links:
+    if "当前尚无可下载的公开 Release。" not in source:
+        raise SystemExit("README.md must identify the last public Release or state that none exists")
+elif len(zip_links) != 1 or len(checksum_links) != 1:
+    raise SystemExit("README.md must contain one immutable ZIP/checksum pair")
+else:
+    zip_tag, zip_name, zip_version = zip_links[0]
+    checksum_tag, checksum_name, checksum_version = checksum_links[0]
+    if not (
+        zip_tag == checksum_tag == f"v{zip_version}"
+        and zip_version == checksum_version
+        and checksum_name == f"{zip_name}.sha256"
+        and f"shasum -a 256 --check {checksum_name}" in source
+    ):
+        raise SystemExit("README.md immutable install links are inconsistent")
+PYTHON
 for required_readme_text in \
-  "releases/download/v${readme_marketing_version}/${readme_archive}" \
-  "${readme_archive}.sha256" \
   'ad-hoc' \
   'Open Anyway'; do
   /usr/bin/grep -F "$required_readme_text" "$README_FILE" >/dev/null ||

@@ -42,7 +42,7 @@
 
 ## 准备 Candidate
 
-1. 更新 `version.env`，确保 `MARKETING_VERSION` 未使用过，`BUILD_NUMBER` 严格递增；同时把 `README.md` 的 bootstrap Release URL、ZIP 和 checksum 文件名更新为同一个 `v<MARKETING_VERSION>`。
+1. 更新 `version.env`，确保 `MARKETING_VERSION` 未使用过，`BUILD_NUMBER` 严格递增。此时不要把 `README.md` 的公开下载链接提前切到尚未发布的 Candidate；链接必须继续指向最后一个成功公开的 Production Update。若 bootstrap 尚未成功且旧链接对应 burned tag，则改为明确说明当前没有可下载的公开 Release。
 2. 从 `main` 对目标提交创建 `v<MARKETING_VERSION>` tag 并推送。
 3. `prepare-candidate` 先在无 secret 的只读 job 中测试并构建 Universal 2 ZIP；只有 tag 路径会进入 `release` Environment。
 4. workflow 完成后确认 Release 仍为 Draft，并下载保留七天的 qualification Artifact。
@@ -74,9 +74,11 @@ workflow 准备 activation branch 后会进入 `Activation PR Pending`。Release
 
 activation PR 合并后，公开 Release 和 tag 永远不得自动删除或回滚。workflow 会有限次轮询固定 raw URL：旧 feed 字节只表示缓存尚未收敛；候选精确字节表示发布完成；任何其他字节必须由 Release Operator 调查。轮询超时进入 `Activation Pending`，不代表发布失败，也不允许回滚。此时仍然只在原 workflow run 中重新运行失败的 job，使它确认仓库 blob 已经是同一候选并继续只读复验 raw URL。
 
+候选成为 Production Update 后，再通过单独 PR 把 `README.md` 的 ZIP URL、checksum URL 和校验命令推进到该公开 tag；三处版本和文件名必须一致。在这个 PR 合并前，README 继续指向上一个成功公开的 Release。首次 bootstrap 没有上一公开版本时，README 保持“当前尚无可下载的公开 Release”提示，直到实际 bootstrap 激活完成。
+
 ## 失败与密钥事件
 
-tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag；workflow 会拒绝该 tag 的 rerun。提高 App Version 和 build number、同步更新 `README.md` 的 bootstrap 下载 URL 与文件名后创建新 tag。若尚未建立 Production Feed，新 tag 在满足空 Release 历史门禁时仍可作为 bootstrap。
+tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag；workflow 会拒绝该 tag 的 rerun。提高 App Version 和 build number 后创建新 tag，但不得让 README 指向尚未公开的新 Candidate；若没有任何可用的公开 Release，则把失败 tag 的死链接替换为无可用下载提示。若尚未建立 Production Feed，新 tag 在满足空 Release 历史门禁时仍可作为 bootstrap。
 
 Candidate 资格测试失败或证据不足时，只删除不可见的 Draft Release。以下示例中的 tag 必须替换为本次失败的实际 tag：
 

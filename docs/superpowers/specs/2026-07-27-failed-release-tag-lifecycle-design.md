@@ -50,7 +50,7 @@
 
 不得重新运行失败 tag 来生成新的签名资产或创建新的 Draft Release。
 
-如果失败发生在首个 Production Feed 激活前，固定的首发版本也已经 burned。新的更高 App Version、递增 build number 和新 tag 在 Production Feed 仍不存在、失败 Release 已删除且 GitHub Release 历史为空时继续作为 bootstrap；bootstrap 资格不得依赖 `0.1.0 (1)` 常量。重试提交还必须把 `README.md` 的 bootstrap URL、ZIP 和 checksum 文件名同步更新为新版本。
+如果失败发生在首个 Production Feed 激活前，固定的首发版本也已经 burned。新的更高 App Version、递增 build number 和新 tag 在 Production Feed 仍不存在、失败 Release 已删除且 GitHub Release 历史为空时继续作为 bootstrap；bootstrap 资格不得依赖 `0.1.0 (1)` 常量。重试期间 `README.md` 不得提前指向尚未公开的新 Candidate；没有任何公开 Release 时，失败 tag 的死链接必须替换为无可用下载提示。bootstrap 成功激活后才通过单独 PR 更新版本固定的 ZIP/checksum 链接。
 
 ### Candidate Draft 创建后失败
 
@@ -132,7 +132,7 @@ Actions concurrency 只能串行化 workflow，不能原子化外部 tag push �
 - 不移动或重新推送旧 tag；
 - 新 tag 必须继续满足 `v<MARKETING_VERSION>`，因此需要新的 App Version，而不是添加 Candidate 或 retry 后缀；
 - `BUILD_NUMBER` 必须严格递增；
-- bootstrap 重试必须同步更新 `README.md` 的版本固定安装链接与 checksum 文件名。
+- README 安装链接必须停留在最后一个成功公开的 Release；没有公开 Release 时显示无可用下载提示，Candidate 激活后再单独推进链接。
 
 ## 测试策略
 
@@ -148,7 +148,7 @@ Actions concurrency 只能串行化 workflow，不能原子化外部 tag push �
 - bootstrap 与普通 Candidate 都必须在签名前与全部其他合法 `vX.Y.Z` tag identity 比较并建立 identity reservation，malformed `v*` tag 不得阻塞后续发布；
 - 两个发布 workflow 必须使用带 `queue: max` 的仓库级共享 concurrency；
 - 激活阶段继续禁止删除 Release 或 tag；
-- 发布手册必须包含永久保留失败 tag、创建更高版本新 tag、同步更新 README 安装链接和 Release-only cleanup 的指导。
+- 发布手册必须包含永久保留失败 tag、创建更高版本新 tag、只在成功激活后推进 README 安装链接和 Release-only cleanup 的指导。
 
 验证命令：
 
