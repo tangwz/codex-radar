@@ -133,6 +133,20 @@ def protected_tag_deletion?(run)
   end
 end
 
+def workflow_runs(jobs)
+  return [] unless jobs.is_a?(Hash)
+
+  jobs.each_value.flat_map do |job|
+    steps = fetch_key(job, "steps")
+    next [] unless steps.is_a?(Array)
+
+    steps.map do |step|
+      run = fetch_key(step, "run")
+      run if run.is_a?(String)
+    end.compact
+  end
+end
+
 unless File.file?(ci_path)
   reject("CI workflow does not exist")
 end
@@ -384,6 +398,9 @@ sign_steps = fetch_key(sign_job, "steps")
 reject("sign-candidate must contain steps") unless sign_steps.is_a?(Array)
 build_steps = fetch_key(build_job, "steps")
 reject("build-test-package must contain steps") unless build_steps.is_a?(Array)
+if workflow_runs(candidate_jobs).any? { |run| protected_tag_deletion?(run) }
+  reject("prepare-candidate.yml must never delete a protected release tag")
+end
 build_validation = build_steps.map { |step| fetch_key(step, "run").to_s }
   .find { |run| run.include?("validate_release_tag") }.to_s
 push_branch = build_validation.index('if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then')
@@ -547,16 +564,7 @@ verify_job = fetch_key(publish_jobs, "publish-and-verify")
 activate_job = fetch_key(publish_jobs, "activate-production-feed")
 reject("publish-update.yml must define publish-and-verify") unless verify_job.is_a?(Hash)
 reject("publish-update.yml must define activate-production-feed") unless activate_job.is_a?(Hash)
-publish_job_runs = []
-publish_jobs.each_value do |job|
-  steps = fetch_key(job, "steps")
-  next unless steps.is_a?(Array)
-
-  steps.each do |step|
-    run = fetch_key(step, "run")
-    publish_job_runs << run if run.is_a?(String)
-  end
-end
+publish_job_runs = workflow_runs(publish_jobs)
 if publish_job_runs.any? { |run| protected_tag_deletion?(run) }
   reject("publish-update.yml must never delete a protected release tag")
 end
@@ -1251,6 +1259,26 @@ for publish_with_tag_api_delete in \
     validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
     "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_api_delete"
 done
+
+candidate_with_tag_mirror="$fixture_root/prepare-candidate-with-tag-mirror.yml"
+/usr/bin/python3 - "$CANDIDATE_WORKFLOW" "$candidate_with_tag_mirror" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = '          gh release create "$tag" \\\n'
+if source.count(needle) != 1:
+    raise SystemExit("Candidate Release creation marker is missing or ambiguous")
+replacement = (
+    '          git tag -d "$tag"\n'
+    '          git push --mirror origin\n'
+    + needle
+)
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "prepare-candidate.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$candidate_with_tag_mirror" "$RELEASING_DOC"
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
