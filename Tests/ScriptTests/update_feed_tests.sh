@@ -117,7 +117,7 @@ def protected_tag_deletion?(run)
     git_push = line.match?(/\bgit\s+push\b/)
     git_push_delete = git_push && (
       line.match?(/(?:\A|\s)(?:--delete|-d)\b/) ||
-      line.match?(/(?:\A|\s)["']?:refs\/tags\//)
+      line.match?(/(?:\A|\s)["']?\+?:refs\/tags\//)
     )
     tag_api_delete = line.match?(/\bgh\s+api\b/) &&
       line.match?(/git\/refs\/tags\//) &&
@@ -363,8 +363,9 @@ unless fetch_key(fetch_key(sign_job, "permissions"), "contents").to_s == "write"
 end
 sign_condition = fetch_key(sign_job, "if").to_s
 unless sign_condition.include?("github.event_name == 'push'") &&
-  sign_condition.include?("startsWith(github.ref, 'refs/tags/v')")
-  reject("manual dry runs must not enter sign-candidate")
+  sign_condition.include?("startsWith(github.ref, 'refs/tags/v')") &&
+  sign_condition.include?("github.run_attempt == 1")
+  reject("manual dry runs and rerun tag pushes must not enter sign-candidate")
 end
 
 secret_references = candidate_source.scan(/\$\{\{[^}]*\bsecrets(?:\.|\[)[^}]*\}\}/m)
@@ -374,6 +375,17 @@ end
 
 sign_steps = fetch_key(sign_job, "steps")
 reject("sign-candidate must contain steps") unless sign_steps.is_a?(Array)
+build_steps = fetch_key(build_job, "steps")
+reject("build-test-package must contain steps") unless build_steps.is_a?(Array)
+build_validation = build_steps.map { |step| fetch_key(step, "run").to_s }
+  .find { |run| run.include?("validate_release_tag") }.to_s
+push_branch = build_validation.index('if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then')
+attempt_guard = build_validation.index('[[ "$GITHUB_RUN_ATTEMPT" == 1 ]]')
+tag_validation = build_validation.index('validate_release_tag "$GITHUB_REF_NAME"')
+unless push_branch && attempt_guard && tag_validation &&
+    push_branch < attempt_guard && attempt_guard < tag_validation
+  reject("tag push reruns must fail before release validation")
+end
 candidate_validation = sign_steps.map { |step| fetch_key(step, "run").to_s }
   .find { |run| run.include?("git merge-base --is-ancestor") }.to_s
 candidate_tag_regex = candidate_validation.index(
@@ -659,8 +671,6 @@ end
   "Production Feed activation PR",
   "409",
   "422",
-  "0.1.0",
-  "BUILD_NUMBER",
   "releases?per_page=100",
   "releases/download/$TAG",
   "--mode published",
@@ -670,6 +680,10 @@ end
   "unknown Production Feed bytes"
 ].each do |snippet|
   reject("publish-update.yml lacks feed activation policy: #{snippet}") unless activate_run.include?(snippet)
+end
+fixed_bootstrap_guard = '[[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]'
+if publish_run.include?(fixed_bootstrap_guard) || activate_run.include?(fixed_bootstrap_guard)
+  reject("bootstrap eligibility must depend on repository state, not a fixed version")
 end
 if activate_run.include?('branch:"main"')
   reject("feed activation must not write appcast.xml directly to main")
@@ -1014,6 +1028,23 @@ expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
   "$publish_with_continued_short_tag_push_delete"
+
+publish_with_forced_tag_delete_refspec="$fixture_root/publish-with-forced-tag-delete-refspec.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_forced_tag_delete_refspec" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = needle + '\n                git push origin +:refs/tags/$TAG'
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
+  "$publish_with_forced_tag_delete_refspec"
 
 publish_with_activation_tag_delete_refspec="$fixture_root/publish-with-activation-tag-delete-refspec.yml"
 /usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_activation_tag_delete_refspec" <<'PYTHON'
@@ -1466,10 +1497,13 @@ prepare_command "$bootstrap_inputs" "$bootstrap_dir/version.env" "$bootstrap_dir
 [[ ! -e "$bootstrap_inputs/production/appcast.xml" ]] ||
   fail "bootstrap preparation seeded a production feed"
 
-expect_failure "bootstrap requires App Version 0.1.0 and build 1" prepare_command \
-  "$fixture_root/bootstrap-wrong-version" "$candidate_dir/version.env" "$candidate_dir/update.env" \
+burned_bootstrap_inputs="$fixture_root/burned-bootstrap-inputs"
+prepare_command \
+  "$burned_bootstrap_inputs" "$candidate_dir/version.env" "$candidate_dir/update.env" \
   "$candidate_archive" "$candidate_manifest" "$candidate_info" \
   --bootstrap --release-history "$fixture_root/empty-history.json"
+[[ -f "$burned_bootstrap_inputs/bootstrap" ]] ||
+  fail "a higher version did not remain eligible after a burned bootstrap tag"
 expect_failure "bootstrap requires an absent Production Feed" prepare_command \
   "$fixture_root/bootstrap-with-feed" "$bootstrap_dir/version.env" "$bootstrap_dir/update.env" \
   "$bootstrap_archive" "$bootstrap_archive.manifest" "$bootstrap_dir/final-Info.plist" \

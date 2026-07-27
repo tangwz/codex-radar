@@ -117,7 +117,6 @@ jobs:
                 --sparkle-source .build/checkouts/Sparkle
               ;;
             404)
-              [[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]
               gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
                 --jq "[.[] | select(.tag_name != \"$TAG\")] | length == 0" | \
                 /usr/bin/grep -Fx true >/dev/null
@@ -345,7 +344,6 @@ jobs:
               [[ -n "$current_blob_sha" ]]
               ;;
             cas_state=ready-bootstrap)
-              [[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]]
               gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
                 --jq "[.[] | select(.tag_name != \"$TAG\")] | length == 0" | \
                 /usr/bin/grep -Fx true >/dev/null

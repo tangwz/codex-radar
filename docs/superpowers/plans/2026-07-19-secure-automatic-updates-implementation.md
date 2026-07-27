@@ -518,7 +518,7 @@ release_url="https://github.com/tangwz/codex-radar/releases/download/v${MARKETIN
 ```
 
 Qualification uses `ARCHIVE_NAME` as a relative enclosure. First implementation has no external release-notes file. Read the current Production Feed only to assert build monotonicity and minimum OS compatibility.
-Accept a `--bootstrap` flag only for App Version `0.1.0`, build `1`, absent Production Feed, and an empty GitHub Release history; all later candidates require the existing signed feed.
+Accept a `--bootstrap` flag only when the Production Feed is absent and GitHub Release history is empty. The intended first attempt is App Version `0.1.0`, build `1`, but if that tag is burned before feed activation, a higher version and build under a new tag remains eligible; all candidates after the first feed exists require that signed feed.
 
 - [ ] **Step 3: Implement post-signing validation**
 
@@ -728,7 +728,7 @@ The workflow must:
 11. poll raw URL with bounded backoff until exact candidate bytes appear;
 12. on timeout report Activation Pending without rollback; on unknown raw bytes require investigation.
 
-For the one-time `0.1.0 (1)` bootstrap only, a 404 Production Feed may be created without a blob SHA after public-asset verification and a second check that release history/feed are still empty. GitHub conflict response terminates the run; every subsequent write requires the current blob SHA.
+For the one-time bootstrap state only, a 404 Production Feed may be created without a blob SHA after public-asset verification and a second check that release history, excluding the current Candidate, and the feed are still empty. Bootstrap eligibility is state-based so a burned initial tag can be replaced only by a higher version and build under a new tag. GitHub conflict response terminates the run; every subsequent write requires the current blob SHA.
 
 After CAS succeeds, never delete or roll back the valid public Release.
 

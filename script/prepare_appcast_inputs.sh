@@ -310,8 +310,6 @@ trap cleanup EXIT
 trap handle_signal HUP INT TERM
 
 if [[ "$bootstrap" == true ]]; then
-  [[ "$MARKETING_VERSION" == 0.1.0 && "$BUILD_NUMBER" == 1 ]] ||
-    die "bootstrap requires App Version 0.1.0 and build 1"
   [[ "$production_feed_supplied" == false ]] ||
     die "bootstrap requires an absent Production Feed"
   [[ -n "$release_history" ]] || die "bootstrap requires GitHub Release history"
