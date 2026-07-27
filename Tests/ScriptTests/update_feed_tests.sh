@@ -153,6 +153,22 @@ def workflow_runs(jobs)
   end
 end
 
+def workflow_local_actions(jobs)
+  return [] unless jobs.is_a?(Hash)
+
+  jobs.each_value.flat_map do |job|
+    job_action = fetch_key(job, "uses").to_s.strip
+    actions = job_action.start_with?("./") ? [job_action] : []
+    steps = fetch_key(job, "steps")
+    next actions unless steps.is_a?(Array)
+
+    actions + steps.map do |step|
+      action = fetch_key(step, "uses").to_s.strip
+      action if action.start_with?("./")
+    end.compact
+  end
+end
+
 unless File.file?(ci_path)
   reject("CI workflow does not exist")
 end
@@ -389,9 +405,11 @@ unless fetch_key(fetch_key(sign_job, "permissions"), "contents").to_s == "write"
   reject("sign-candidate must grant contents: write")
 end
 sign_condition = fetch_key(sign_job, "if").to_s
-unless sign_condition.include?("github.event_name == 'push'") &&
-  sign_condition.include?("startsWith(github.ref, 'refs/tags/v')") &&
-  sign_condition.include?("github.run_attempt == 1")
+expected_sign_condition = (
+  "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && " \
+    "github.run_attempt == 1"
+)
+unless sign_condition == expected_sign_condition
   reject("manual dry runs and rerun tag pushes must not enter sign-candidate")
 end
 
@@ -404,6 +422,13 @@ sign_steps = fetch_key(sign_job, "steps")
 reject("sign-candidate must contain steps") unless sign_steps.is_a?(Array)
 build_steps = fetch_key(build_job, "steps")
 reject("build-test-package must contain steps") unless build_steps.is_a?(Array)
+candidate_local_actions = workflow_local_actions(candidate_jobs)
+unless candidate_local_actions.empty?
+  reject(
+    "#{File.basename(candidate_path)} contains a repo-local action: " \
+      "#{candidate_local_actions.first}"
+  )
+end
 if workflow_runs(candidate_jobs).any? { |run| protected_tag_deletion?(run) }
   reject("prepare-candidate.yml must never delete a protected release tag")
 end
@@ -570,6 +595,13 @@ verify_job = fetch_key(publish_jobs, "publish-and-verify")
 activate_job = fetch_key(publish_jobs, "activate-production-feed")
 reject("publish-update.yml must define publish-and-verify") unless verify_job.is_a?(Hash)
 reject("publish-update.yml must define activate-production-feed") unless activate_job.is_a?(Hash)
+publish_local_actions = workflow_local_actions(publish_jobs)
+unless publish_local_actions.empty?
+  reject(
+    "#{File.basename(publish_path)} contains a repo-local action: " \
+      "#{publish_local_actions.first}"
+  )
+end
 publish_job_runs = workflow_runs(publish_jobs)
 if publish_job_runs.any? { |run| protected_tag_deletion?(run) }
   reject("publish-update.yml must never delete a protected release tag")
@@ -1339,6 +1371,72 @@ PYTHON
 expect_failure "prepare-candidate.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$candidate_with_tag_mirror" "$RELEASING_DOC"
+
+candidate_with_bypassed_sign_gate="$fixture_root/prepare-candidate-with-bypassed-sign-gate.yml"
+/usr/bin/python3 - "$CANDIDATE_WORKFLOW" "$candidate_with_bypassed_sign_gate" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = (
+    "    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+    " && github.run_attempt == 1"
+)
+if source.count(needle) != 1:
+    raise SystemExit("Candidate signing gate is missing or ambiguous")
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, needle + " || always()"))
+PYTHON
+expect_failure "manual dry runs and rerun tag pushes must not enter sign-candidate" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$candidate_with_bypassed_sign_gate" "$RELEASING_DOC"
+
+candidate_with_local_action="$fixture_root/prepare-candidate-with-local-action.yml"
+/usr/bin/python3 - "$CANDIDATE_WORKFLOW" "$candidate_with_local_action" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+sign_marker = "  sign-candidate:\n"
+if source.count(sign_marker) != 1:
+    raise SystemExit("Candidate signing job is missing or ambiguous")
+sign_offset = source.index(sign_marker)
+steps_marker = "    steps:\n"
+steps_offset = source.find(steps_marker, sign_offset)
+if steps_offset < 0:
+    raise SystemExit("Candidate signing steps are missing")
+injected_steps = (
+    steps_marker
+    + "      - name: Delete tag through local action\n"
+    + "        uses: ./.github/actions/delete-tag\n\n"
+)
+source = source[:steps_offset] + source[steps_offset:].replace(
+    steps_marker,
+    injected_steps,
+    1,
+)
+pathlib.Path(sys.argv[2]).write_text(source)
+PYTHON
+expect_failure "prepare-candidate-with-local-action.yml contains a repo-local action" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$candidate_with_local_action" "$RELEASING_DOC"
+
+candidate_with_local_workflow="$fixture_root/prepare-candidate-with-local-workflow.yml"
+/usr/bin/python3 - "$CANDIDATE_WORKFLOW" "$candidate_with_local_workflow" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+job = """
+  delete-tag:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/delete-tag.yml
+"""
+pathlib.Path(sys.argv[2]).write_text(source + job)
+PYTHON
+expect_failure "prepare-candidate-with-local-workflow.yml contains a repo-local action" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$candidate_with_local_workflow" "$RELEASING_DOC"
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
