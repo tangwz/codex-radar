@@ -28,7 +28,7 @@
 
 - tag 必须永久指向原始 commit；
 - tag 不得删除、移动、覆盖或重新创建；
-- 对应 App Version 和 build number 永久视为已使用；
+- tag 名编码的 App Version 永久视为已使用；tag commit 中可合法解析的 build number 也永久视为已使用；
 - 同一 tag 的 workflow 不得通过替换资产重新尝试发布；
 - `prepare-candidate` 的 tag push 路径只允许第一次 workflow attempt，rerun 不得进入签名 Environment 或创建 Draft Release；
 - 所有 Candidate 都必须在签名前与其他语法合法的受保护 `vX.Y.Z` tag identity 比较，不得只依赖当前 Production Feed；
@@ -103,9 +103,10 @@ Production Feed compare-and-swap 成功后，既有 Activation Pending 和 Distr
 所有 Candidate 的 release identity 校验遵循：
 
 - Candidate 的版本与 build 仍须通过通用格式和一致性校验；
-- Candidate 的 App Version 与 build number 必须分别严格高于所有其他语法合法的受保护 `vX.Y.Z` tag 所指向提交中的 `version.env`；
+- Candidate 的 App Version 必须严格高于所有其他语法合法的受保护 `vX.Y.Z` tag 名编码的版本；tag 名是历史 App Version 的唯一 canonical source；
+- 若该 tag 所指向提交包含合法 `version.env`，Candidate 的 build number 还必须严格高于其中的 build；metadata App Version 与 tag 名不一致时不参与历史比较；
 - identity 校验在签名前执行并建立 reservation；
-- 语法合法的 release tag 缺少合法 `version.env` 或 identity 不满足严格递增时均 fail closed；
+- 语法合法的 release tag 缺少或包含损坏的 `version.env` 时，仍永久占用 tag 名编码的 App Version，但它在 Candidate identity 校验前已经失败，不存在可信的 build identity；流程不得猜测 build，也不得永久阻塞所有后续发布；
 - malformed `v*` tag 仍由 ruleset 永久保护，但不属于 release identity history；它自己的 Candidate workflow 会在签名前因 tag 格式不合法而失败。
 
 bootstrap 额外以状态而不是固定版本判定资格：
@@ -145,7 +146,7 @@ Actions concurrency 只能串行化 workflow，不能原子化外部 tag push �
 - 对 tag namespace 执行 `git push --prune` 也必须被识别为 tag 删除；
 - Candidate tag push rerun 必须在签名和 Draft Release 创建前失败；
 - 首个 bootstrap tag burned 后，更高版本和 build 的新 tag 在 feed 与 Release 历史均为空时仍可 bootstrap；
-- bootstrap 与普通 Candidate 都必须在签名前与全部其他合法 `vX.Y.Z` tag identity 比较并建立 identity reservation，malformed `v*` tag 不得阻塞后续发布；
+- bootstrap 与普通 Candidate 都必须在签名前与全部其他合法 `vX.Y.Z` tag 名及其可验证 build metadata 比较并建立 identity reservation；缺失、损坏或 App Version 不匹配的 metadata 与 malformed `v*` tag 均不得通过 metadata App Version 永久阻塞后续发布；
 - 两个发布 workflow 必须使用带 `queue: max` 的仓库级共享 concurrency；
 - 激活阶段继续禁止删除 Release 或 tag；
 - 发布手册必须包含永久保留失败 tag、创建更高版本新 tag、只在成功激活后推进 README 安装链接和 Release-only cleanup 的指导。

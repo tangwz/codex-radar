@@ -35,7 +35,17 @@ load_version_config "$fixture_dir/valid.env"
 validate_release_identity_against_tags "v0.2.0" "$tag_repository"
 
 git -C "$tag_repository" tag vtest
+printf 'MARKETING_VERSION=9.0.0\nBUILD_NUMBER=2\n' >"$tag_repository/version.env"
+git -C "$tag_repository" add version.env
+git -C "$tag_repository" commit -qm "release: add mismatched identity metadata"
 git -C "$tag_repository" tag v0.2.1
+git -C "$tag_repository" rm -q version.env
+git -C "$tag_repository" commit -qm "release: add missing identity metadata"
+git -C "$tag_repository" tag v0.2.2
+printf 'MARKETING_VERSION=invalid\nBUILD_NUMBER=3\n' >"$tag_repository/version.env"
+git -C "$tag_repository" add version.env
+git -C "$tag_repository" commit -qm "release: add invalid identity metadata"
+git -C "$tag_repository" tag v0.2.3
 
 printf 'MARKETING_VERSION=0.3.0\nBUILD_NUMBER=3\n' >"$fixture_dir/higher.env"
 load_version_config "$fixture_dir/higher.env"

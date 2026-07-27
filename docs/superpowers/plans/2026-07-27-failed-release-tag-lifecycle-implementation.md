@@ -399,7 +399,7 @@ git push origin +:refs/tags/$TAG
 
 删除 `0.1.0 (1)` 的硬编码资格判断。bootstrap 只允许在 Production Feed 不存在且 GitHub Release 历史为空时准备；公开 Candidate 后的两次检查都忽略当前 Candidate，但不得发现其他 Release，并在无 blob SHA 写入前再次确认 feed 仍返回 404。
 
-保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。每个 Candidate 在签名前读取所有其他 `v*` tag 的 `version.env`，要求 App Version 和 build number 均严格增加；成功校验建立 identity reservation，之后创建的 tag 不追溯性地使它失效。两个发布 workflow 使用带 `queue: max` 的仓库级 concurrency。添加 fixture，证明普通与 bootstrap Candidate 都不能低于签名前已经存在的 burned identity。
+保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。每个 Candidate 在签名前要求 App Version 高于所有其他合法 `vX.Y.Z` tag 名编码的版本，并要求 build number 高于这些 tag commit 中所有可合法解析的 build。tag 名是历史 App Version 的唯一 canonical source；缺失、损坏或不匹配的 metadata App Version 不得永久阻塞后续发布。成功校验建立 identity reservation，之后创建的 tag 不追溯性地使它失效。两个发布 workflow 使用带 `queue: max` 的仓库级 concurrency。添加 fixture，证明普通与 bootstrap Candidate 都不能低于签名前已经存在的可验证 burned identity，同时可从缺失、损坏或 App Version 不匹配的永久 tag 恢复。
 
 - [ ] **Step 4: Verify the remediation**
 
