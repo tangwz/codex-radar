@@ -547,6 +547,9 @@ reject("publish-and-verify must contain steps") unless publish_steps.is_a?(Array
 reject("activate-production-feed must contain steps") unless activate_steps.is_a?(Array)
 publish_run = publish_steps.map { |step| fetch_key(step, "run").to_s }.join("\n")
 activate_run = activate_steps.map { |step| fetch_key(step, "run").to_s }.join("\n")
+if activate_run.gsub(/\\\r?\n/, " ").match?(/\bgh\s+release\s+delete\b/)
+  reject("feed activation must never delete a public Release or tag")
+end
 publish_checkout = publish_steps.find do |step|
   fetch_key(step, "uses").to_s ==
     "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
@@ -1037,6 +1040,28 @@ expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
   "$publish_with_activation_tag_delete_refspec"
+
+publish_with_activation_release_delete="$fixture_root/publish-with-activation-release-delete.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_activation_release_delete" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+marker = (
+    "      - name: Validate public Release and tag ancestry\n"
+    "        shell: bash\n"
+    "        run: |\n"
+    "          set -euo pipefail\n"
+)
+if source.count(marker) != 1:
+    raise SystemExit("Activation validation marker is missing or ambiguous")
+replacement = marker + '          gh release delete "$TAG" --yes\n'
+pathlib.Path(sys.argv[2]).write_text(source.replace(marker, replacement))
+PYTHON
+expect_failure "feed activation must never delete a public Release or tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
+  "$publish_with_activation_release_delete"
 
 publish_with_tag_api_method_delete="$fixture_root/publish-with-tag-api-method-delete.yml"
 publish_with_tag_api_method_equals_delete="$fixture_root/publish-with-tag-api-method-equals-delete.yml"
