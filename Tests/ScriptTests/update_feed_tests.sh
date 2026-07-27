@@ -129,9 +129,10 @@ def protected_tag_deletion?(run)
       )
     git_push_mirror = git_push &&
       line.match?(/(?:\A|\s)--mirror(?:\s|\z)/)
-    tag_api_delete = line.match?(/\bgh\s+api\b/) &&
-      line.match?(/git\/refs\/tags\//) &&
-      line.match?(/(?:\A|\s)(?:--method(?:=|\s+)|-X\s*)DELETE(?:\s|\z)/)
+    tag_api_delete = line.match?(/git\/refs\/tags\//) &&
+      line.match?(
+        /(?:\A|\s)(?:--method(?:=|\s+)|--request(?:=|\s+)|-X\s*)DELETE(?:\s|\z)/
+      )
 
     release_cleanup_tag || git_push_delete || git_push_unqualified_delete ||
       git_push_prune || git_push_mirror || tag_api_delete
@@ -1199,6 +1200,27 @@ PYTHON
 expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_continued_tag_mirror"
+
+publish_with_curl_tag_delete="$fixture_root/publish-with-curl-tag-delete.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_curl_tag_delete" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = (
+    needle
+    + '\n                curl \\'
+    + '\n                  --request DELETE \\'
+    + '\n                  "https://api.github.com/repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"'
+)
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_curl_tag_delete"
 
 publish_with_activation_tag_delete_refspec="$fixture_root/publish-with-activation-tag-delete-refspec.yml"
 /usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_activation_tag_delete_refspec" <<'PYTHON'
