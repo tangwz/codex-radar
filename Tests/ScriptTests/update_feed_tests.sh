@@ -123,7 +123,10 @@ def protected_tag_deletion?(run)
       line.match?(/(?:\A|\s)["']?\+?:["']?[^\/\s"']+["']?(?=\s|\z)/)
     git_push_prune = git_push &&
       line.match?(/(?:\A|\s)--prune\b/) &&
-      line.match?(/refs\/tags\//)
+      (
+        line.match?(/refs\/tags\//) ||
+        line.match?(/(?:\A|\s)--tags(?:\s|\z)/)
+      )
     git_push_mirror = git_push &&
       line.match?(/(?:\A|\s)--mirror(?:\s|\z)/)
     tag_api_delete = line.match?(/\bgh\s+api\b/) &&
@@ -1143,6 +1146,22 @@ PYTHON
 expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_prune"
+
+publish_with_pruned_tags="$fixture_root/publish-with-pruned-tags.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_pruned_tags" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = needle + "\n                git push --prune --tags origin"
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_pruned_tags"
 
 publish_with_tag_mirror="$fixture_root/publish-with-tag-mirror.yml"
 /usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_tag_mirror" <<'PYTHON'
