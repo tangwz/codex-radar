@@ -341,9 +341,9 @@ unless fetch_key(candidate_permissions, "contents").to_s == "read"
   reject("prepare-candidate.yml must be read-only by default")
 end
 candidate_concurrency = fetch_key(candidate, "concurrency")
-unless fetch_key(candidate_concurrency, "group").to_s == "update-${{ github.repository }}-${{ github.ref_name }}" &&
+unless fetch_key(candidate_concurrency, "group").to_s == "update-${{ github.repository }}" &&
     fetch_key(candidate_concurrency, "cancel-in-progress") == false
-  reject("prepare-candidate.yml must use shared update concurrency")
+  reject("prepare-candidate.yml must serialize repository release attempts")
 end
 
 candidate_jobs = fetch_key(candidate, "jobs")
@@ -429,11 +429,22 @@ end
 
 before_secret = sign_steps[0...secret_index].to_s
 after_secret = sign_steps[(secret_index + 1)..].to_s
+prepare_inputs = sign_steps.map { |step| fetch_key(step, "run").to_s }
+  .find { |run| run.include?("prepare_appcast_inputs.sh") }.to_s
+prepare_identity = prepare_inputs.index(
+  'validate_release_identity_against_tags "$GITHUB_REF_NAME"'
+)
+prepare_feed_branch = prepare_inputs.index(
+  "if git cat-file -e origin/main:appcast.xml"
+)
+unless prepare_identity && prepare_feed_branch && prepare_identity < prepare_feed_branch
+  reject("every Candidate must validate burned tag identities before signing")
+end
 [
   "Sparkle-2.9.4.tar.xz",
   "ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9",
   "refs/tags/v*:refs/tags/v*",
-  "validate_bootstrap_identity_against_tags",
+  "validate_release_identity_against_tags",
   "prepare_appcast_inputs.sh",
   "production-download-url-prefix",
   "qualification-download-url-prefix"
@@ -518,9 +529,9 @@ unless fetch_key(publish_permissions, "contents").to_s == "read"
   reject("publish-update.yml must be read-only by default")
 end
 publish_concurrency = fetch_key(publish, "concurrency")
-unless fetch_key(publish_concurrency, "group").to_s == "update-${{ github.repository }}-${{ inputs.tag }}" &&
+unless fetch_key(publish_concurrency, "group").to_s == "update-${{ github.repository }}" &&
     fetch_key(publish_concurrency, "cancel-in-progress") == false
-  reject("publish-update.yml must use shared update concurrency")
+  reject("publish-update.yml must serialize repository release attempts")
 end
 
 publish_jobs = fetch_key(publish, "jobs")
@@ -624,8 +635,7 @@ end
   "releases/download/$TAG",
   "gh release verify \"$TAG\"",
   "release_is_draft=",
-  "gh release delete \"$TAG\" --yes",
-  'validate_bootstrap_identity_against_tags "$TAG"'
+  "gh release delete \"$TAG\" --yes"
 ].each do |snippet|
   reject("publish-update.yml lacks publish verification: #{snippet}") unless publish_run.include?(snippet)
 end
@@ -675,7 +685,6 @@ end
   "409",
   "422",
   "releases?per_page=100",
-  'validate_bootstrap_identity_against_tags "$TAG"',
   "releases/download/$TAG",
   "--mode published",
   "gh release verify \"$TAG\"",
@@ -729,6 +738,7 @@ releasing = File.read(releasing_path, encoding: "UTF-8")
   "Codex agent review",
   "Protect immutable release tags",
   "gh release delete v0.2.0 --yes",
+  "identity reservation",
   "--cleanup-tag",
   "git push --delete",
   "v<MARKETING_VERSION>"

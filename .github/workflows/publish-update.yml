@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: update-${{ github.repository }}-${{ inputs.tag }}
+  group: update-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -117,8 +117,6 @@ jobs:
                 --sparkle-source .build/checkouts/Sparkle
               ;;
             404)
-              git fetch --force origin "refs/tags/v*:refs/tags/v*"
-              validate_bootstrap_identity_against_tags "$TAG"
               gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
                 --jq "[.[] | select(.tag_name != \"$TAG\")] | length == 0" | \
                 /usr/bin/grep -Fx true >/dev/null
@@ -346,8 +344,6 @@ jobs:
               [[ -n "$current_blob_sha" ]]
               ;;
             cas_state=ready-bootstrap)
-              git fetch --force origin "refs/tags/v*:refs/tags/v*"
-              validate_bootstrap_identity_against_tags "$TAG"
               gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
                 --jq "[.[] | select(.tag_name != \"$TAG\")] | length == 0" | \
                 /usr/bin/grep -Fx true >/dev/null

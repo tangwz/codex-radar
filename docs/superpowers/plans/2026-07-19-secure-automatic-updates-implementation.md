@@ -518,7 +518,7 @@ release_url="https://github.com/tangwz/codex-radar/releases/download/v${MARKETIN
 ```
 
 Qualification uses `ARCHIVE_NAME` as a relative enclosure. First implementation has no external release-notes file. Read the current Production Feed only to assert build monotonicity and minimum OS compatibility.
-Accept a `--bootstrap` flag only when the Production Feed is absent and GitHub Release history is empty. The intended first attempt is App Version `0.1.0`, build `1`, but if that tag is burned before feed activation, a higher version and build under a new tag remains eligible. Before signing, compare the candidate identity with `version.env` at every other protected `v*` tag and require both values to be strictly greater; all candidates after the first feed exists require that signed feed.
+Accept a `--bootstrap` flag only when the Production Feed is absent and GitHub Release history is empty. The intended first attempt is App Version `0.1.0`, build `1`, but if that tag is burned before feed activation, a higher version and build under a new tag remains eligible. Every Candidate, including ordinary candidates after the first feed exists, compares its identity with `version.env` at every other protected `v*` tag before signing and requires both values to be strictly greater.
 
 - [ ] **Step 3: Implement post-signing validation**
 
@@ -683,7 +683,7 @@ The workflow must:
 
 Every checkout uses `actions/checkout` pinned to `9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0`; every Artifact download uses `actions/download-artifact` pinned to `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c`.
 
-The same repository/tag concurrency group is later used by `publish-update`. A failed candidate keeps its burned tag permanently; the operator deletes only an existing Draft Release, then retries with a higher version, build number, and matching new tag.
+The same repository-wide concurrency group is later used by `publish-update`. A failed candidate keeps its burned tag permanently; the operator deletes only an existing Draft Release, then retries with a higher version, build number, and matching new tag.
 
 - [ ] **Step 4: Verify and commit**
 
@@ -728,7 +728,7 @@ The workflow must:
 11. poll raw URL with bounded backoff until exact candidate bytes appear;
 12. on timeout report Activation Pending without rollback; on unknown raw bytes require investigation.
 
-For the one-time bootstrap state only, a 404 Production Feed may be created without a blob SHA after public-asset verification and a second check that release history, excluding the current Candidate, and the feed are still empty. Fetch protected tags and revalidate version/build monotonicity immediately before this bootstrap CAS so a tag created after signing cannot be missed. Bootstrap eligibility is state-based so a burned initial tag can be replaced only by a higher version and build under a new tag. GitHub conflict response terminates the run; every subsequent write requires the current blob SHA.
+For the one-time bootstrap state only, a 404 Production Feed may be created without a blob SHA after public-asset verification and a second check that release history, excluding the current Candidate, and the feed are still empty. Both release workflows use one repository-wide concurrency group. Successful pre-signing comparison against protected tags is the Candidate identity reservation point; later tags do not retroactively invalidate it and must instead pass their own pre-signing monotonicity gate. Bootstrap eligibility is state-based so a burned initial tag can be replaced only by a higher version and build under a new tag. GitHub conflict response terminates the run; every subsequent write requires the current blob SHA.
 
 After CAS succeeds, never delete or roll back the valid public Release.
 
