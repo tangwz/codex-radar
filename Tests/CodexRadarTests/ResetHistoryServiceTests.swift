@@ -4,6 +4,16 @@ import Testing
 @testable import CodexRadar
 
 struct ResetHistoryServiceTests {
+  @Test
+  func usesProductionHistoryEndpoint() {
+    let service = ResetHistoryService()
+
+    #expect(
+      service.historyURL.absoluteString
+        == "https://codex-radar-monitor.terencetang.workers.dev/v1/history"
+    )
+  }
+
   @Test(arguments: [
     (ResetHistoryRange.threeMonths, "3m"),
     (ResetHistoryRange.sixMonths, nil),

@@ -32,7 +32,9 @@ struct ResetForecastService: Sendable {
   let loader: HTTPDataLoader
 
   init(
-    currentURL: URL = URL(string: "https://codexradar.com/v1/current")!,
+    currentURL: URL = URL(
+      string: "https://codex-radar-monitor.terencetang.workers.dev/v1/current"
+    )!,
     loader: HTTPDataLoader = .live
   ) {
     self.currentURL = currentURL

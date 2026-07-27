@@ -22,7 +22,9 @@ struct ResetHistoryService: Sendable {
   let loader: HTTPDataLoader
 
   init(
-    historyURL: URL = URL(string: "https://codexradar.com/v1/history")!,
+    historyURL: URL = URL(
+      string: "https://codex-radar-monitor.terencetang.workers.dev/v1/history"
+    )!,
     loader: HTTPDataLoader = .live
   ) {
     self.historyURL = historyURL
