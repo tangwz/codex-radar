@@ -17,7 +17,10 @@ struct ResetForecastServiceTests {
     _ = try await service.fetch(etag: #""signal-1""#)
     let request = try #require(await recorder.request)
 
-    #expect(service.currentURL.absoluteString == "https://codexradar.com/v1/current")
+    #expect(
+      service.currentURL.absoluteString
+        == "https://codex-radar-monitor.terencetang.workers.dev/v1/current"
+    )
     #expect(request.timeoutInterval == 15)
     #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
     #expect(request.value(forHTTPHeaderField: "If-None-Match") == #""signal-1""#)
