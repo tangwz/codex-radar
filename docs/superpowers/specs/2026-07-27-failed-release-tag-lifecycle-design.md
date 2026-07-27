@@ -20,7 +20,7 @@
 - 不拆分 Candidate tag 与最终 Release tag。
 - 不允许使用 tag 后缀绕过 `v<MARKETING_VERSION>` 映射。
 - 不允许复用失败发布的 App Version、build number、tag 或已签名资产。
-- 不改变 Sparkle 签名、资格测试、Release 公开或 Production Feed 激活协议。
+- 不改变 Sparkle 签名、资格测试、Release 公开或 Production Feed compare-and-swap 协议；只把 bootstrap 资格从固定版本改为可验证的仓库状态。
 
 ## 生命周期不变量
 
@@ -30,6 +30,7 @@
 - tag 不得删除、移动、覆盖或重新创建；
 - 对应 App Version 和 build number 永久视为已使用；
 - 同一 tag 的 workflow 不得通过替换资产重新尝试发布；
+- `prepare-candidate` 的 tag push 路径只允许第一次 workflow attempt，rerun 不得进入签名 Environment 或创建 Draft Release；
 - 后续尝试必须先在 `main` 提交更高且未使用的 `MARKETING_VERSION` 与严格递增的 `BUILD_NUMBER`，再创建匹配的新 tag。
 
 `v*` tag ruleset 保持启用，继续禁止 update 与 deletion，并保持 bypass actor 列表为空。
@@ -46,6 +47,8 @@
 - 修复后使用更高版本、递增 build 和新 tag 重新开始。
 
 不得重新运行失败 tag 来生成新的签名资产或创建新的 Draft Release。
+
+如果失败发生在首个 Production Feed 激活前，固定的首发版本也已经 burned。新的更高 App Version、递增 build number 和新 tag 在 Production Feed 仍不存在、失败 Release 已删除且 GitHub Release 历史为空时继续作为 bootstrap；bootstrap 资格不得依赖 `0.1.0 (1)` 常量。
 
 ### Candidate Draft 创建后失败
 
@@ -91,7 +94,15 @@ Production Feed compare-and-swap 成功后，既有 Activation Pending 和 Distr
 - 自动清理失败提示 operator 仅删除 Release；
 - trap 继续返回原始复验失败状态。
 
-`prepare-candidate.yml` 不增加自动清理。Candidate 资格测试发生在 workflow 结束后的受控真实 Mac 上，Draft Release 清理由 Release Operator 按手册执行。
+`prepare-candidate.yml` 不增加自动清理。它在无 secret 的验证步骤拒绝 tag push rerun，并在 `sign-candidate` job 条件中要求 `github.run_attempt == 1`，避免 rerun 进入发布 Environment。Candidate 资格测试发生在 workflow 结束后的受控真实 Mac 上，Draft Release 清理由 Release Operator 按手册执行。
+
+bootstrap 准备与 Production Feed 激活以状态而不是固定版本判定资格：
+
+- Production Feed 必须不存在；
+- Candidate 的版本与 build 仍须通过通用格式和一致性校验；
+- 签名前 GitHub Release 历史必须为空；
+- 公开后和 CAS 写入前，除当前 Candidate 外不得存在其他 Release；
+- 写入前必须再次确认 Production Feed 仍返回 404。
 
 ## 手册修改
 
@@ -116,6 +127,9 @@ Production Feed compare-and-swap 成功后，既有 Activation Pending 和 Distr
 - 公开复验失败路径必须包含 `gh release delete "$TAG" --yes`；
 - 整个发布 workflow 禁止 `--cleanup-tag`；
 - 整个发布 workflow 禁止 `git push --delete` 和其他 tag 删除命令；
+- 强制 refspec `git push origin +:refs/tags/<tag>` 也必须被识别为 tag 删除；
+- Candidate tag push rerun 必须在签名和 Draft Release 创建前失败；
+- 首个 bootstrap tag burned 后，更高版本和 build 的新 tag 在 feed 与 Release 历史均为空时仍可 bootstrap；
 - 激活阶段继续禁止删除 Release 或 tag；
 - 发布手册必须包含永久保留失败 tag、创建更高版本新 tag 和 Release-only cleanup 的指导。
 

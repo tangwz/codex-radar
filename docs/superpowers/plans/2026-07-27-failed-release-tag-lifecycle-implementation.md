@@ -4,7 +4,7 @@
 
 **Goal:** Make failed release recovery delete only the failed GitHub Release while permanently retaining every pushed `v*` tag, then require a higher version and build under a new tag for the next attempt.
 
-**Architecture:** Keep the existing Candidate, publication, public reverification, and Production Feed activation pipeline. Narrow the pre-activation cleanup trap to Release-only cleanup, enforce the protected-tag invariant in the repository workflow-policy test, and align every operator-facing or normative release document with the same state machine.
+**Architecture:** Keep the existing Candidate, publication, public reverification, and Production Feed activation pipeline. Narrow the pre-activation cleanup trap to Release-only cleanup, reject reruns of burned tag pushes before signing, make bootstrap eligibility depend on an absent feed and empty Release history, enforce those invariants in the repository workflow-policy test, and align every operator-facing or normative release document with the same state machine.
 
 **Tech Stack:** GitHub Actions YAML, Bash, embedded Ruby and Python policy fixtures, GitHub CLI, Markdown
 
@@ -21,7 +21,8 @@
 - Do not configure a user, repository role, GitHub App, or GitHub Actions ruleset bypass.
 - Do not split Candidate and final Release tags.
 - Do not change Sparkle signing, qualification, public verification, Production Feed compare-and-swap, Activation Pending, or Distribution Halt semantics.
-- Do not add automatic cleanup to `.github/workflows/prepare-candidate.yml`.
+- Reject tag push reruns before secret exposure and Draft Release creation; do not add automatic cleanup to `.github/workflows/prepare-candidate.yml`.
+- Determine bootstrap eligibility from an absent Production Feed and empty Release history, not a fixed App Version.
 - All code, identifiers, comments, commit messages, and code blocks remain English.
 
 ---
@@ -33,7 +34,8 @@
 - `docs/releasing.md`: owns executable Release Operator recovery instructions for failure before Draft creation, Candidate qualification failure, and public reverification failure.
 - `docs/superpowers/specs/2026-07-19-automatic-updates-design.md`: remains the broad automatic-update architecture document and must not contradict the newer failed-tag lifecycle spec.
 - `docs/superpowers/plans/2026-07-19-secure-automatic-updates-implementation.md`: is retained as implementation history, but its actionable release cleanup statements must describe the repository's final invariant accurately.
-- `.github/workflows/prepare-candidate.yml`: no change. Candidate qualification occurs after this workflow completes, so the operator owns Draft Release cleanup.
+- `.github/workflows/prepare-candidate.yml`: rejects tag push reruns before signing. Candidate qualification still occurs after this workflow completes, so the operator owns Draft Release cleanup.
+- `script/prepare_appcast_inputs.sh`: accepts a higher-version bootstrap after a burned initial tag only while the Production Feed and GitHub Release history remain empty.
 - GitHub repository rulesets: no change. The active `v*` update/deletion protection without bypass is the invariant this implementation accommodates.
 
 ---
@@ -158,7 +160,7 @@ Run:
 
 ```bash
 bash -n Tests/ScriptTests/update_feed_tests.sh
-ruby -e 'require "yaml"; YAML.safe_load_file(".github/workflows/publish-update.yml", aliases: true)'
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/publish-update.yml"), aliases: true)'
 bash Tests/ScriptTests/update_feed_tests.sh
 ```
 
@@ -244,7 +246,7 @@ Immediately after the numbered Candidate preparation steps, add:
 
 > `v<MARKETING_VERSION>` tag 一经推送，App Version、build number 和 tag 就永久被该次尝试占用。即使 workflow 在创建 Draft Release 前失败，也不删除或重跑该 tag；修复必须同时提高 `MARKETING_VERSION` 和 `BUILD_NUMBER`，合入 `main` 后创建匹配的新 tag。
 
-Keep the bootstrap exception and manual dry-run sections unchanged.
+Keep the manual dry-run section unchanged. Document that `0.1.0 (1)` is the intended bootstrap attempt, while bootstrap eligibility remains available to a higher new version and build if the initial tag burns before feed activation.
 
 - [ ] **Step 5: Replace the public-reverification failure paragraph**
 
@@ -311,7 +313,7 @@ Run:
 ```bash
 bash -n Tests/ScriptTests/update_feed_tests.sh
 bash Tests/ScriptTests/update_feed_tests.sh
-ruby -e 'require "yaml"; YAML.safe_load_file(".github/workflows/publish-update.yml", aliases: true)'
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/publish-update.yml"), aliases: true)'
 git diff --check
 rg -n 'gh release delete|git push --delete|cleanup-tag' \
   .github/workflows/publish-update.yml \
@@ -364,3 +366,50 @@ git add Tests/ScriptTests/update_feed_tests.sh \
   docs/superpowers/plans/2026-07-19-secure-automatic-updates-implementation.md
 git commit -m "docs: align failed release recovery"
 ```
+
+---
+
+### Task 3: Harden burned-tag retry and bootstrap recovery
+
+**Files:**
+
+- Modify: `.github/workflows/prepare-candidate.yml`
+- Modify: `.github/workflows/publish-update.yml`
+- Modify: `script/prepare_appcast_inputs.sh`
+- Modify: `Tests/ScriptTests/update_feed_tests.sh`
+- Modify: `docs/releasing.md`
+- Modify: `docs/superpowers/specs/2026-07-27-failed-release-tag-lifecycle-design.md`
+
+- [ ] **Step 1: Block tag push reruns before signing**
+
+在无 secret 的 release identity 校验中要求 `GITHUB_RUN_ATTEMPT == 1`，并在 `sign-candidate` job 条件中同时要求 `github.run_attempt == 1`。手动 dry run 仍可执行，但任何已推送 tag 的 workflow rerun 都必须在进入 `release` Environment 和创建 Draft Release 前停止。
+
+- [ ] **Step 2: Recognize forced deletion refspecs**
+
+扩展 protected-tag validator，使普通与带 `+` 的空 source refspec 都被识别为删除，例如：
+
+```bash
+git push origin +:refs/tags/$TAG
+```
+
+添加 adversarial fixture，证明该命令触发 `publish-update.yml must never delete a protected release tag`。
+
+- [ ] **Step 3: Make bootstrap eligibility state-based**
+
+删除 `0.1.0 (1)` 的硬编码资格判断。bootstrap 只允许在 Production Feed 不存在且 GitHub Release 历史为空时准备；公开 Candidate 后的两次检查都忽略当前 Candidate，但不得发现其他 Release，并在无 blob SHA 写入前再次确认 feed 仍返回 404。
+
+保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。添加 fixture，证明首个 tag burned 后，更高版本和 build 的新 tag 仍可建立首份 feed。
+
+- [ ] **Step 4: Verify the remediation**
+
+Run:
+
+```bash
+bash -n Tests/ScriptTests/update_feed_tests.sh
+bash -n script/prepare_appcast_inputs.sh
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/prepare-candidate.yml"), aliases: true); YAML.safe_load(File.read(".github/workflows/publish-update.yml"), aliases: true)'
+bash Tests/ScriptTests/update_feed_tests.sh
+git diff --check
+```
+
+Expected: 所有命令退出 `0`；tag rerun、普通删除 refspec 与 forced deletion refspec 都被拒绝；`0.1.0 (1)` 与 burned-bootstrap 后的更高新版本都能在空仓库状态下准备 bootstrap，而已有 feed 或其他 Release 时仍失败。

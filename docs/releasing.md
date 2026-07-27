@@ -48,9 +48,9 @@
 4. workflow 完成后确认 Release 仍为 Draft，并下载保留七天的 qualification Artifact。
 5. 对后续版本，在受控真实 Mac 上，以真实上一 Production Update 运行 `script/qualify_update.sh` 完成端到端更新测试。
 
-`v<MARKETING_VERSION>` tag 一经推送，App Version、build number 和 tag 就永久被该次尝试占用。即使 workflow 在创建 Draft Release 前失败，也不删除或重跑该 tag；修复必须同时提高 `MARKETING_VERSION` 和 `BUILD_NUMBER`，合入 `main` 后创建匹配的新 tag。
+`v<MARKETING_VERSION>` tag 一经推送，App Version、build number 和 tag 就永久被该次尝试占用。`prepare-candidate` 只允许 tag push 的第一次 workflow attempt 进入发布路径，GitHub Actions rerun 会在签名和 Draft Release 创建前被拒绝。即使 workflow 在创建 Draft Release 前失败，也不删除或重跑该 tag；修复必须同时提高 `MARKETING_VERSION` 和 `BUILD_NUMBER`，合入 `main` 后创建匹配的新 tag。
 
-bootstrap 0.1.0 (1) 是例外：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用已安装的 0.1.0 (1) 作为上一 Production Update。
+bootstrap 0.1.0 (1) 是预期的首个版本：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用实际激活的 bootstrap 版本作为上一 Production Update。如果 0.1.0 (1) 在 Production Feed 激活前失败，其标识和 tag 仍然 burned；只要 Production Feed 仍不存在、失败 Release 已删除且没有其他 Release 历史，更高版本和 build number 的新 tag 可以继续完成 bootstrap。
 
 bootstrap 的公开 Release、真实 Ed25519 私钥签名 `appcast.xml` 和真实 Mac 首装验收都是外部门禁。在这些门禁完成之前，不得宣称自动更新已可用。仓库根目录的 `appcast.xml` 只能由真实签名的 bootstrap publication workflow 生成并激活；禁止手写、使用测试密钥签名或提交占位 feed。
 
@@ -64,7 +64,7 @@ workflow 会重新下载 Draft 的四个资产，独立复验 tag、版本、com
 
 公开资产复验失败时，workflow 会尝试只删除刚公开的 Release，永久保留已经 burned 的 tag，且 Production Feed 不得推进。如果自动清理失败，停止发布并由 Release Operator 执行下文相同的 Release-only cleanup。无论自动清理是否成功，后续发布都必须使用更高且从未使用的 App Version、严格递增的 build number 和匹配的新 tag。
 
-公开复验通过后，workflow 只读取一次当前 `main` commit SHA，并使用该不可变 SHA 读取 `appcast.xml` 的精确字节和 blob SHA。只有这些字节仍与预期上一份 signed feed 完全一致时，才从同一个 SHA 创建 `release/appcast-v<version>-at-<main-sha-prefix>` 分支，并通过 GitHub Contents API 把候选精确字节写入该分支。workflow 随后验证分支的唯一 parent 是已验证的 `main` SHA、相对 `main` 不落后且只领先一个 commit、唯一变更是 `appcast.xml`，再输出手工创建 Production Feed activation PR 的 compare URL。若等待期间 `main` 前进，旧 PR 会安全地失效；重新运行原 activation job 会基于新的不可变 `main` SHA 创建新分支和 compare URL，无需重写或删除旧分支。HTTP 409、422、预存在的非预期分支、额外文件变更或任何第三种 feed 字节状态都立即终止，禁止强制覆盖。bootstrap `0.1.0 (1)` 是唯一允许在 feed 返回 404 时无 blob SHA 创建的版本，并且写入分支前会再次确认没有其他 Release 历史且 feed 仍不存在。
+公开复验通过后，workflow 只读取一次当前 `main` commit SHA，并使用该不可变 SHA 读取 `appcast.xml` 的精确字节和 blob SHA。只有这些字节仍与预期上一份 signed feed 完全一致时，才从同一个 SHA 创建 `release/appcast-v<version>-at-<main-sha-prefix>` 分支，并通过 GitHub Contents API 把候选精确字节写入该分支。workflow 随后验证分支的唯一 parent 是已验证的 `main` SHA、相对 `main` 不落后且只领先一个 commit、唯一变更是 `appcast.xml`，再输出手工创建 Production Feed activation PR 的 compare URL。若等待期间 `main` 前进，旧 PR 会安全地失效；重新运行原 activation job 会基于新的不可变 `main` SHA 创建新分支和 compare URL，无需重写或删除旧分支。HTTP 409、422、预存在的非预期分支、额外文件变更或任何第三种 feed 字节状态都立即终止，禁止强制覆盖。只有 bootstrap Candidate 允许在 feed 返回 404 时无 blob SHA 创建首份 feed；写入分支前会再次确认除当前 Candidate 外没有 Release 历史且 feed 仍不存在。
 
 workflow 准备 activation branch 后会进入 `Activation PR Pending`。Release Operator 必须使用 warning 中的 compare URL 手工创建 PR；当前仓库禁止 `GITHUB_TOKEN` 创建 PR，因此 PR 作者明确是 Release Operator。这个用户动作会触发 required `validate` check。受信任 workflow 使用 `pull_request_target` 中来自目标 `main` 的 policy 和 verifier 校验不可变 PR head，并通过 GitHub Actions Checks API 把 `validate` 结果明确发布到该 head SHA；policy、target tests 和 Checks API reporter 分属不同 runner，PR 代码不能污染带 `checks: write` 的 runner。activation PR 的 `validate` 会在合并时重新证明：head 直接基于最新 `main` 且只有一个 commit、唯一变更为 `appcast.xml`、候选字节与公开 Immutable Release 完全一致、签名与资产完整性有效，并且当前 Production Feed 仍是允许升级的上一版本。Release Operator 让其他 Codex agent review 该 PR、解决所有 review thread并等待 `validate` 通过后，可以自行合并。合并后只在原 workflow run 中重新运行失败的 activation job；job 会确认 `main/appcast.xml` 已经是同一候选，再继续只读复验固定 raw URL。不要新建一次 workflow dispatch，也不要重新生成或重写 feed。
 
@@ -74,7 +74,7 @@ activation PR 合并后，公开 Release 和 tag 永远不得自动删除或回�
 
 ## 失败与密钥事件
 
-tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag，不重新运行该 tag；提高 App Version 和 build number 后创建新 tag。
+tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag；workflow 会拒绝该 tag 的 rerun。提高 App Version 和 build number 后创建新 tag。若尚未建立 Production Feed，新 tag 在满足空 Release 历史门禁时仍可作为 bootstrap。
 
 Candidate 资格测试失败或证据不足时，只删除不可见的 Draft Release。以下示例中的 tag 必须替换为本次失败的实际 tag：
 
