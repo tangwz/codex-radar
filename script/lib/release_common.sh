@@ -84,8 +84,7 @@ validate_release_identity_against_tags() {
     [[ -n "$ref" ]] || continue
     tag="${ref#refs/tags/}"
     [[ "$tag" == "$candidate_tag" ]] && continue
-    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-      die "protected release tag has an invalid name: $tag" || return 1
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
     config="$(git -C "$repository" show "$ref:version.env" 2>/dev/null)" ||
       die "protected release tag lacks version.env: $tag" || return 1
     load_version_config <(printf '%s\n' "$config") || return 1

@@ -30,6 +30,7 @@ printf 'MARKETING_VERSION=0.2.0\nBUILD_NUMBER=2\n' >"$tag_repository/version.env
 git -C "$tag_repository" add version.env
 git -C "$tag_repository" commit -qm "release: add second identity"
 git -C "$tag_repository" tag v0.2.0
+git -C "$tag_repository" tag vtest
 
 printf 'MARKETING_VERSION=0.3.0\nBUILD_NUMBER=3\n' >"$fixture_dir/higher.env"
 load_version_config "$fixture_dir/higher.env"
