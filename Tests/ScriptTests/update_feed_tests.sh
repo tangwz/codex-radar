@@ -119,6 +119,8 @@ def protected_tag_deletion?(run)
       line.match?(/(?:\A|\s)(?:--delete|-d)\b/) ||
       line.match?(/(?:\A|\s)["']?\+?:refs\/tags\//)
     )
+    git_push_unqualified_delete = git_push &&
+      line.match?(/(?:\A|\s)["']?\+?:["']?[^\/\s"']+["']?(?=\s|\z)/)
     git_push_prune = git_push &&
       line.match?(/(?:\A|\s)--prune\b/) &&
       line.match?(/refs\/tags\//)
@@ -128,8 +130,8 @@ def protected_tag_deletion?(run)
       line.match?(/git\/refs\/tags\//) &&
       line.match?(/(?:\A|\s)(?:--method(?:=|\s+)|-X\s*)DELETE(?:\s|\z)/)
 
-    release_cleanup_tag || git_push_delete || git_push_prune || git_push_mirror ||
-      tag_api_delete
+    release_cleanup_tag || git_push_delete || git_push_unqualified_delete ||
+      git_push_prune || git_push_mirror || tag_api_delete
   end
 end
 
@@ -1108,6 +1110,23 @@ expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
   "$publish_with_forced_tag_delete_refspec"
+
+publish_with_shorthand_tag_delete_refspec="$fixture_root/publish-with-shorthand-tag-delete-refspec.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_shorthand_tag_delete_refspec" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = needle + "\n                git push origin :v0.2.0"
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
+  "$publish_with_shorthand_tag_delete_refspec"
 
 publish_with_tag_prune="$fixture_root/publish-with-tag-prune.yml"
 /usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_tag_prune" <<'PYTHON'
