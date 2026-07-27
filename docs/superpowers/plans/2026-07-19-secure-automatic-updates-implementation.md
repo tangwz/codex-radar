@@ -683,7 +683,7 @@ The workflow must:
 
 Every checkout uses `actions/checkout` pinned to `9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0`; every Artifact download uses `actions/download-artifact` pinned to `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c`.
 
-The same repository/tag concurrency group is later used by `publish-update`. A failed candidate is cleaned by the operator and its identifiers are burned.
+The same repository/tag concurrency group is later used by `publish-update`. A failed candidate keeps its burned tag permanently; the operator deletes only an existing Draft Release, then retries with a higher version, build number, and matching new tag.
 
 - [ ] **Step 4: Verify and commit**
 
@@ -720,7 +720,7 @@ The workflow must:
 3. independently rerun archive/appcast verification;
 4. publish using `gh release edit "$TAG" --draft=false --prerelease`;
 5. redownload fixed public URLs and verify length, SHA-256, Ed25519 and release integrity;
-6. on public-verification failure, delete Release/tag, burn identifiers and leave Production Feed unchanged;
+6. on public-verification failure, delete only the Release, retain the burned tag and leave Production Feed unchanged;
 7. fetch current Production Feed bytes and blob SHA;
 8. if current bytes equal candidate, resume Activation Pending without writing;
 9. if current bytes equal the expected previous signed feed, PUT candidate base64 with current blob SHA and `branch=main`;

@@ -38,6 +38,7 @@
 - 当前单人发布阶段允许发起者自审；增加第二位可信 operator 后，启用 required reviewer 并禁止自审。
 - 为 `main` 启用强制 PR、严格 CI、review thread resolution、CODEOWNERS 路由和分支保护。GitHub approval 数量保持为零，CODEOWNER approval 不作为合并门禁；Release Operator 在其他 Codex agent review 完成且 CI 通过后，可以自行合并自己的 PR。
 - 在首次公开自动更新前启用 Immutable Releases。
+- 保持 `Protect immutable release tags` ruleset 对 `refs/tags/v*` 的 update 与 deletion 禁止规则，且不配置 bypass actor。
 
 ## 准备 Candidate
 
@@ -46,6 +47,8 @@
 3. `prepare-candidate` 先在无 secret 的只读 job 中测试并构建 Universal 2 ZIP；只有 tag 路径会进入 `release` Environment。
 4. workflow 完成后确认 Release 仍为 Draft，并下载保留七天的 qualification Artifact。
 5. 对后续版本，在受控真实 Mac 上，以真实上一 Production Update 运行 `script/qualify_update.sh` 完成端到端更新测试。
+
+`v<MARKETING_VERSION>` tag 一经推送，App Version、build number 和 tag 就永久被该次尝试占用。即使 workflow 在创建 Draft Release 前失败，也不删除或重跑该 tag；修复必须同时提高 `MARKETING_VERSION` 和 `BUILD_NUMBER`，合入 `main` 后创建匹配的新 tag。
 
 bootstrap 0.1.0 (1) 是例外：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用已安装的 0.1.0 (1) 作为上一 Production Update。
 
@@ -59,7 +62,7 @@ bootstrap 的公开 Release、真实 Ed25519 私钥签名 `appcast.xml` 和真�
 
 workflow 会重新下载 Draft 的四个资产，独立复验 tag、版本、commit、checksum、manifest、最终 `Info.plist`、signed appcast 和 ZIP 的 Ed25519 archive signature。验证通过后，它把 Release 公开为 Immutable Pre-release，再从版本固定的公开 URL 重新下载相同资产并执行同一组验证以及 GitHub Release integrity 验证。首次公开自动更新前必须已经在仓库设置中启用 Immutable Releases。
 
-公开资产复验失败时，workflow 会尝试删除刚公开的 Release 和 tag；对应的 App Version、build number 和 tag 随即 burned，不能重新使用。如果自动清理失败，停止发布并由 Release Operator 介入，Production Feed 不得推进。
+公开资产复验失败时，workflow 会尝试只删除刚公开的 Release，永久保留已经 burned 的 tag，且 Production Feed 不得推进。如果自动清理失败，停止发布并由 Release Operator 执行下文相同的 Release-only cleanup。无论自动清理是否成功，后续发布都必须使用更高且从未使用的 App Version、严格递增的 build number 和匹配的新 tag。
 
 公开复验通过后，workflow 只读取一次当前 `main` commit SHA，并使用该不可变 SHA 读取 `appcast.xml` 的精确字节和 blob SHA。只有这些字节仍与预期上一份 signed feed 完全一致时，才从同一个 SHA 创建 `release/appcast-v<version>-at-<main-sha-prefix>` 分支，并通过 GitHub Contents API 把候选精确字节写入该分支。workflow 随后验证分支的唯一 parent 是已验证的 `main` SHA、相对 `main` 不落后且只领先一个 commit、唯一变更是 `appcast.xml`，再输出手工创建 Production Feed activation PR 的 compare URL。若等待期间 `main` 前进，旧 PR 会安全地失效；重新运行原 activation job 会基于新的不可变 `main` SHA 创建新分支和 compare URL，无需重写或删除旧分支。HTTP 409、422、预存在的非预期分支、额外文件变更或任何第三种 feed 字节状态都立即终止，禁止强制覆盖。bootstrap `0.1.0 (1)` 是唯一允许在 feed 返回 404 时无 blob SHA 创建的版本，并且写入分支前会再次确认没有其他 Release 历史且 feed 仍不存在。
 
@@ -71,7 +74,17 @@ activation PR 合并后，公开 Release 和 tag 永远不得自动删除或回�
 
 ## 失败与密钥事件
 
-Candidate 资格测试失败后，由 operator 删除不可见 Draft Release 和 tag。对应的 App Version、build number 和 tag 均视为 burned；修复必须使用更高且从未使用的标识重新发布，不得替换同名资产或复用版本。
+tag 推送后、Draft Release 创建前失败时，不存在需要清理的 Release。保留 tag，不重新运行该 tag；提高 App Version 和 build number 后创建新 tag。
+
+Candidate 资格测试失败或证据不足时，只删除不可见的 Draft Release。以下示例中的 tag 必须替换为本次失败的实际 tag：
+
+```bash
+gh release delete v0.2.0 --yes
+```
+
+公开复验失败时，workflow 执行同一个 Release-only cleanup；自动清理失败时，Release Operator 手动执行上述命令。失败 tag 永久保留，且 App Version、build number 和 tag 均视为 burned。
+
+任何失败恢复都不得使用 `--cleanup-tag`、`git push --delete`、移动 tag 或重新推送旧 tag。新尝试必须同时提高 `MARKETING_VERSION` 和 `BUILD_NUMBER`，并创建新的 `v<MARKETING_VERSION>` tag；不得添加 Candidate 或 retry 后缀来复用相同 App Version。
 
 私钥丢失、完整性无法确认或疑似泄露时，立即停止自动更新发布。保留既有公开 Release 供审计并发布安全公告；恢复只能生成新 key、发布新的手动 bootstrap，并要求用户重新安装，禁止用旧 key 自动换钥或降级到未签名更新。
 
