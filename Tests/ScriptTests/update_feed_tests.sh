@@ -108,6 +108,25 @@ def secret_reference?(value)
   end
 end
 
+def protected_tag_deletion?(run)
+  normalized = run.gsub(/\\\r?\n/, " ")
+  normalized.lines.any? do |line|
+    release_cleanup_tag = line.match?(
+      /\bgh\s+release\s+delete\b.*(?:\A|\s)--cleanup-tag\b/
+    )
+    git_push = line.match?(/\bgit\s+push\b/)
+    git_push_delete = git_push && (
+      line.match?(/(?:\A|\s)(?:--delete|-d)\b/) ||
+      line.match?(/(?:\A|\s)["']?:refs\/tags\//)
+    )
+    tag_api_delete = line.match?(/\bgh\s+api\b/) &&
+      line.match?(/git\/refs\/tags\//) &&
+      line.match?(/(?:\A|\s)(?:--method(?:=|\s+)|-X\s*)DELETE(?:\s|\z)/)
+
+    release_cleanup_tag || git_push_delete || tag_api_delete
+  end
+end
+
 unless File.file?(ci_path)
   reject("CI workflow does not exist")
 end
@@ -495,6 +514,19 @@ verify_job = fetch_key(publish_jobs, "publish-and-verify")
 activate_job = fetch_key(publish_jobs, "activate-production-feed")
 reject("publish-update.yml must define publish-and-verify") unless verify_job.is_a?(Hash)
 reject("publish-update.yml must define activate-production-feed") unless activate_job.is_a?(Hash)
+publish_job_runs = []
+publish_jobs.each_value do |job|
+  steps = fetch_key(job, "steps")
+  next unless steps.is_a?(Array)
+
+  steps.each do |step|
+    run = fetch_key(step, "run")
+    publish_job_runs << run if run.is_a?(String)
+  end
+end
+if publish_job_runs.any? { |run| protected_tag_deletion?(run) }
+  reject("publish-update.yml must never delete a protected release tag")
+end
 unless fetch_key(fetch_key(verify_job, "permissions"), "contents").to_s == "write"
   reject("publish-and-verify must grant contents: write")
 end
@@ -579,18 +611,6 @@ end
 ].each do |snippet|
   reject("publish-update.yml lacks publish verification: #{snippet}") unless publish_run.include?(snippet)
 end
-forbidden_tag_delete = publish_run.lines.any? do |line|
-  line.include?("--cleanup-tag") ||
-    line.match?(/\bgit push\b.*\s--delete(?:\s|$)/) ||
-    line.match?(/\bgit push\b.*:refs\/tags\//) ||
-    (
-      line.match?(/\bgh api\b.*git\/refs\/tags\//) &&
-      line.match?(/(?:--method|-X)\s+DELETE\b/)
-    )
-end
-if forbidden_tag_delete
-  reject("publish-update.yml must never delete a protected release tag")
-end
 draft_download = publish_run.index("gh release download \"$TAG\"")
 draft_verify = publish_run.index("verify_update_artifacts.sh")
 publish_release = publish_run.index("gh release edit \"$TAG\" --draft=false --prerelease")
@@ -654,9 +674,6 @@ end
 if activate_run.include?("repos/$GITHUB_REPOSITORY/pulls") ||
     activate_run.include?("gh workflow run")
   reject("feed activation must leave PR creation to the operator")
-end
-if activate_run.include?("gh release delete") || activate_run.include?("git push --delete")
-  reject("feed activation must never delete a public Release or tag")
 end
 if publish_run.include?("ditto -x") || activate_run.include?("ditto -x")
   reject("publish workflow must not extract an archive before Ed25519 verification")
@@ -973,6 +990,103 @@ PYTHON
 expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_push_delete"
+
+publish_with_continued_short_tag_push_delete="$fixture_root/publish-with-continued-short-tag-push-delete.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_continued_short_tag_push_delete" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = (
+    needle
+    + '\n                git push \\'
+    + '\n                  origin -d "$TAG"'
+)
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
+  "$publish_with_continued_short_tag_push_delete"
+
+publish_with_activation_tag_delete_refspec="$fixture_root/publish-with-activation-tag-delete-refspec.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_activation_tag_delete_refspec" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+marker = (
+    "      - name: Validate public Release and tag ancestry\n"
+    "        shell: bash\n"
+    "        run: |\n"
+    "          set -euo pipefail\n"
+)
+if source.count(marker) != 1:
+    raise SystemExit("Activation validation marker is missing or ambiguous")
+replacement = (
+    marker
+    + "          git push origin \\"
+    + '\n            :refs/tags/"$TAG"\n'
+)
+pathlib.Path(sys.argv[2]).write_text(source.replace(marker, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" \
+  "$publish_with_activation_tag_delete_refspec"
+
+publish_with_tag_api_method_delete="$fixture_root/publish-with-tag-api-method-delete.yml"
+publish_with_tag_api_method_equals_delete="$fixture_root/publish-with-tag-api-method-equals-delete.yml"
+publish_with_tag_api_short_delete="$fixture_root/publish-with-tag-api-short-delete.yml"
+publish_with_tag_api_compact_short_delete="$fixture_root/publish-with-tag-api-compact-short-delete.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" \
+  "$publish_with_tag_api_method_delete" \
+  "$publish_with_tag_api_method_equals_delete" \
+  "$publish_with_tag_api_short_delete" \
+  "$publish_with_tag_api_compact_short_delete" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+methods = (
+    ("--method", "DELETE"),
+    ("--method=DELETE",),
+    ("-X", "DELETE"),
+    ("-XDELETE",),
+)
+for path, method in zip(sys.argv[2:], methods):
+    command_lines = ["          gh api \\"]
+    command_lines.extend(f"            {argument} \\" for argument in method)
+    command_lines.append(
+        '            "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"'
+    )
+    job = "\n".join(
+        (
+            "",
+            "  adversarial-tag-api-delete:",
+            "    runs-on: macos-15",
+            "    steps:",
+            "      - name: Delete protected tag through API",
+            "        shell: bash",
+            "        run: |",
+            *command_lines,
+            "",
+        )
+    )
+    pathlib.Path(path).write_text(source + job)
+PYTHON
+for publish_with_tag_api_delete in \
+  "$publish_with_tag_api_method_delete" \
+  "$publish_with_tag_api_method_equals_delete" \
+  "$publish_with_tag_api_short_delete" \
+  "$publish_with_tag_api_compact_short_delete"; do
+  expect_failure "publish-update.yml must never delete a protected release tag" \
+    validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+    "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_api_delete"
+done
 
 write_version_config() {
   local path="$1" version="$2" build="$3"
