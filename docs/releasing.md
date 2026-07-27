@@ -50,7 +50,9 @@
 
 `v<MARKETING_VERSION>` tag 一经推送，App Version、build number 和 tag 就永久被该次尝试占用。`prepare-candidate` 只允许 tag push 的第一次 workflow attempt 进入发布路径，GitHub Actions rerun 会在签名和 Draft Release 创建前被拒绝。即使 workflow 在创建 Draft Release 前失败，也不删除或重跑该 tag；修复必须同时提高 `MARKETING_VERSION` 和 `BUILD_NUMBER`，合入 `main` 后创建匹配的新 tag。
 
-bootstrap 0.1.0 (1) 是预期的首个版本：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用实际激活的 bootstrap 版本作为上一 Production Update。如果 0.1.0 (1) 在 Production Feed 激活前失败，其标识和 tag 仍然 burned；只要 Production Feed 仍不存在、失败 Release 已删除且没有其他 Release 历史，更高版本和 build number 的新 tag 可以继续完成 bootstrap。workflow 会在签名前和 bootstrap CAS 激活前读取所有受保护 `v*` tag 所指向提交的 `version.env`，要求新 App Version 与 build number 分别严格高于每个 burned identity。
+`Prepare Update Candidate` 与 `Publish Update` 共用仓库级 `update-${{ github.repository }}` concurrency group，同一时刻只允许一个发布 workflow 推进。每个 Candidate 都会在签名前读取所有其他受保护 `v*` tag 所指向提交的 `version.env`，要求新 App Version 与 build number 分别严格高于每个已存在的 burned identity；该门禁不因 Production Feed 已存在而跳过。校验成功即建立该 Candidate 的 identity reservation：之后创建的 tag 必须在自己的签名前校验中高于它，但不会追溯性地使已经签名的 Candidate 失效。公开与激活阶段只验证已保留 Draft、tag、资产和 feed CAS，不重新推断 tag 创建顺序。
+
+bootstrap 0.1.0 (1) 是预期的首个版本：它没有上一 Production Update，不能也不应运行 `script/qualify_update.sh`。该版本执行首装引导验收，包括固定 ZIP/checksum/manifest 复验、应用结构与 ad-hoc 签名复验、手动安装、启动和更新设置检查；它建立首个手动安装基线。完整的 Sparkle 端到端升级资格测试从下一 Candidate 开始，使用实际激活的 bootstrap 版本作为上一 Production Update。如果 0.1.0 (1) 在 Production Feed 激活前失败，其标识和 tag 仍然 burned；只要 Production Feed 仍不存在、失败 Release 已删除且没有其他 Release 历史，更高版本和 build number 的新 tag 可以继续完成 bootstrap。
 
 bootstrap 的公开 Release、真实 Ed25519 私钥签名 `appcast.xml` 和真实 Mac 首装验收都是外部门禁。在这些门禁完成之前，不得宣称自动更新已可用。仓库根目录的 `appcast.xml` 只能由真实签名的 bootstrap publication workflow 生成并激活；禁止手写、使用测试密钥签名或提交占位 feed。
 

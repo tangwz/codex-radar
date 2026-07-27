@@ -71,15 +71,15 @@ semantic_version_is_greater() {
   decimal_is_greater "$left_patch" "$right_patch"
 }
 
-validate_bootstrap_identity_against_tags() {
+validate_release_identity_against_tags() {
   local candidate_tag="$1" repository="${2:-.}"
   local candidate_version="$MARKETING_VERSION" candidate_build="$BUILD_NUMBER"
   local ref tag config tagged_version tagged_build
 
   [[ "$candidate_tag" == "v$candidate_version" ]] ||
-    die "bootstrap tag must equal v$candidate_version" || return 1
+    die "release tag must equal v$candidate_version" || return 1
   git -C "$repository" rev-parse --git-dir >/dev/null 2>&1 ||
-    die "bootstrap tag history requires a Git repository" || return 1
+    die "release tag history requires a Git repository" || return 1
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
     tag="${ref#refs/tags/}"
@@ -96,9 +96,9 @@ validate_bootstrap_identity_against_tags() {
     [[ "$tag" == "v$tagged_version" ]] ||
       die "protected release tag does not match its version.env: $tag" || return 1
     semantic_version_is_greater "$candidate_version" "$tagged_version" ||
-      die "bootstrap App Version must be greater than burned tag $tag" || return 1
+      die "release App Version must be greater than burned tag $tag" || return 1
     decimal_is_greater "$candidate_build" "$tagged_build" ||
-      die "bootstrap build number must be greater than burned tag $tag" || return 1
+      die "release build number must be greater than burned tag $tag" || return 1
   done < <(git -C "$repository" for-each-ref --format='%(refname)' 'refs/tags/v*')
   MARKETING_VERSION="$candidate_version"
   BUILD_NUMBER="$candidate_build"

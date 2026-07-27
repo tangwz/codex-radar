@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: update-${{ github.repository }}-${{ github.ref_name }}
+  group: update-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -165,6 +165,8 @@ jobs:
           archive="dist/downloaded/candidate/$archive_name"
           manifest="$archive.manifest"
           mkdir -p dist/prepared-parent
+          git fetch --force origin "refs/tags/v*:refs/tags/v*"
+          validate_release_identity_against_tags "$GITHUB_REF_NAME"
           if git cat-file -e origin/main:appcast.xml 2>/dev/null; then
             git show origin/main:appcast.xml >dist/production-appcast.xml
             ./script/prepare_appcast_inputs.sh \
@@ -177,8 +179,6 @@ jobs:
               --sparkle-source .build/checkouts/Sparkle \
               --production-feed dist/production-appcast.xml
           else
-            git fetch --force origin "refs/tags/v*:refs/tags/v*"
-            validate_bootstrap_identity_against_tags "$GITHUB_REF_NAME"
             gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" >dist/release-history.json
             ./script/prepare_appcast_inputs.sh \
               --output dist/prepared-parent/inputs \

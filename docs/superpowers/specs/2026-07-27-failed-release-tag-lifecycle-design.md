@@ -31,6 +31,8 @@
 - 对应 App Version 和 build number 永久视为已使用；
 - 同一 tag 的 workflow 不得通过替换资产重新尝试发布；
 - `prepare-candidate` 的 tag push 路径只允许第一次 workflow attempt，rerun 不得进入签名 Environment 或创建 Draft Release；
+- 所有 Candidate 都必须在签名前与其他受保护 `v*` tag identity 比较，不得只依赖当前 Production Feed；
+- 签名前 identity 校验成功是 Candidate 的 reservation point；之后创建的 tag 不追溯性地使该 Candidate 失效；
 - 后续尝试必须先在 `main` 提交更高且未使用的 `MARKETING_VERSION` 与严格递增的 `BUILD_NUMBER`，再创建匹配的新 tag。
 
 `v*` tag ruleset 保持启用，继续禁止 update 与 deletion，并保持 bypass actor 列表为空。
@@ -96,16 +98,23 @@ Production Feed compare-and-swap 成功后，既有 Activation Pending 和 Distr
 
 `prepare-candidate.yml` 不增加自动清理。它在无 secret 的验证步骤拒绝 tag push rerun，并在 `sign-candidate` job 条件中要求 `github.run_attempt == 1`，避免 rerun 进入发布 Environment。Candidate 资格测试发生在 workflow 结束后的受控真实 Mac 上，Draft Release 清理由 Release Operator 按手册执行。
 
-bootstrap 准备与 Production Feed 激活以状态而不是固定版本判定资格：
+`prepare-candidate.yml` 与 `publish-update.yml` 共用 `update-${{ github.repository }}` concurrency group，并设置 `cancel-in-progress: false`。不同 tag 的 workflow 不得并行进入签名、公开或 feed 激活阶段。
 
-- Production Feed 必须不存在；
+所有 Candidate 的 release identity 校验遵循：
+
 - Candidate 的版本与 build 仍须通过通用格式和一致性校验；
 - Candidate 的 App Version 与 build number 必须分别严格高于所有其他受保护 `v*` tag 所指向提交中的 `version.env`；
+- identity 校验在签名前执行并建立 reservation；
+- tag 缺少合法 `version.env` 或 identity 不满足严格递增时均 fail closed。
+
+bootstrap 额外以状态而不是固定版本判定资格：
+
+- Production Feed 必须不存在；
 - 签名前 GitHub Release 历史必须为空；
 - 公开后和 CAS 写入前，除当前 Candidate 外不得存在其他 Release；
 - 写入前必须再次确认 Production Feed 仍返回 404。
 
-workflow 在签名前获取全部 `refs/tags/v*` 并校验上述 identity 单调性；bootstrap CAS 激活前重新获取并再次校验，覆盖两个阶段之间出现新 burned tag 的竞态。tag 缺少合法 `version.env` 或 identity 不满足严格递增时均 fail closed。
+Actions concurrency 只能串行化 workflow，不能原子化外部 tag push 与 Contents API CAS。因此公开与激活阶段不得通过再次获取 tag 来追溯性地撤销已签名 Candidate；后续 tag 在自己的签名前门禁中相对于所有已有 tag 校验。CAS 成功后仍禁止删除或回滚 Release、tag 或资产。
 
 ## 手册修改
 
@@ -133,7 +142,8 @@ workflow 在签名前获取全部 `refs/tags/v*` 并校验上述 identity 单调
 - 强制 refspec `git push origin +:refs/tags/<tag>` 也必须被识别为 tag 删除；
 - Candidate tag push rerun 必须在签名和 Draft Release 创建前失败；
 - 首个 bootstrap tag burned 后，更高版本和 build 的新 tag 在 feed 与 Release 历史均为空时仍可 bootstrap；
-- bootstrap 新 identity 必须在签名前和 CAS 激活前两次与全部其他 `v*` tag identity 比较；
+- bootstrap 与普通 Candidate 都必须在签名前与全部其他 `v*` tag identity 比较并建立 identity reservation；
+- 两个发布 workflow 必须使用仓库级共享 concurrency；
 - 激活阶段继续禁止删除 Release 或 tag；
 - 发布手册必须包含永久保留失败 tag、创建更高版本新 tag 和 Release-only cleanup 的指导。
 
