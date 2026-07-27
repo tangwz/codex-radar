@@ -342,8 +342,9 @@ unless fetch_key(candidate_permissions, "contents").to_s == "read"
 end
 candidate_concurrency = fetch_key(candidate, "concurrency")
 unless fetch_key(candidate_concurrency, "group").to_s == "update-${{ github.repository }}" &&
-    fetch_key(candidate_concurrency, "cancel-in-progress") == false
-  reject("prepare-candidate.yml must serialize repository release attempts")
+    fetch_key(candidate_concurrency, "cancel-in-progress") == false &&
+    fetch_key(candidate_concurrency, "queue").to_s == "max"
+  reject("prepare-candidate.yml must queue repository release attempts")
 end
 
 candidate_jobs = fetch_key(candidate, "jobs")
@@ -530,8 +531,9 @@ unless fetch_key(publish_permissions, "contents").to_s == "read"
 end
 publish_concurrency = fetch_key(publish, "concurrency")
 unless fetch_key(publish_concurrency, "group").to_s == "update-${{ github.repository }}" &&
-    fetch_key(publish_concurrency, "cancel-in-progress") == false
-  reject("publish-update.yml must serialize repository release attempts")
+    fetch_key(publish_concurrency, "cancel-in-progress") == false &&
+    fetch_key(publish_concurrency, "queue").to_s == "max"
+  reject("publish-update.yml must queue repository release attempts")
 end
 
 publish_jobs = fetch_key(publish, "jobs")

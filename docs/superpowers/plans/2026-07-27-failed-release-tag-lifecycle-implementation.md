@@ -4,7 +4,7 @@
 
 **Goal:** Make failed release recovery delete only the failed GitHub Release while permanently retaining every pushed `v*` tag, then require a higher version and build under a new tag for the next attempt.
 
-**Architecture:** Keep the existing Candidate, publication, public reverification, and Production Feed activation pipeline. Narrow cleanup to Release-only operations, reject reruns of burned tag pushes before signing, reserve every Candidate identity through a protected-tag comparison before signing, serialize release workflows repository-wide, make bootstrap eligibility depend on an absent feed and empty Release history, and align every operator-facing or normative release document with the same state machine.
+**Architecture:** Keep the existing Candidate, publication, public reverification, and Production Feed activation pipeline. Narrow cleanup to Release-only operations, reject reruns of burned tag pushes before signing, reserve every Candidate identity through a protected-tag comparison before signing, serialize and queue release workflows repository-wide, make bootstrap eligibility depend on an absent feed and empty Release history, and align every operator-facing or normative release document with the same state machine.
 
 **Tech Stack:** GitHub Actions YAML, Bash, embedded Ruby and Python policy fixtures, GitHub CLI, Markdown
 
@@ -296,7 +296,7 @@ Do not change the numbered publication order, feed CAS rules, or Activation Pend
 In `docs/superpowers/plans/2026-07-19-secure-automatic-updates-implementation.md`, replace the failed-Candidate sentence with:
 
 ```text
-The same repository-wide concurrency group is later used by `publish-update`. A failed candidate keeps its burned tag permanently; the operator deletes only an existing Draft Release, then retries with a higher version, build number, and matching new tag.
+The same repository-wide concurrency group with `queue: max` is later used by `publish-update`. A failed candidate keeps its burned tag permanently; the operator deletes only an existing Draft Release, then retries with a higher version, build number, and matching new tag.
 ```
 
 Replace item 6 under the publish workflow requirements with:
@@ -399,7 +399,7 @@ git push origin +:refs/tags/$TAG
 
 删除 `0.1.0 (1)` 的硬编码资格判断。bootstrap 只允许在 Production Feed 不存在且 GitHub Release 历史为空时准备；公开 Candidate 后的两次检查都忽略当前 Candidate，但不得发现其他 Release，并在无 blob SHA 写入前再次确认 feed 仍返回 404。
 
-保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。每个 Candidate 在签名前读取所有其他 `v*` tag 的 `version.env`，要求 App Version 和 build number 均严格增加；成功校验建立 identity reservation，之后创建的 tag 不追溯性地使它失效。两个发布 workflow 使用仓库级 concurrency。添加 fixture，证明普通与 bootstrap Candidate 都不能低于签名前已经存在的 burned identity。
+保留通用版本、build、tag、manifest 和 `Info.plist` 一致性校验。每个 Candidate 在签名前读取所有其他 `v*` tag 的 `version.env`，要求 App Version 和 build number 均严格增加；成功校验建立 identity reservation，之后创建的 tag 不追溯性地使它失效。两个发布 workflow 使用带 `queue: max` 的仓库级 concurrency。添加 fixture，证明普通与 bootstrap Candidate 都不能低于签名前已经存在的 burned identity。
 
 - [ ] **Step 4: Verify the remediation**
 
