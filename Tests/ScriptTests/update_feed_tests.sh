@@ -122,11 +122,14 @@ def protected_tag_deletion?(run)
     git_push_prune = git_push &&
       line.match?(/(?:\A|\s)--prune\b/) &&
       line.match?(/refs\/tags\//)
+    git_push_mirror = git_push &&
+      line.match?(/(?:\A|\s)--mirror(?:\s|\z)/)
     tag_api_delete = line.match?(/\bgh\s+api\b/) &&
       line.match?(/git\/refs\/tags\//) &&
       line.match?(/(?:\A|\s)(?:--method(?:=|\s+)|-X\s*)DELETE(?:\s|\z)/)
 
-    release_cleanup_tag || git_push_delete || git_push_prune || tag_api_delete
+    release_cleanup_tag || git_push_delete || git_push_prune || git_push_mirror ||
+      tag_api_delete
   end
 end
 
@@ -1113,6 +1116,43 @@ PYTHON
 expect_failure "publish-update.yml must never delete a protected release tag" \
   validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
   "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_prune"
+
+publish_with_tag_mirror="$fixture_root/publish-with-tag-mirror.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_tag_mirror" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = needle + '\n                git tag -d "$TAG"\n                git push --mirror origin'
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_tag_mirror"
+
+publish_with_continued_tag_mirror="$fixture_root/publish-with-continued-tag-mirror.yml"
+/usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_continued_tag_mirror" <<'PYTHON'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+needle = 'gh release delete "$TAG" --yes'
+if source.count(needle) != 1:
+    raise SystemExit("Release-only cleanup marker is missing or ambiguous")
+replacement = (
+    needle
+    + '\n                git tag -d "$TAG"'
+    + '\n                git push \\'
+    + '\n                  --mirror origin'
+)
+pathlib.Path(sys.argv[2]).write_text(source.replace(needle, replacement))
+PYTHON
+expect_failure "publish-update.yml must never delete a protected release tag" \
+  validate_workflow_policy "$WORKFLOW_DIR" "$CI_WORKFLOW" "$CODEOWNERS_FILE" \
+  "$CANDIDATE_WORKFLOW" "$RELEASING_DOC" "$publish_with_continued_tag_mirror"
 
 publish_with_activation_tag_delete_refspec="$fixture_root/publish-with-activation-tag-delete-refspec.yml"
 /usr/bin/python3 - "$PUBLISH_WORKFLOW" "$publish_with_activation_tag_delete_refspec" <<'PYTHON'
