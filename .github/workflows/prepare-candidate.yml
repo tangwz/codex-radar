@@ -12,6 +12,7 @@ permissions:
 concurrency:
   group: update-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   build-test-package:

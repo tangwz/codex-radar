@@ -1,0 +1,9 @@
+paths:
+  .github/workflows/prepare-candidate.yml:
+    ignore:
+      # actionlint 1.7.12 predates GitHub Actions concurrency queue support.
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/publish-update.yml:
+    ignore:
+      # actionlint 1.7.12 predates GitHub Actions concurrency queue support.
+      - 'unexpected key "queue" for "concurrency" section'

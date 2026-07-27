@@ -98,7 +98,7 @@ Production Feed compare-and-swap 成功后，既有 Activation Pending 和 Distr
 
 `prepare-candidate.yml` 不增加自动清理。它在无 secret 的验证步骤拒绝 tag push rerun，并在 `sign-candidate` job 条件中要求 `github.run_attempt == 1`，避免 rerun 进入发布 Environment。Candidate 资格测试发生在 workflow 结束后的受控真实 Mac 上，Draft Release 清理由 Release Operator 按手册执行。
 
-`prepare-candidate.yml` 与 `publish-update.yml` 共用 `update-${{ github.repository }}` concurrency group，并设置 `cancel-in-progress: false`。不同 tag 的 workflow 不得并行进入签名、公开或 feed 激活阶段。
+`prepare-candidate.yml` 与 `publish-update.yml` 共用 `update-${{ github.repository }}` concurrency group，设置 `cancel-in-progress: false` 与 `queue: max`。不同 tag 的 workflow 不得并行进入签名、公开或 feed 激活阶段，后续 run 也不得淘汰已有 pending run。
 
 所有 Candidate 的 release identity 校验遵循：
 
@@ -143,7 +143,7 @@ Actions concurrency 只能串行化 workflow，不能原子化外部 tag push �
 - Candidate tag push rerun 必须在签名和 Draft Release 创建前失败；
 - 首个 bootstrap tag burned 后，更高版本和 build 的新 tag 在 feed 与 Release 历史均为空时仍可 bootstrap；
 - bootstrap 与普通 Candidate 都必须在签名前与全部其他 `v*` tag identity 比较并建立 identity reservation；
-- 两个发布 workflow 必须使用仓库级共享 concurrency；
+- 两个发布 workflow 必须使用带 `queue: max` 的仓库级共享 concurrency；
 - 激活阶段继续禁止删除 Release 或 tag；
 - 发布手册必须包含永久保留失败 tag、创建更高版本新 tag 和 Release-only cleanup 的指导。
 

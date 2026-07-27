@@ -281,7 +281,7 @@ SwiftPM 依赖精确锁定到 Sparkle `2.9.4` 并提交 `Package.resolved`。该
 - 最终 Info.plist 的 `CFBundleVersion`、版本配置和 appcast 的 `sparkle:version` 必须完全一致。
 - 新 build 必须严格高于生产 appcast 中最高 build。
 - feed 中不得出现重复 build 或同一 build 指向不同资产。
-- 一旦 `v*` tag 触发发布，App Version、build number 和 tag 即被该次构建占用；workflow 只允许该 tag push 的第一次 attempt 进入签名路径。无论失败发生在 Draft 创建前、Draft 资格测试还是公开复验阶段，都必须永久作废这组三个标识并保留原 tag。下一次尝试必须同时提高版本和 build number，并创建匹配的新 tag；每个 bootstrap 或普通 Candidate 都在签名前与全部其他 `v*` tag identity 比较。校验成功是该 Candidate 的 identity reservation point，后续 tag 不追溯性地使它失效，而是在自己的签名前门禁中继续严格递增。两个发布 workflow 使用仓库级 concurrency 串行执行；bootstrap 资格另外要求 feed 不存在且 Release 历史为空，而不是固定版本号。
+- 一旦 `v*` tag 触发发布，App Version、build number 和 tag 即被该次构建占用；workflow 只允许该 tag push 的第一次 attempt 进入签名路径。无论失败发生在 Draft 创建前、Draft 资格测试还是公开复验阶段，都必须永久作废这组三个标识并保留原 tag。下一次尝试必须同时提高版本和 build number，并创建匹配的新 tag；每个 bootstrap 或普通 Candidate 都在签名前与全部其他 `v*` tag identity 比较。校验成功是该 Candidate 的 identity reservation point，后续 tag 不追溯性地使它失效，而是在自己的签名前门禁中继续严格递增。两个发布 workflow 使用带 `queue: max` 的仓库级 concurrency 串行执行并保留 pending run；bootstrap 资格另外要求 feed 不存在且 Release 历史为空，而不是固定版本号。
 - 生产 appcast 仍为单 entry 时，候选应用的最低系统版本必须与当前 Production Update 一致；任何提高都直接终止发布，直到多 entry 兼容策略另行设计并落地。
 - GitHub Contents API 更新现有 appcast 时必须提交当前 blob SHA。
 - HTTP 409、422 或任何 SHA 冲突都终止发布；workflow 重新读取最新 feed 后由安全重跑继续，不执行强制覆盖。
