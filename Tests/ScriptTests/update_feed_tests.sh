@@ -219,7 +219,9 @@ pull_request_target = fetch_key(ci_triggers, "pull_request_target")
 unless fetch_key(pull_request_target, "branches") == ["main"]
   reject("CI trusted pull_request_target policy must be restricted to main")
 end
-reject("CI must not execute a PR-owned workflow") unless fetch_key(ci_triggers, "pull_request").nil?
+if ci_triggers.keys.any? { |key| key.to_s == "pull_request" }
+  reject("CI must not execute a PR-owned workflow")
+end
 jobs = fetch_key(ci_document, "jobs")
 start_job = fetch_key(jobs, "start-validation-check")
 trusted_job = fetch_key(jobs, "trusted-policy")
