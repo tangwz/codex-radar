@@ -24,13 +24,20 @@ actor TokenUsageRepository {
   private let parseFile: ParseFile
   private let now: Now
   private var inFlight: RefreshFlight?
+  private var pendingRefreshes: [PendingRefresh] = []
   private var lastSnapshot: TokenUsageSnapshot?
   private var nextGeneration = 0
 
   private struct RefreshFlight {
     let generation: Int
     let timeZoneIdentifier: String
-    let task: Task<TokenUsageRepositoryResult, Never>
+    var waiters: [CheckedContinuation<TokenUsageRepositoryResult, Never>]
+  }
+
+  private struct PendingRefresh {
+    let generation: Int
+    let timeZone: TimeZone
+    var waiters: [CheckedContinuation<TokenUsageRepositoryResult, Never>]
   }
 
   init(
@@ -77,17 +84,47 @@ actor TokenUsageRepository {
   }
 
   func refresh(timeZone: TimeZone) async -> TokenUsageRepositoryResult {
-    if let inFlight {
-      let result = await inFlight.task.value
-      finish(inFlight, with: result)
-      if inFlight.timeZoneIdentifier == timeZone.identifier {
-        return result
-      }
-      return await refresh(timeZone: timeZone)
+    await withCheckedContinuation { continuation in
+      enqueueRefresh(timeZone: timeZone, continuation: continuation)
+    }
+  }
+
+  private func enqueueRefresh(
+    timeZone: TimeZone,
+    continuation: CheckedContinuation<TokenUsageRepositoryResult, Never>
+  ) {
+    if let lastIndex = pendingRefreshes.indices.last,
+      pendingRefreshes[lastIndex].timeZone.identifier == timeZone.identifier
+    {
+      pendingRefreshes[lastIndex].waiters.append(continuation)
+      return
+    }
+    if pendingRefreshes.isEmpty,
+      var inFlight,
+      inFlight.timeZoneIdentifier == timeZone.identifier
+    {
+      inFlight.waiters.append(continuation)
+      self.inFlight = inFlight
+      return
     }
 
     let generation = nextGeneration
     nextGeneration += 1
+    pendingRefreshes.append(
+      PendingRefresh(
+        generation: generation,
+        timeZone: timeZone,
+        waiters: [continuation]
+      )
+    )
+    startNextRefreshIfNeeded()
+  }
+
+  private func startNextRefreshIfNeeded() {
+    guard inFlight == nil, !pendingRefreshes.isEmpty else { return }
+    let request = pendingRefreshes.removeFirst()
+    let generation = request.generation
+    let timeZone = request.timeZone
     let memorySnapshot =
       lastSnapshot?.timeZoneIdentifier == timeZone.identifier
       ? lastSnapshot
@@ -108,25 +145,31 @@ actor TokenUsageRepository {
         now: now
       )
     }
-    let flight = RefreshFlight(
+    inFlight = RefreshFlight(
       generation: generation,
       timeZoneIdentifier: timeZone.identifier,
-      task: task
+      waiters: request.waiters
     )
-    inFlight = flight
-    let result = await task.value
-    finish(flight, with: result)
-    return result
+    Task { [weak self] in
+      let result = await task.value
+      await self?.finish(generation: generation, with: result)
+    }
   }
 
   private func finish(
-    _ flight: RefreshFlight,
+    generation: Int,
     with result: TokenUsageRepositoryResult
   ) {
-    guard inFlight?.generation == flight.generation else { return }
+    guard let completed = inFlight, completed.generation == generation else {
+      return
+    }
     inFlight = nil
     if let snapshot = result.snapshot {
       lastSnapshot = snapshot
+    }
+    startNextRefreshIfNeeded()
+    for waiter in completed.waiters {
+      waiter.resume(returning: result)
     }
   }
 
@@ -163,16 +206,15 @@ actor TokenUsageRepository {
       )
     }
 
-    var previousByIdentity: [String: CodexSessionFileRecord] = [:]
-    for record in previousManifest?.files ?? [] {
-      previousByIdentity[record.fingerprint.cacheIdentity] = record
-    }
+    let previousMatches = matchedPreviousRecords(
+      for: descriptors,
+      previousRecords: previousManifest?.files ?? []
+    )
     var records: [CodexSessionFileRecord] = []
     var skippedFileCount = 0
 
-    for descriptor in descriptors {
-      let identity = descriptor.fingerprint.cacheIdentity
-      let previous = previousByIdentity.removeValue(forKey: identity)
+    for (index, descriptor) in descriptors.enumerated() {
+      let previous = previousMatches[index]
       if let previous,
         previous.fingerprint.hasSameContent(as: descriptor.fingerprint)
       {
@@ -222,6 +264,74 @@ actor TokenUsageRepository {
       issues.append(.cacheWriteFailed)
     }
     return TokenUsageRepositoryResult(snapshot: snapshot, issues: issues)
+  }
+
+  private static func matchedPreviousRecords(
+    for descriptors: [CodexSessionFileDescriptor],
+    previousRecords: [CodexSessionFileRecord]
+  ) -> [CodexSessionFileRecord?] {
+    var matches = Array<CodexSessionFileRecord?>(
+      repeating: nil,
+      count: descriptors.count
+    )
+    var remainingPreviousIndices = Set(previousRecords.indices)
+    var previousByIdentity: [String: [Int]] = [:]
+    var previousByPath: [String: [Int]] = [:]
+
+    for index in previousRecords.indices.reversed() {
+      let fingerprint = previousRecords[index].fingerprint
+      previousByIdentity[fingerprint.cacheIdentity, default: []].append(index)
+      previousByPath[normalizedPath(fingerprint.path), default: []].append(index)
+    }
+
+    for index in descriptors.indices {
+      let identity = descriptors[index].fingerprint.cacheIdentity
+      guard
+        let previousIndex = takePreviousIndex(
+          for: identity,
+          from: &previousByIdentity,
+          remainingIndices: &remainingPreviousIndices
+        )
+      else {
+        continue
+      }
+      matches[index] = previousRecords[previousIndex]
+    }
+
+    for index in descriptors.indices where matches[index] == nil {
+      let path = normalizedPath(descriptors[index].fingerprint.path)
+      guard
+        let previousIndex = takePreviousIndex(
+          for: path,
+          from: &previousByPath,
+          remainingIndices: &remainingPreviousIndices
+        )
+      else {
+        continue
+      }
+      matches[index] = previousRecords[previousIndex]
+    }
+    return matches
+  }
+
+  private static func takePreviousIndex(
+    for key: String,
+    from index: inout [String: [Int]],
+    remainingIndices: inout Set<Int>
+  ) -> Int? {
+    while let candidate = index[key]?.popLast() {
+      if index[key]?.isEmpty == true {
+        index[key] = nil
+      }
+      if remainingIndices.remove(candidate) != nil {
+        return candidate
+      }
+    }
+    return nil
+  }
+
+  private static func normalizedPath(_ path: String) -> String {
+    URL(filePath: path).standardizedFileURL.path
   }
 
   private static func stableRecord(
