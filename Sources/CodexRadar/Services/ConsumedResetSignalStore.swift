@@ -23,6 +23,11 @@ final class ConsumedResetSignalStore {
     return defaults.bool(forKey: baselineKey)
   }
 
+  var consumedSignalIDs: Set<String> {
+    loadConsumedIDsIfNeeded()
+    return loadedConsumedIDs!
+  }
+
   func contains(_ signalID: String) -> Bool {
     loadConsumedIDsIfNeeded()
     return loadedConsumedIDs!.contains(signalID)
