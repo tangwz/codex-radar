@@ -89,6 +89,9 @@
 "Codex reset monitoring" = "Codex reset monitoring";
 "Codex reset announced" = "Codex reset announced";
 "Codex reset completed" = "Codex reset completed";
+"Possible Codex reset detected" = "Possible Codex reset detected";
+"A possible Codex reset signal was posted." = "A possible Codex reset signal was posted.";
+"Codex reset signal detected" = "Codex reset signal detected";
 "A reset is expected by %@." = "A reset is expected by %@.";
 "A reset is expected between %@ and %@." = "A reset is expected between %@ and %@.";
 "A Codex reset is expected soon." = "A Codex reset is expected soon.";
