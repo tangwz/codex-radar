@@ -11,15 +11,15 @@ enum ResetNotificationPolicy {
   static func decision(
     forecast: ResetForecast,
     hasBaseline: Bool,
-    lastSignalID: String?
+    consumedSignalIDs: Set<String>
   ) -> ResetNotificationDecision {
     guard hasBaseline else {
       return .establishBaseline(forecast.signalID)
     }
     guard !forecast.stale,
-      forecast.status == .announced || forecast.status == .completed,
+      [.candidate, .announced, .completed].contains(forecast.status),
       let signalID = forecast.signalID,
-      signalID != lastSignalID
+      !consumedSignalIDs.contains(signalID)
     else {
       return .ignore
     }
@@ -29,6 +29,7 @@ enum ResetNotificationPolicy {
 
 struct ResetNotificationPresentation: Equatable {
   enum Body: Equatable {
+    case candidate
     case exact(Date)
     case estimated(Date, Date)
     case imminent
@@ -41,6 +42,8 @@ struct ResetNotificationPresentation: Equatable {
     guard !forecast.stale else { return nil }
 
     switch forecast.status {
+    case .candidate:
+      body = .candidate
     case .completed:
       body = .completed
     case .announced:
@@ -54,7 +57,7 @@ struct ResetNotificationPresentation: Equatable {
       case .imminent, nil:
         body = .imminent
       }
-    case .candidate, .monitoring:
+    case .monitoring:
       return nil
     }
   }
@@ -65,18 +68,17 @@ final class ResetNotificationService {
   typealias DeliverNotification = @MainActor (ResetForecast, String) async -> Bool
 
   private let center: UNUserNotificationCenter?
-  private let defaults: UserDefaults
+  private let consumedSignalStore: ConsumedResetSignalStore
   private let deliverNotification: DeliverNotification
-  private let hasBaselineKey = "hasResetSignalBaseline"
-  private let lastSignalIDKey = "lastObservedResetSignalID"
 
   init(
     center: UNUserNotificationCenter = .current(),
     defaults: UserDefaults = .standard,
+    consumedSignalStore: ConsumedResetSignalStore? = nil,
     deliverNotification: DeliverNotification? = nil
   ) {
     self.center = center
-    self.defaults = defaults
+    self.consumedSignalStore = consumedSignalStore ?? ConsumedResetSignalStore(defaults: defaults)
     self.deliverNotification = deliverNotification ?? { forecast, signalID in
       await Self.sendNotification(
         for: forecast,
@@ -88,10 +90,11 @@ final class ResetNotificationService {
 
   init(
     defaults: UserDefaults,
+    consumedSignalStore: ConsumedResetSignalStore? = nil,
     deliverNotification: @escaping DeliverNotification
   ) {
     center = nil
-    self.defaults = defaults
+    self.consumedSignalStore = consumedSignalStore ?? ConsumedResetSignalStore(defaults: defaults)
     self.deliverNotification = deliverNotification
   }
 
@@ -101,29 +104,26 @@ final class ResetNotificationService {
   }
 
   func observe(_ forecast: ResetForecast) async {
+    let consumedSignalIDs: Set<String>
+    if let signalID = forecast.signalID, consumedSignalStore.contains(signalID) {
+      consumedSignalIDs = [signalID]
+    } else {
+      consumedSignalIDs = []
+    }
     let decision = ResetNotificationPolicy.decision(
       forecast: forecast,
-      hasBaseline: defaults.bool(forKey: hasBaselineKey),
-      lastSignalID: defaults.string(forKey: lastSignalIDKey)
+      hasBaseline: consumedSignalStore.hasBaseline,
+      consumedSignalIDs: consumedSignalIDs
     )
 
     switch decision {
     case .establishBaseline(let signalID):
-      persistBaseline(signalID)
+      consumedSignalStore.establishBaseline(signalID: signalID)
     case .ignore:
       return
     case .notify(let signalID):
       guard await deliverNotification(forecast, signalID) else { return }
-      persistBaseline(signalID)
-    }
-  }
-
-  private func persistBaseline(_ signalID: String?) {
-    defaults.set(true, forKey: hasBaselineKey)
-    if let signalID {
-      defaults.set(signalID, forKey: lastSignalIDKey)
-    } else {
-      defaults.removeObject(forKey: lastSignalIDKey)
+      consumedSignalStore.consume(signalID)
     }
   }
 
@@ -145,6 +145,9 @@ final class ResetNotificationService {
     let content = UNMutableNotificationContent()
     let locale = AppLanguage.selected.locale
     switch presentation.body {
+    case .candidate:
+      content.title = AppLocalization.string("Possible Codex reset detected")
+      content.body = AppLocalization.string("A possible Codex reset signal was posted.")
     case .exact(let at):
       content.title = AppLocalization.string("Codex reset announced")
       content.body = String(

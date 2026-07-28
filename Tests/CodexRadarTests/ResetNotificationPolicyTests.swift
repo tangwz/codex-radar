@@ -6,15 +6,17 @@ import Testing
 struct ResetNotificationPolicyTests {
   @MainActor
   @Test
-  func retriesUnconsumedSignalUntilDeliverySucceeds() async throws {
+  func retriesUnconsumedCandidateUntilDeliverySucceeds() async throws {
     let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
+    let consumedSignalStore = ConsumedResetSignalStore(defaults: defaults)
 
     var deliveryResults = [false, true]
     var deliveredSignalIDs: [String] = []
     let service = ResetNotificationService(
       defaults: defaults,
+      consumedSignalStore: consumedSignalStore,
       deliverNotification: { _, signalID in
         deliveredSignalIDs.append(signalID)
         return deliveryResults.removeFirst()
@@ -22,13 +24,44 @@ struct ResetNotificationPolicyTests {
     )
 
     await service.observe(makeForecast(status: .monitoring))
-    let forecast = makeForecast(status: .announced, signalID: "signal-2")
+    let forecast = makeForecast(status: .candidate, signalID: "signal-2")
 
     await service.observe(forecast)
+    #expect(!consumedSignalStore.contains("signal-2"))
+
     await service.observe(forecast)
     await service.observe(forecast)
 
     #expect(deliveredSignalIDs == ["signal-2", "signal-2"])
+    #expect(consumedSignalStore.contains("signal-2"))
+  }
+
+  @MainActor
+  @Test
+  func consumesDeliveredCandidateOnlyOnce() async throws {
+    let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let consumedSignalStore = ConsumedResetSignalStore(defaults: defaults)
+
+    var deliveredSignalIDs: [String] = []
+    let service = ResetNotificationService(
+      defaults: defaults,
+      consumedSignalStore: consumedSignalStore,
+      deliverNotification: { _, signalID in
+        deliveredSignalIDs.append(signalID)
+        return true
+      }
+    )
+
+    await service.observe(makeForecast(status: .monitoring))
+    let forecast = makeForecast(status: .candidate, signalID: "signal-2")
+
+    await service.observe(forecast)
+    await service.observe(forecast)
+
+    #expect(deliveredSignalIDs == ["signal-2"])
+    #expect(consumedSignalStore.contains("signal-2"))
   }
 
   @Test
@@ -36,7 +69,7 @@ struct ResetNotificationPolicyTests {
     let decision = ResetNotificationPolicy.decision(
       forecast: makeForecast(status: .announced, signalID: "signal-1"),
       hasBaseline: false,
-      lastSignalID: nil
+      consumedSignalIDs: []
     )
 
     #expect(decision == .establishBaseline("signal-1"))
@@ -47,31 +80,31 @@ struct ResetNotificationPolicyTests {
     let decision = ResetNotificationPolicy.decision(
       forecast: makeForecast(status: .monitoring),
       hasBaseline: false,
-      lastSignalID: nil
+      consumedSignalIDs: []
     )
 
     #expect(decision == .establishBaseline(nil))
   }
 
   @Test
-  func ignoresSameOrMissingSignalAfterBaseline() {
+  func ignoresConsumedOrMissingSignalAfterBaseline() {
     #expect(
       ResetNotificationPolicy.decision(
         forecast: makeForecast(status: .announced, signalID: "signal-1"),
         hasBaseline: true,
-        lastSignalID: "signal-1"
+        consumedSignalIDs: ["signal-1"]
       ) == .ignore
     )
     #expect(
       ResetNotificationPolicy.decision(
         forecast: makeForecast(status: .monitoring),
         hasBaseline: true,
-        lastSignalID: "signal-1"
+        consumedSignalIDs: ["signal-1"]
       ) == .ignore
     )
   }
 
-  @Test(arguments: [ResetStatus.announced, .completed])
+  @Test(arguments: [ResetStatus.candidate, .announced, .completed])
   func notifiesOnceForANewNotifiableSignal(_ status: ResetStatus) {
     let forecast = makeForecast(status: status, signalID: "signal-2")
 
@@ -79,16 +112,27 @@ struct ResetNotificationPolicyTests {
       ResetNotificationPolicy.decision(
         forecast: forecast,
         hasBaseline: true,
-        lastSignalID: "signal-1"
+        consumedSignalIDs: ["signal-1"]
       ) == .notify("signal-2")
     )
     #expect(
       ResetNotificationPolicy.decision(
         forecast: forecast,
         hasBaseline: true,
-        lastSignalID: "signal-2"
+        consumedSignalIDs: ["signal-2"]
       ) == .ignore
     )
+  }
+
+  @Test
+  func ignoresPreviouslyConsumedSignalAfterAnotherSignal() {
+    let decision = ResetNotificationPolicy.decision(
+      forecast: makeForecast(status: .candidate, signalID: "signal-a"),
+      hasBaseline: true,
+      consumedSignalIDs: ["signal-a", "signal-b"]
+    )
+
+    #expect(decision == .ignore)
   }
 
   @Test
@@ -97,21 +141,21 @@ struct ResetNotificationPolicyTests {
       ResetNotificationPolicy.decision(
         forecast: makeForecast(status: .announced, stale: true, signalID: "signal-2"),
         hasBaseline: true,
-        lastSignalID: "signal-1"
+        consumedSignalIDs: ["signal-1"]
       ) == .ignore
     )
     #expect(
       ResetNotificationPolicy.decision(
         forecast: makeForecast(status: .candidate, signalID: "signal-2"),
         hasBaseline: true,
-        lastSignalID: "signal-1"
+        consumedSignalIDs: ["signal-2"]
       ) == .ignore
     )
     #expect(
       ResetNotificationPolicy.decision(
         forecast: makeForecast(status: .monitoring, signalID: "signal-2"),
         hasBaseline: true,
-        lastSignalID: "signal-1"
+        consumedSignalIDs: ["signal-1"]
       ) == .ignore
     )
   }
@@ -143,11 +187,13 @@ struct ResetNotificationPolicyTests {
     #expect(
       ResetNotificationPresentation(forecast: makeForecast(status: .completed))?.body == .completed
     )
+    #expect(
+      ResetNotificationPresentation(forecast: makeForecast(status: .candidate))?.body == .candidate
+    )
   }
 
   @Test
-  func omitsNotificationCopyForCandidateMonitoringAndStale() {
-    #expect(ResetNotificationPresentation(forecast: makeForecast(status: .candidate)) == nil)
+  func omitsNotificationCopyForMonitoringAndStale() {
     #expect(ResetNotificationPresentation(forecast: makeForecast(status: .monitoring)) == nil)
     #expect(
       ResetNotificationPresentation(
