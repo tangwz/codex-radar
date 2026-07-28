@@ -626,7 +626,8 @@ validate_artifacts_mode() {
     die "minimum system version does not match final Info.plist" || return 1
   [[ "$FEED_ENCLOSURE_LENGTH" == "$archive_length" ]] ||
     die "enclosure length does not match archive" || return 1
-  [[ "$FEED_ENCLOSURE_URL" == "$archive_name" ]] ||
+  [[ "$FEED_ENCLOSURE_URL" == "$archive_name" ||
+    "$FEED_ENCLOSURE_URL" == "./$archive_name" ]] ||
     die "qualification enclosure URL must be relative" || return 1
   qualification_signature="$FEED_ARCHIVE_SIGNATURE"
   [[ "$qualification_signature" == "$production_signature" ]] ||

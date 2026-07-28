@@ -8,6 +8,7 @@ QUALIFY_SCRIPT="$ROOT_DIR/script/qualify_update.sh"
 HALT_SCRIPT="$ROOT_DIR/script/halt_distribution.sh"
 ACTIVATION_PR_VERIFY_SCRIPT="$ROOT_DIR/script/verify_activation_pr.sh"
 SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
+SPARKLE_GENERATE_APPCAST="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
 CI_WORKFLOW="$WORKFLOW_DIR/ci.yml"
@@ -39,6 +40,10 @@ README_FILE="$ROOT_DIR/README.md"
 }
 [[ -d "$SPARKLE_SOURCE" ]] || {
   echo "Sparkle source checkout does not exist" >&2
+  exit 1
+}
+[[ -x "$SPARKLE_GENERATE_APPCAST" ]] || {
+  echo "Sparkle generate_appcast does not exist" >&2
   exit 1
 }
 
@@ -1827,12 +1832,32 @@ production_url="https://github.com/tangwz/codex-radar/releases/download/v0.2.0/$
 make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
 make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
-  "$archive_name" "$archive_length" "$archive_signature"
+  "./$archive_name" "$archive_length" "$archive_signature"
 
 production_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')"
 qualification_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/qualification/appcast.xml" | /usr/bin/awk '{print $1}')"
 verify_artifacts "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
   "$candidate_dir/version.env" "$candidate_dir/update.env"
+
+generated_inputs="$fixture_root/generated-inputs"
+prepare_command "$generated_inputs" "$candidate_dir/version.env" "$candidate_dir/update.env" \
+  "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  --production-feed "$previous_dir/appcast.xml"
+generator_home="$fixture_root/generator-home"
+/bin/mkdir -p "$generator_home"
+test_seed_base64="$(/usr/bin/base64 <"$fixture_root/test-seed" | /usr/bin/tr -d '\n')"
+for channel in production qualification; do
+  printf '%s' "$test_seed_base64" |
+    /usr/bin/env HOME="$generator_home" CFFIXED_USER_HOME="$generator_home" \
+      "$SPARKLE_GENERATE_APPCAST" \
+      --maximum-versions 1 \
+      --download-url-prefix "$(<"$generated_inputs/$channel-download-url-prefix")" \
+      --ed-key-file - \
+      "$generated_inputs/$channel"
+done
+verify_artifacts "$generated_inputs" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+
 verify_published "$inputs_dir/production/appcast.xml" "$candidate_archive" \
   "$candidate_manifest" "$candidate_dir/version.env" \
   "$candidate_dir/update.env"
