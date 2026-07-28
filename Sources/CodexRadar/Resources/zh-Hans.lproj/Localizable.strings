@@ -89,6 +89,9 @@
 "Codex reset monitoring" = "Codex 重置监控";
 "Codex reset announced" = "Codex 已宣布重置";
 "Codex reset completed" = "Codex 重置已完成";
+"Possible Codex reset detected" = "可能检测到 Codex 重置";
+"A possible Codex reset signal was posted." = "检测到一条可能的 Codex 重置信号。";
+"Codex reset signal detected" = "检测到 Codex 重置信号";
 "A reset is expected by %@." = "预计将在 %@ 前完成重置。";
 "A reset is expected between %@ and %@." = "预计将在 %@ 至 %@ 之间重置。";
 "A Codex reset is expected soon." = "Codex 快重置了。";

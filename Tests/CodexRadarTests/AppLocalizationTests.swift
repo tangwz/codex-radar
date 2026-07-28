@@ -91,6 +91,23 @@ struct AppLocalizationTests {
   }
 
   @Test
+  func localizesResetSignalAlertsForBothLanguages() {
+    let translations = [
+      ("Possible Codex reset detected", "可能检测到 Codex 重置"),
+      ("A possible Codex reset signal was posted.", "检测到一条可能的 Codex 重置信号。"),
+      ("Codex reset signal detected", "检测到 Codex 重置信号"),
+    ]
+
+    for (key, simplifiedChinese) in translations {
+      #expect(AppLocalization.string(key, language: .english, bundle: .module) == key)
+      #expect(
+        AppLocalization.string(key, language: .simplifiedChinese, bundle: .module)
+          == simplifiedChinese
+      )
+    }
+  }
+
+  @Test
   func localizesUpdateControlsInSimplifiedChinese() {
     #expect(localized("Updates", language: .simplifiedChinese) == "更新")
     #expect(
