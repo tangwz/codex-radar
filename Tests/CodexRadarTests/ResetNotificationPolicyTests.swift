@@ -45,6 +45,34 @@ struct ResetNotificationPolicyTests {
 
   @MainActor
   @Test
+  func establishesBaselineWhenRecoveringCorruptConsumedIDs() async throws {
+    let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(Data("invalid".utf8), forKey: "consumedResetSignalIDs")
+    let consumedSignalStore = ConsumedResetSignalStore(defaults: defaults)
+
+    var deliveredSignalIDs: [String] = []
+    let service = ResetNotificationService(
+      defaults: defaults,
+      consumedSignalStore: consumedSignalStore,
+      deliverNotification: { _, signalID in
+        deliveredSignalIDs.append(signalID)
+        return true
+      }
+    )
+
+    await service.observe(makeForecast(status: .candidate, signalID: "signal-1"))
+    await service.observe(makeForecast(status: .candidate, signalID: "signal-2"))
+
+    #expect(deliveredSignalIDs == ["signal-2"])
+    #expect(consumedSignalStore.hasBaseline)
+    #expect(consumedSignalStore.contains("signal-1"))
+    #expect(consumedSignalStore.contains("signal-2"))
+  }
+
+  @MainActor
+  @Test
   func coalescesConcurrentObservationsForTheSameSignal() async throws {
     let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
