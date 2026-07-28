@@ -222,9 +222,11 @@ struct MenuBarControllerTests {
     #expect(button.isHighlighted)
   }
 
-  @Test
-  func updatesStatusPresentationWhenForecastChanges() async throws {
-    let forecast = resetAlertForecast()
+  @Test(arguments: [ResetStatus.candidate, .announced, .completed])
+  func showsBadgeForEveryActionableStatusAndKeepsItVisibleWhenPanelOpens(
+    _ status: ResetStatus
+  ) async throws {
+    let forecast = resetAlertForecast(status: status)
     let store = DashboardStore(
       fetchForecast: { _ in .updated(forecast, etag: nil) },
       prepareNotifications: {},
@@ -234,10 +236,11 @@ struct MenuBarControllerTests {
       sleep: { _ in },
       observesWakeEvents: false
     )
+    let popover = TestPopover()
     let controller = MenuBarController(
       store: store,
       rootView: AnyView(EmptyView()),
-      dependencies: makeDependencies()
+      dependencies: makeDependencies(popover: popover)
     )
     defer { controller.uninstall() }
     controller.install()
@@ -248,11 +251,19 @@ struct MenuBarControllerTests {
 
     await store.refreshForecast()
     await waitUntil {
-      button.accessibilityLabel() == AppLocalization.string("Codex reset incoming")
+      !badge.isHidden
     }
 
-    #expect(button.accessibilityLabel() == AppLocalization.string("Codex reset incoming"))
+    #expect(
+      button.accessibilityLabel()
+        == AppLocalization.string("Codex reset signal detected")
+    )
     #expect(button.image === initialImage)
+    #expect(badge.isHidden == false)
+
+    controller.togglePanel()
+
+    #expect(popover.isShown)
     #expect(badge.isHidden == false)
   }
 
@@ -350,19 +361,32 @@ private func waitUntil(
   }
 }
 
-private func resetAlertForecast() -> ResetForecast {
+private func resetAlertForecast(status: ResetStatus) -> ResetForecast {
   ResetForecast(
     schemaVersion: "1.0",
     monitoredAt: Date(timeIntervalSince1970: 1_700_000_000),
     stale: false,
-    status: .announced,
-    recommendedAction: .wait,
-    message: "Reset announced.",
+    status: status,
+    recommendedAction: resetAlertAction(for: status),
+    message: "Reset signal detected.",
     signalID: "signal-1",
     timing: ResetTiming(kind: .imminent),
     sourceURL: nil,
     posts: []
   )
+}
+
+private func resetAlertAction(for status: ResetStatus) -> RecommendedAction {
+  switch status {
+  case .candidate:
+    .watch
+  case .announced:
+    .wait
+  case .completed:
+    .useNow
+  case .monitoring:
+    .none
+  }
 }
 
 @MainActor

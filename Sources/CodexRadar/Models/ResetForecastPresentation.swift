@@ -52,7 +52,11 @@ struct ResetForecastPresentation: Equatable {
   }
 
   var hasResetAlert: Bool {
-    !stale && status == .announced
+    !stale && isActionableStatus
+  }
+
+  private var isActionableStatus: Bool {
+    status == .candidate || status == .announced || status == .completed
   }
 
   func recentResetText(

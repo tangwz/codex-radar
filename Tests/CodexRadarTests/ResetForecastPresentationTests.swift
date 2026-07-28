@@ -16,9 +16,22 @@ struct ResetForecastPresentationTests {
     #expect(monitoring.status == .monitoring)
     #expect(monitoring.action == .none)
     #expect(monitoring.timeDisplay == .none)
+    #expect(!monitoring.hasResetAlert)
     #expect(candidate.status == .candidate)
     #expect(candidate.action == .watch)
     #expect(candidate.timeDisplay == .none)
+  }
+
+  @Test(arguments: [ResetStatus.candidate, .announced, .completed])
+  func showsAlertForEveryActionableStatus(_ status: ResetStatus) {
+    let presentation = ResetForecastPresentation(
+      forecast: presentationForecast(
+        status: status,
+        action: actionableAction(for: status)
+      )
+    )
+
+    #expect(presentation.hasResetAlert)
   }
 
   @Test
@@ -92,6 +105,7 @@ struct ResetForecastPresentationTests {
     #expect(presentation.stale)
     #expect(presentation.action == .unknown)
     #expect(presentation.timeDisplay == .none)
+    #expect(!presentation.hasResetAlert)
     #expect(presentation.sourceURL == sourceURL)
   }
 
@@ -158,6 +172,19 @@ struct ResetForecastPresentationTests {
     )
 
     #expect(presentation.sourceURL == nil)
+  }
+}
+
+private func actionableAction(for status: ResetStatus) -> RecommendedAction {
+  switch status {
+  case .candidate:
+    .watch
+  case .announced:
+    .wait
+  case .completed:
+    .useNow
+  case .monitoring:
+    .none
   }
 }
 

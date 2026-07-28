@@ -254,7 +254,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     let accessibilityKey =
       hasResetAlert
-      ? "Codex reset incoming"
+      ? "Codex reset signal detected"
       : "Codex reset monitoring"
     button.setAccessibilityLabel(dependencies.localizedString(accessibilityKey))
   }
