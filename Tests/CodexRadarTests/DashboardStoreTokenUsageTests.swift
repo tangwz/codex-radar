@@ -463,6 +463,88 @@ struct DashboardStoreTokenUsageTests {
     await source.completeRefresh()
     store.stopMonitoring()
   }
+
+  @MainActor
+  @Test
+  func stoppedRecoveryCannotAttachToRestartedMonitoring() async {
+    let initial = snapshot(total: 10)
+    let restarted = snapshot(total: 20)
+    let staleRecovery = snapshot(total: 99)
+    let source = SequencedTokenUsageSource(
+      snapshots: [initial, restarted, staleRecovery]
+    )
+    let waiter = ControlledTokenUsageBoundaryWaiter()
+    let recoveryBarrier = ControlledRecoveryBarrier()
+    let store = makeBoundaryStore(
+      refresh: { timeZone in await source.refresh(timeZone: timeZone) },
+      waiter: waiter,
+      now: { initial.generatedAt },
+      recoveryBarrier: {
+        await recoveryBarrier.pause()
+      }
+    )
+
+    store.startMonitoring()
+    await source.waitForCallCount(1)
+    await waitForSnapshot(initial, in: store)
+
+    let recovery = Task {
+      await store.monitoringDidRecover()
+    }
+    await recoveryBarrier.waitUntilEntered()
+
+    store.stopMonitoring()
+    store.startMonitoring()
+    await source.waitForCallCount(2)
+    await waitForSnapshot(restarted, in: store)
+
+    await recoveryBarrier.release()
+    await recovery.value
+    for _ in 0..<50 {
+      await Task.yield()
+    }
+
+    #expect(await source.callCount == 2)
+    #expect(store.tokenUsageSnapshot == restarted)
+    store.stopMonitoring()
+  }
+
+  @MainActor
+  @Test
+  func recoveryPublishesTokenUsageWhileForecastIsStillPending() async {
+    let initial = snapshot(total: 10)
+    let recovered = snapshot(total: 20)
+    let tokenSource = SequencedTokenUsageSource(snapshots: [initial, recovered])
+    let forecastSource = ControlledRecoveryForecastSource()
+    let waiter = ControlledTokenUsageBoundaryWaiter()
+    let store = makeBoundaryStore(
+      refresh: { timeZone in await tokenSource.refresh(timeZone: timeZone) },
+      fetchForecast: { _ in await forecastSource.fetch() },
+      waiter: waiter,
+      now: { initial.generatedAt }
+    )
+
+    store.startMonitoring()
+    await tokenSource.waitForCallCount(1)
+    await forecastSource.waitForCallCount(1)
+    await forecastSource.completeNext()
+    await waitForSnapshot(initial, in: store)
+
+    let recovery = Task {
+      await store.monitoringDidRecover()
+    }
+    await tokenSource.waitForCallCount(2)
+    await forecastSource.waitForCallCount(2)
+    for _ in 0..<50 {
+      await Task.yield()
+    }
+
+    #expect(store.tokenUsageSnapshot == recovered)
+
+    await forecastSource.completeNext()
+    await recovery.value
+    store.stopMonitoring()
+  }
 }
 
 private actor ControlledTokenUsageSource {
@@ -559,6 +641,33 @@ private actor SequencedTokenUsageSource {
   }
 }
 
+private actor ControlledRecoveryForecastSource {
+  private var continuations: [CheckedContinuation<Void, Never>] = []
+  private(set) var callCount = 0
+
+  func fetch() async -> ResetForecastFetchResult {
+    callCount += 1
+    await withCheckedContinuation { continuation in
+      continuations.append(continuation)
+    }
+    return .notModified
+  }
+
+  func waitForCallCount(_ count: Int) async {
+    while callCount < count {
+      await Task.yield()
+    }
+  }
+
+  func completeNext() {
+    guard !continuations.isEmpty else {
+      Issue.record("No pending forecast request to complete.")
+      return
+    }
+    continuations.removeFirst().resume()
+  }
+}
+
 private actor SuspendedBoundaryTokenUsageSource {
   private let initial: TokenUsageSnapshot
   private(set) var callCount = 0
@@ -631,6 +740,29 @@ private final class MutableDate: @unchecked Sendable {
   var value: Date {
     get { lock.withLock { storage } }
     set { lock.withLock { storage = newValue } }
+  }
+}
+
+private actor ControlledRecoveryBarrier {
+  private var entered = false
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  func pause() async {
+    entered = true
+    await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func waitUntilEntered() async {
+    while !entered {
+      await Task.yield()
+    }
+  }
+
+  func release() {
+    continuation?.resume()
+    continuation = nil
   }
 }
 
@@ -713,13 +845,18 @@ private func makeBoundaryStore(
     _ in nil
   },
   refresh: @escaping @Sendable (TimeZone) async -> TokenUsageRepositoryResult,
+  fetchForecast:
+    @escaping @Sendable (String?) async throws -> ResetForecastFetchResult = {
+      _ in .notModified
+    },
   waiter: ControlledTokenUsageBoundaryWaiter,
-  now: @escaping @Sendable () -> Date
+  now: @escaping @Sendable () -> Date,
+  recoveryBarrier: @escaping @MainActor @Sendable () async -> Void = {}
 ) -> DashboardStore {
   DashboardStore(
     loadCachedTokenUsage: loadCached,
     refreshTokenUsageSource: refresh,
-    fetchForecast: { _ in .notModified },
+    fetchForecast: fetchForecast,
     prepareNotifications: {},
     observeForecast: { _ in },
     formatForecastIssue: { $0 ?? "" },
@@ -729,6 +866,7 @@ private func makeBoundaryStore(
       try await waiter.wait(until: $0)
     },
     now: now,
+    recoveryBarrier: recoveryBarrier,
     observesWakeEvents: false
   )
 }
