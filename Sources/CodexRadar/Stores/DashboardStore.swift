@@ -28,6 +28,7 @@ private struct PendingForecastRefresh {
 final class DashboardStore: ObservableObject {
   typealias WaitUntilTokenUsageBoundary = @Sendable (Date) async throws -> Void
   typealias Now = @Sendable () -> Date
+  typealias RecoveryBarrier = @MainActor @Sendable () async -> Void
 
   @Published private(set) var forecast = ResetForecast.placeholder
   @Published private(set) var tokenUsageSnapshot: TokenUsageSnapshot?
@@ -53,6 +54,7 @@ final class DashboardStore: ObservableObject {
   private let sleep: @Sendable (Duration) async throws -> Void
   private let waitUntilTokenUsageBoundary: WaitUntilTokenUsageBoundary
   private let now: Now
+  private let recoveryBarrier: RecoveryBarrier
   private let observesWakeEvents: Bool
 
   private var isMonitoring = false
@@ -122,6 +124,7 @@ final class DashboardStore: ObservableObject {
       try await Task.sleep(for: .seconds(duration))
     }
     now = Date.init
+    recoveryBarrier = {}
     observesWakeEvents = true
   }
 
@@ -149,6 +152,7 @@ final class DashboardStore: ObservableObject {
         try await Task.sleep(for: .seconds(duration))
       },
     now: @escaping Now = Date.init,
+    recoveryBarrier: @escaping RecoveryBarrier = {},
     observesWakeEvents: Bool
   ) {
     self.loadCachedTokenUsage = loadCachedTokenUsage
@@ -162,6 +166,7 @@ final class DashboardStore: ObservableObject {
     self.sleep = sleep
     self.waitUntilTokenUsageBoundary = waitUntilTokenUsageBoundary
     self.now = now
+    self.recoveryBarrier = recoveryBarrier
     self.observesWakeEvents = observesWakeEvents
   }
 
@@ -224,10 +229,42 @@ final class DashboardStore: ObservableObject {
 
   func monitoringDidRecover() async {
     guard isMonitoring else { return }
+    let lifecycleGeneration = forecastGeneration
+    await recoveryBarrier()
+    guard isMonitoring, lifecycleGeneration == forecastGeneration else { return }
+
     let timeZone = tokenUsageTimeZone ?? TimeZone.autoupdatingCurrent
-    async let tokenUsageRefresh: Void = refreshTokenUsage(timeZone: timeZone)
-    await requestForecastRefresh(trigger: .recovery, generation: forecastGeneration)
+    tokenUsageTimeZone = timeZone
+    scheduleTokenUsageBoundary(timeZone: timeZone)
+    tokenUsageGeneration &+= 1
+    let tokenGeneration = tokenUsageGeneration
+
+    async let tokenUsageRefresh: Void = refreshTokenUsageForRecovery(
+      timeZone: timeZone,
+      lifecycleGeneration: lifecycleGeneration,
+      tokenGeneration: tokenGeneration
+    )
+    await requestForecastRefresh(
+      trigger: .recovery,
+      generation: lifecycleGeneration
+    )
     await tokenUsageRefresh
+  }
+
+  private func refreshTokenUsageForRecovery(
+    timeZone: TimeZone,
+    lifecycleGeneration: UInt64,
+    tokenGeneration: UInt64
+  ) async {
+    let result = await refreshTokenUsageSource(timeZone)
+    guard isMonitoring,
+      lifecycleGeneration == forecastGeneration,
+      tokenGeneration == tokenUsageGeneration,
+      !Task.isCancelled
+    else {
+      return
+    }
+    applyTokenUsage(result, timeZone: timeZone)
   }
 
   func refresh() async {
