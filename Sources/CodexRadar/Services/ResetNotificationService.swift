@@ -70,6 +70,7 @@ final class ResetNotificationService {
   private let center: UNUserNotificationCenter?
   private let consumedSignalStore: ConsumedResetSignalStore
   private let deliverNotification: DeliverNotification
+  private var inFlightSignalIDs: Set<String> = []
 
   init(
     center: UNUserNotificationCenter = .current(),
@@ -104,10 +105,15 @@ final class ResetNotificationService {
   }
 
   func observe(_ forecast: ResetForecast) async {
+    let observationState = consumedSignalStore.stateForObservation(
+      currentSignalID: forecast.signalID
+    )
+    guard !observationState.recoveredCorruption else { return }
+
     let decision = ResetNotificationPolicy.decision(
       forecast: forecast,
-      hasBaseline: consumedSignalStore.hasBaseline,
-      consumedSignalIDs: consumedSignalStore.consumedSignalIDs
+      hasBaseline: observationState.hasBaseline,
+      consumedSignalIDs: observationState.consumedSignalIDs
     )
 
     switch decision {
@@ -116,6 +122,8 @@ final class ResetNotificationService {
     case .ignore:
       return
     case .notify(let signalID):
+      guard inFlightSignalIDs.insert(signalID).inserted else { return }
+      defer { inFlightSignalIDs.remove(signalID) }
       guard await deliverNotification(forecast, signalID) else { return }
       consumedSignalStore.consume(signalID)
     }
