@@ -1,6 +1,6 @@
 import Foundation
 
-struct TokenUsageEvent: Equatable, Sendable {
+struct TokenUsageEvent: Codable, Equatable, Sendable {
   let timestamp: Date
   let inputTokens: Int
   let cachedInputTokens: Int
