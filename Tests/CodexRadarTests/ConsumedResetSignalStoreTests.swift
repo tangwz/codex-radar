@@ -17,6 +17,7 @@ struct ConsumedResetSignalStoreTests {
     #expect(store.contains("100"))
     #expect(store.contains("200"))
     #expect(store.contains("300"))
+    #expect(store.consumedSignalIDs == ["100", "200", "300"])
   }
 
   @Test

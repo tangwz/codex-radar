@@ -104,16 +104,10 @@ final class ResetNotificationService {
   }
 
   func observe(_ forecast: ResetForecast) async {
-    let consumedSignalIDs: Set<String>
-    if let signalID = forecast.signalID, consumedSignalStore.contains(signalID) {
-      consumedSignalIDs = [signalID]
-    } else {
-      consumedSignalIDs = []
-    }
     let decision = ResetNotificationPolicy.decision(
       forecast: forecast,
       hasBaseline: consumedSignalStore.hasBaseline,
-      consumedSignalIDs: consumedSignalIDs
+      consumedSignalIDs: consumedSignalStore.consumedSignalIDs
     )
 
     switch decision {

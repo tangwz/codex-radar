@@ -64,6 +64,33 @@ struct ResetNotificationPolicyTests {
     #expect(consumedSignalStore.contains("signal-2"))
   }
 
+  @MainActor
+  @Test
+  func doesNotRedeliverConsumedCandidateAfterAnotherSignal() async throws {
+    let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let consumedSignalStore = ConsumedResetSignalStore(defaults: defaults)
+
+    var deliveredSignalIDs: [String] = []
+    let service = ResetNotificationService(
+      defaults: defaults,
+      consumedSignalStore: consumedSignalStore,
+      deliverNotification: { _, signalID in
+        deliveredSignalIDs.append(signalID)
+        return true
+      }
+    )
+
+    await service.observe(makeForecast(status: .candidate, signalID: "signal-a"))
+    await service.observe(makeForecast(status: .candidate, signalID: "signal-b"))
+    await service.observe(makeForecast(status: .candidate, signalID: "signal-a"))
+
+    #expect(deliveredSignalIDs == ["signal-b"])
+    #expect(consumedSignalStore.contains("signal-a"))
+    #expect(consumedSignalStore.contains("signal-b"))
+  }
+
   @Test
   func firstSignalEstablishesBaselineWithoutNotification() {
     let decision = ResetNotificationPolicy.decision(
