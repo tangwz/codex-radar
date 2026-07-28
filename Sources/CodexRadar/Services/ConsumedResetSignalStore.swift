@@ -2,6 +2,12 @@ import Foundation
 import OSLog
 
 final class ConsumedResetSignalStore {
+  struct ObservationState {
+    let hasBaseline: Bool
+    let consumedSignalIDs: Set<String>
+    let recoveredCorruption: Bool
+  }
+
   private let baselineKey = "hasResetSignalBaseline"
   private let consumedIDsKey = "consumedResetSignalIDs"
   private let legacyLastIDKey = "lastObservedResetSignalID"
@@ -33,6 +39,17 @@ final class ConsumedResetSignalStore {
     return loadedConsumedIDs!.contains(signalID)
   }
 
+  func stateForObservation(currentSignalID: String?) -> ObservationState {
+    let recoveredCorruption = loadConsumedIDsIfNeeded(
+      corruptionRecoverySignalID: currentSignalID
+    )
+    return ObservationState(
+      hasBaseline: defaults.bool(forKey: baselineKey),
+      consumedSignalIDs: loadedConsumedIDs!,
+      recoveredCorruption: recoveredCorruption
+    )
+  }
+
   func establishBaseline(signalID: String?) {
     loadConsumedIDsIfNeeded()
     defaults.set(true, forKey: baselineKey)
@@ -49,11 +66,15 @@ final class ConsumedResetSignalStore {
     persist(loadedConsumedIDs!)
   }
 
-  private func loadConsumedIDsIfNeeded() {
-    guard loadedConsumedIDs == nil else { return }
+  @discardableResult
+  private func loadConsumedIDsIfNeeded(
+    corruptionRecoverySignalID: String? = nil
+  ) -> Bool {
+    guard loadedConsumedIDs == nil else { return false }
 
     var consumedIDs: Set<String>
     var shouldPersist = false
+    var recoveredCorruption = false
 
     if let data = defaults.data(forKey: consumedIDsKey) {
       do {
@@ -62,12 +83,14 @@ final class ConsumedResetSignalStore {
         Self.logger.error("Recovering corrupt consumed reset signal IDs")
         consumedIDs = []
         shouldPersist = true
+        recoveredCorruption = true
       }
     } else {
       consumedIDs = []
       shouldPersist = defaults.object(forKey: consumedIDsKey) != nil
       if shouldPersist {
         Self.logger.error("Recovering corrupt consumed reset signal IDs")
+        recoveredCorruption = true
       }
     }
 
@@ -77,12 +100,16 @@ final class ConsumedResetSignalStore {
       shouldPersist = true
     }
 
+    if recoveredCorruption, let corruptionRecoverySignalID {
+      consumedIDs.insert(corruptionRecoverySignalID)
+    }
+
     loadedConsumedIDs = consumedIDs
 
-    guard shouldPersist, persist(consumedIDs) else { return }
-    if legacyID != nil {
+    if shouldPersist, persist(consumedIDs), legacyID != nil {
       defaults.removeObject(forKey: legacyLastIDKey)
     }
+    return recoveredCorruption
   }
 
   @discardableResult
