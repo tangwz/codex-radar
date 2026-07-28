@@ -50,6 +50,28 @@ struct CodexSessionScannerTests {
   }
 
   @Test
+  func skipsNonRegularJSONLEntriesWhileScanningValidFiles() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let validFile = root.appending(path: "sessions/valid.jsonl")
+    let nonRegularEntry = root.appending(path: "sessions/not-a-file.jsonl")
+    try FileManager.default.createDirectory(
+      at: validFile.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(at: nonRegularEntry, withIntermediateDirectories: true)
+    let contents = """
+      {"timestamp":"2026-07-28T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10}}}}
+      """
+    try Data(contents.utf8).write(to: validFile)
+
+    let events = try CodexSessionScanner().scan(codexHome: root)
+
+    #expect(events.map(\.totalTokens) == [110])
+  }
+
+  @Test
   func scansActiveAndArchivedJSONLSessions() throws {
     let root = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
