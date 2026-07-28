@@ -25,16 +25,9 @@
 
 ## 下载与首次安装
 
-bootstrap 版本使用不可变的版本固定资产，不要使用 `latest/download`：
+当前尚无可下载的公开 Release。
 
-- ZIP：<https://github.com/tangwz/codex-radar/releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip>
-- SHA-256：<https://github.com/tangwz/codex-radar/releases/download/v0.1.0/CodexRadar-v0.1.0-macos-universal.zip.sha256>
-
-下载两个文件后，在同一目录验证 ZIP 与匹配的不可变 checksum 资产：
-
-```bash
-/usr/bin/shasum -a 256 --check CodexRadar-v0.1.0-macos-universal.zip.sha256
-```
+首个 bootstrap Production Update 公开并激活后，本节会提供不可变的版本固定 ZIP、SHA-256 资产及对应校验命令，不会使用 `latest/download`。
 
 SHA-256 只能确认下载字节与该 Release 资产一致，不能证明开发者身份。当前应用是 ad-hoc signed，不是 Developer ID signed，也未 notarized；首次手动下载与 GitHub 分发渠道仍是独立的引导信任边界。
 

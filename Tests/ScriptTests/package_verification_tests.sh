@@ -6,6 +6,11 @@ PACKAGE_SCRIPT="$ROOT_DIR/script/package_app.sh"
 SIGN_SCRIPT="$ROOT_DIR/script/sign_app.sh"
 VERIFY_SCRIPT="$ROOT_DIR/script/verify_app.sh"
 RELEASE_SCRIPT="$ROOT_DIR/script/package_release.sh"
+source "$ROOT_DIR/script/lib/release_common.sh"
+load_version_config "$ROOT_DIR/version.env"
+CURRENT_MARKETING_VERSION="$MARKETING_VERSION"
+CURRENT_BUILD_NUMBER="$BUILD_NUMBER"
+CURRENT_RELEASE_BASENAME="$(release_asset_basename)"
 
 fail() {
   echo "$*" >&2
@@ -583,8 +588,9 @@ write_release_plist() {
   /usr/bin/plutil -insert CFBundleExecutable -string CodexRadar "$plist_path"
   /usr/bin/plutil -insert CFBundleIdentifier -string com.terence.codex-radar "$plist_path"
   /usr/bin/plutil -insert CFBundlePackageType -string APPL "$plist_path"
-  /usr/bin/plutil -insert CFBundleShortVersionString -string 0.1.0 "$plist_path"
-  /usr/bin/plutil -insert CFBundleVersion -string 1 "$plist_path"
+  /usr/bin/plutil -insert CFBundleShortVersionString -string \
+    "$CURRENT_MARKETING_VERSION" "$plist_path"
+  /usr/bin/plutil -insert CFBundleVersion -string "$CURRENT_BUILD_NUMBER" "$plist_path"
   /usr/bin/plutil -insert LSMinimumSystemVersion -string 14.0 "$plist_path"
   /usr/bin/plutil -insert SUFeedURL -string \
     https://raw.githubusercontent.com/tangwz/codex-radar/main/appcast.xml "$plist_path"
@@ -1407,7 +1413,7 @@ release_output="$(run_release_fixture "$release_success_fixture" 2>&1)" || {
 }
 [[ "$release_output" == *"locally signed with an ad-hoc identity"* ]] ||
   fail "ad-hoc release disclosure is missing"
-release_archive="$release_success_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+release_archive="$release_success_fixture/output/$CURRENT_RELEASE_BASENAME.zip"
 release_checksum="$release_archive.sha256"
 release_manifest="$release_archive.manifest"
 [[ -f "$release_archive" && -f "$release_checksum" && -f "$release_manifest" ]] ||
@@ -1427,9 +1433,9 @@ cp "$release_archive" "$release_checksum" "$release_manifest" "$portable_checksu
   cd "$portable_checksum_dir"
   /usr/bin/shasum -a 256 --check "$checksum_basename" >/dev/null
 ) || fail "release checksum is not portable with the artifact set"
-grep -Fx 'archive_name=CodexRadar-v0.1.0-macos-universal.zip' "$release_manifest" >/dev/null
-grep -Fx 'version=0.1.0' "$release_manifest" >/dev/null
-grep -Fx 'build=1' "$release_manifest" >/dev/null
+grep -Fx "archive_name=$CURRENT_RELEASE_BASENAME.zip" "$release_manifest" >/dev/null
+grep -Fx "version=$CURRENT_MARKETING_VERSION" "$release_manifest" >/dev/null
+grep -Fx "build=$CURRENT_BUILD_NUMBER" "$release_manifest" >/dev/null
 grep -Eq '^byte_length=[1-9][0-9]*$' "$release_manifest"
 grep -Eq '^sha256=[0-9a-f]{64}$' "$release_manifest"
 grep -Fx 'signing_mode=adhoc' "$release_manifest" >/dev/null
@@ -1439,7 +1445,7 @@ assert_fixture_root_preserved "$release_success_fixture"
 
 assert_release_artifact_set_absent() {
   local release_root="$1"
-  local archive="$release_root/output/CodexRadar-v0.1.0-macos-universal.zip"
+  local archive="$release_root/output/$CURRENT_RELEASE_BASENAME.zip"
 
   for artifact in "$archive" "$archive.sha256" "$archive.manifest"; do
     [[ ! -e "$artifact" && ! -L "$artifact" ]] ||
@@ -1576,7 +1582,7 @@ if [[ "$post_rename_ready" != true ]]; then
   fail "release helper did not pause after the publish rename"
 fi
 post_rename_publisher_pid="$(<"$post_rename_control/publisher.pid")"
-post_rename_archive="$post_rename_signal_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+post_rename_archive="$post_rename_signal_fixture/output/$CURRENT_RELEASE_BASENAME.zip"
 [[ -f "$post_rename_archive" ]] ||
   fail "post-rename pause occurred before the release artifact rename"
 /bin/kill -TERM -- "-$post_rename_publisher_pid"
@@ -1600,7 +1606,7 @@ run_release_fixture "$post_rename_signal_fixture" >/dev/null 2>&1 ||
   fail "post-rename retry changed a prior artifact set"
 
 existing_artifact_fixture="$(setup_release_fixture preserve-existing-release)"
-existing_archive="$existing_artifact_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+existing_archive="$existing_artifact_fixture/output/$CURRENT_RELEASE_BASENAME.zip"
 mkdir "$existing_artifact_fixture/output"
 printf 'existing archive\n' >"$existing_archive"
 printf 'existing checksum\n' >"$existing_archive.sha256"
@@ -1642,7 +1648,7 @@ wait "$first_publisher_pid" || {
   cat "$concurrent_fixture/first-publisher.log" >&2
   fail "first release publisher failed after concurrent rejection"
 }
-concurrent_archive="$concurrent_fixture/output/CodexRadar-v0.1.0-macos-universal.zip"
+concurrent_archive="$concurrent_fixture/output/$CURRENT_RELEASE_BASENAME.zip"
 [[ -f "$concurrent_archive" && -f "$concurrent_archive.sha256" && \
   -f "$concurrent_archive.manifest" ]] ||
   fail "concurrent publication did not leave one complete artifact set"
