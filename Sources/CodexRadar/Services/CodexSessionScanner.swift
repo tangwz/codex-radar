@@ -171,8 +171,9 @@ struct CodexSessionScanner: Sendable {
 
     var descriptors: [CodexSessionFileDescriptor] = []
     for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+      guard let fingerprint = try? fingerprint(for: url) else { continue }
       descriptors.append(
-        CodexSessionFileDescriptor(url: url, fingerprint: try fingerprint(for: url))
+        CodexSessionFileDescriptor(url: url, fingerprint: fingerprint)
       )
     }
     if let enumerationError {
