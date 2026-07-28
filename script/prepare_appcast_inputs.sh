@@ -339,7 +339,7 @@ if [[ "$bootstrap" == false ]]; then
 fi
 printf 'https://github.com/tangwz/codex-radar/releases/download/v%s/\n' \
   "$MARKETING_VERSION" >"$stage/production-download-url-prefix"
-printf './\n' >"$stage/qualification-download-url-prefix"
+printf '.\n' >"$stage/qualification-download-url-prefix"
 
 /usr/bin/cmp -s "$archive_path" "$stage/production/$archive_name" ||
   die "production archive copy differs from source"

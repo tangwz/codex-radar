@@ -3,11 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PREPARE_SCRIPT="$ROOT_DIR/script/prepare_appcast_inputs.sh"
+CANONICALIZE_SCRIPT="$ROOT_DIR/script/canonicalize_qualification_feed.sh"
 VERIFY_SCRIPT="$ROOT_DIR/script/verify_update_artifacts.sh"
 QUALIFY_SCRIPT="$ROOT_DIR/script/qualify_update.sh"
 HALT_SCRIPT="$ROOT_DIR/script/halt_distribution.sh"
 ACTIVATION_PR_VERIFY_SCRIPT="$ROOT_DIR/script/verify_activation_pr.sh"
 SPARKLE_SOURCE="$ROOT_DIR/.build/checkouts/Sparkle"
+SPARKLE_GENERATE_APPCAST="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+SPARKLE_SIGN_UPDATE="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin/sign_update"
 SPARKLE_NAMESPACE="http://www.andymatuschak.org/xml-namespaces/sparkle"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
 CI_WORKFLOW="$WORKFLOW_DIR/ci.yml"
@@ -19,6 +22,10 @@ README_FILE="$ROOT_DIR/README.md"
 
 [[ -x "$PREPARE_SCRIPT" ]] || {
   echo "prepare_appcast_inputs.sh does not exist" >&2
+  exit 1
+}
+[[ -x "$CANONICALIZE_SCRIPT" ]] || {
+  echo "canonicalize_qualification_feed.sh does not exist" >&2
   exit 1
 }
 [[ -x "$VERIFY_SCRIPT" ]] || {
@@ -39,6 +46,14 @@ README_FILE="$ROOT_DIR/README.md"
 }
 [[ -d "$SPARKLE_SOURCE" ]] || {
   echo "Sparkle source checkout does not exist" >&2
+  exit 1
+}
+[[ -x "$SPARKLE_GENERATE_APPCAST" ]] || {
+  echo "Sparkle generate_appcast does not exist" >&2
+  exit 1
+}
+[[ -x "$SPARKLE_SIGN_UPDATE" ]] || {
+  echo "Sparkle sign_update does not exist" >&2
   exit 1
 }
 
@@ -475,6 +490,10 @@ expected_secret_run = <<~'SHELL'.strip
   set +x
   printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$PRODUCTION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/production
   printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$QUALIFICATION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/qualification
+  qualification_archives=(dist/prepared-parent/inputs/qualification/*.zip)
+  [[ "${#qualification_archives[@]}" == 1 ]]
+  ./script/canonicalize_qualification_feed.sh --feed dist/prepared-parent/inputs/qualification/appcast.xml --archive-name "${qualification_archives[0]##*/}"
+  printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/sign_update" --disable-signing-warning --ed-key-file - dist/prepared-parent/inputs/qualification/appcast.xml
 SHELL
 unless fetch_key(secret_step, "shell").to_s == "bash" &&
   secret_env == expected_secret_env &&
@@ -1754,7 +1773,7 @@ archive_name="CodexRadar-v0.2.0-macos-universal.zip"
 [[ "$(<"$inputs_dir/production-download-url-prefix")" == \
   "https://github.com/tangwz/codex-radar/releases/download/v0.2.0/" ]] ||
   fail "production URL prefix is not version-fixed"
-[[ "$(<"$inputs_dir/qualification-download-url-prefix")" == "./" ]] ||
+[[ "$(<"$inputs_dir/qualification-download-url-prefix")" == "." ]] ||
   fail "qualification URL prefix is not relative"
 if /usr/bin/find "$inputs_dir" -type f \( -name '*.html' -o -name '*.md' -o -name '*.markdown' -o -name '*.txt' \) | /usr/bin/grep . >/dev/null; then
   fail "preparation unexpectedly created release notes"
@@ -1833,6 +1852,68 @@ production_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xm
 qualification_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/qualification/appcast.xml" | /usr/bin/awk '{print $1}')"
 verify_artifacts "$inputs_dir" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
   "$candidate_dir/version.env" "$candidate_dir/update.env"
+
+generated_inputs="$fixture_root/generated-inputs"
+prepare_command "$generated_inputs" "$candidate_dir/version.env" "$candidate_dir/update.env" \
+  "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  --production-feed "$previous_dir/appcast.xml"
+generator_home="$fixture_root/generator-home"
+/bin/mkdir -p "$generator_home"
+test_seed_base64="$(/usr/bin/base64 <"$fixture_root/test-seed" | /usr/bin/tr -d '\n')"
+for channel in production qualification; do
+  printf '%s' "$test_seed_base64" |
+    /usr/bin/env HOME="$generator_home" CFFIXED_USER_HOME="$generator_home" \
+      "$SPARKLE_GENERATE_APPCAST" \
+      --maximum-versions 1 \
+      --download-url-prefix "$(<"$generated_inputs/$channel-download-url-prefix")" \
+      --ed-key-file - \
+      "$generated_inputs/$channel"
+done
+"$CANONICALIZE_SCRIPT" \
+  --feed "$generated_inputs/qualification/appcast.xml" \
+  --archive-name "$archive_name"
+printf '%s' "$test_seed_base64" |
+  "$SPARKLE_SIGN_UPDATE" \
+    --disable-signing-warning \
+    --ed-key-file - \
+    "$generated_inputs/qualification/appcast.xml"
+generated_qualification_url="$(
+  /usr/bin/xmllint --nonet --xpath \
+    "string(/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item']/*[local-name()='enclosure']/@url)" \
+    "$generated_inputs/qualification/appcast.xml"
+)"
+case "$generated_qualification_url" in
+  "$archive_name") ;;
+  *) fail "real Sparkle generated an unexpected qualification enclosure URL: $generated_qualification_url" ;;
+esac
+verify_artifacts "$generated_inputs" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+
+canonicalized_inputs="$fixture_root/canonicalized-inputs"
+prepare_command "$canonicalized_inputs" "$candidate_dir/version.env" "$candidate_dir/update.env" \
+  "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  --production-feed "$previous_dir/appcast.xml"
+make_feed "$canonicalized_inputs/production/appcast.xml" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$archive_signature"
+make_feed "$canonicalized_inputs/qualification/appcast.xml" 0.2.0 2 14.0 \
+  "https://example.invalid/$archive_name" "$archive_length" "$archive_signature"
+expect_failure "qualification feed has an unexpected enclosure URL" \
+  "$CANONICALIZE_SCRIPT" \
+  --feed "$canonicalized_inputs/qualification/appcast.xml" \
+  --archive-name "$archive_name"
+make_feed "$canonicalized_inputs/qualification/appcast.xml" 0.2.0 2 14.0 \
+  "//$archive_name" "$archive_length" "$archive_signature"
+"$CANONICALIZE_SCRIPT" \
+  --feed "$canonicalized_inputs/qualification/appcast.xml" \
+  --archive-name "$archive_name"
+printf '%s' "$test_seed_base64" |
+  "$SPARKLE_SIGN_UPDATE" \
+    --disable-signing-warning \
+    --ed-key-file - \
+    "$canonicalized_inputs/qualification/appcast.xml"
+verify_artifacts "$canonicalized_inputs" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
+  "$candidate_dir/version.env" "$candidate_dir/update.env"
+
 verify_published "$inputs_dir/production/appcast.xml" "$candidate_archive" \
   "$candidate_manifest" "$candidate_dir/version.env" \
   "$candidate_dir/update.env"
@@ -2438,6 +2519,10 @@ make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
 make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
   "https://example.invalid/$archive_name" "$archive_length" "$archive_signature"
+assert_artifact_failure "qualification enclosure URL must be relative"
+
+make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
+  "//$archive_name" "$archive_length" "$archive_signature"
 assert_artifact_failure "qualification enclosure URL must be relative"
 
 make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 15.0 \

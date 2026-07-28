@@ -208,6 +208,10 @@ jobs:
           set +x
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$PRODUCTION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/production
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" --maximum-versions 1 --download-url-prefix "$QUALIFICATION_DOWNLOAD_URL_PREFIX" --ed-key-file - dist/prepared-parent/inputs/qualification
+          qualification_archives=(dist/prepared-parent/inputs/qualification/*.zip)
+          [[ "${#qualification_archives[@]}" == 1 ]]
+          ./script/canonicalize_qualification_feed.sh --feed dist/prepared-parent/inputs/qualification/appcast.xml --archive-name "${qualification_archives[0]##*/}"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/sign_update" --disable-signing-warning --ed-key-file - dist/prepared-parent/inputs/qualification/appcast.xml
 
       - name: Validate signed candidate
         shell: bash
