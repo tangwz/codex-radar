@@ -97,13 +97,12 @@ struct AppLocalizationTests {
       ("A possible Codex reset signal was posted.", "检测到一条可能的 Codex 重置信号。"),
       ("Codex reset signal detected", "检测到 Codex 重置信号"),
     ]
+    let englishStrings = localizedStringsTable(for: .english)
+    let simplifiedChineseStrings = localizedStringsTable(for: .simplifiedChinese)
 
     for (key, simplifiedChinese) in translations {
-      #expect(AppLocalization.string(key, language: .english, bundle: .module) == key)
-      #expect(
-        AppLocalization.string(key, language: .simplifiedChinese, bundle: .module)
-          == simplifiedChinese
-      )
+      #expect(englishStrings[key] == key)
+      #expect(simplifiedChineseStrings[key] == simplifiedChinese)
     }
   }
 
@@ -161,5 +160,16 @@ struct AppLocalizationTests {
 
   private func localized(_ key: String, language: AppLanguage) -> String {
     AppLocalization.string(key, language: language, bundle: .module)
+  }
+
+  private func localizedStringsTable(for language: AppLanguage) -> [String: String] {
+    let languageCode = Bundle.module.localizations.first {
+      $0.caseInsensitiveCompare(language.rawValue) == .orderedSame
+    } ?? language.rawValue
+    let localizationPath = try! #require(
+      Bundle.module.path(forResource: languageCode, ofType: "lproj")
+    )
+    let tablePath = (localizationPath as NSString).appendingPathComponent("Localizable.strings")
+    return try! #require(NSDictionary(contentsOfFile: tablePath) as? [String: String])
   }
 }
