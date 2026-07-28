@@ -622,6 +622,127 @@ struct TokenUsageRepositoryTests {
   }
 
   @Test
+  func cacheWriteFailureStillKeepsTheLastGoodManifestInMemory() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let blockedDirectory = root.appending(path: "not-a-directory")
+    try Data("file".utf8).write(to: blockedDirectory)
+    let file = descriptor(
+      path: "/tmp/sessions/cached.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let discovery = LockedBox(CodexSessionDiscovery(files: [file]))
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: blockedDirectory),
+      discoverFiles: { discovery.value },
+      fingerprintFile: { _ in file.fingerprint },
+      parseFile: { _ in
+        ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: 100,
+              cachedInputTokens: 0,
+              outputTokens: 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    let first = await repository.refresh(timeZone: timeZone)
+    discovery.value = CodexSessionDiscovery(
+      files: [],
+      failedPaths: [file.fingerprint.path]
+    )
+    let failed = await repository.refresh(timeZone: timeZone)
+
+    #expect(first.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(first.issues == [.cacheWriteFailed])
+    #expect(failed.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(failed.issues == [.skippedFiles(1), .cacheWriteFailed])
+  }
+
+  @Test(arguments: [false, true])
+  func fallbackSnapshotSurvivesFileFailureWithoutAUsableManifest(
+    corruptManifest: Bool
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cacheStore = TokenUsageCacheStore(directoryURL: directory)
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+    let generatedAt = Date(timeIntervalSince1970: 1_700_000_100)
+    let fallback = TokenUsageSnapshotBuilder.make(
+      events: [
+        TokenUsageEvent(
+          timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+          inputTokens: 100,
+          cachedInputTokens: 0,
+          outputTokens: 10
+        )
+      ],
+      at: generatedAt,
+      timeZone: timeZone
+    )
+    try cacheStore.saveSnapshot(fallback)
+    if corruptManifest {
+      try Data("corrupt".utf8).write(to: cacheStore.manifestURL)
+    }
+    let file = descriptor(
+      path: "/tmp/sessions/retry.jsonl",
+      resource: "resource-1",
+      size: 200,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_050)
+    )
+    let shouldFail = LockedBox(true)
+    let repository = TokenUsageRepository(
+      cacheStore: cacheStore,
+      discoverFiles: { CodexSessionDiscovery(files: [file]) },
+      fingerprintFile: { _ in file.fingerprint },
+      parseFile: { _ in
+        if shouldFail.value {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+        return ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: 250,
+              cachedInputTokens: 0,
+              outputTokens: 25
+            )
+          ]
+        )
+      },
+      now: { generatedAt }
+    )
+
+    let failed = await repository.refresh(timeZone: timeZone)
+    let persistedFallback = try cacheStore.loadSnapshot()
+    let persistedManifest = try cacheStore.loadManifest()
+    shouldFail.value = false
+    let recovered = await repository.refresh(timeZone: timeZone)
+
+    #expect(failed.snapshot == fallback)
+    #expect(failed.issues == [.skippedFiles(1)])
+    #expect(persistedFallback == fallback)
+    #expect(persistedManifest == nil)
+    #expect(recovered.snapshot?.metrics(for: .day).totalTokens == 275)
+    #expect(recovered.issues.isEmpty)
+    #expect(try cacheStore.loadSnapshot() == recovered.snapshot)
+    #expect(try cacheStore.loadManifest()?.files.count == 1)
+  }
+
+  @Test
   func overlappingRefreshesShareTheInFlightDiscovery() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -808,10 +929,12 @@ struct TokenUsageRepositoryTests {
       DispatchSemaphore(value: 0),
     ]
     let discoveryCount = LockedBox(0)
-    let secondCallStarted = LockedBox(false)
-    let thirdCallStarted = LockedBox(false)
     let secondCallFinished = LockedBox(false)
     let thirdCallFinished = LockedBox(false)
+    let secondEnqueued =
+      EnqueueAcknowledgement<TokenUsageRepository.EnqueueObservation>()
+    let thirdEnqueued =
+      EnqueueAcknowledgement<TokenUsageRepository.EnqueueObservation>()
     let cacheStore = TokenUsageCacheStore(directoryURL: directory)
     let repository = TokenUsageRepository(
       cacheStore: cacheStore,
@@ -837,26 +960,24 @@ struct TokenUsageRepositoryTests {
     while discoveryCount.value < 1 {
       await Task.yield()
     }
-    let second = Task(priority: .high) {
-      secondCallStarted.value = true
-      let result = await repository.refresh(timeZone: secondTimeZone)
+    let second = Task {
+      let result = await repository.refresh(
+        timeZone: secondTimeZone,
+        _onEnqueued: { secondEnqueued.signal($0) }
+      )
       secondCallFinished.value = true
       return result
     }
-    while !secondCallStarted.value {
-      await Task.yield()
-    }
-    _ = await repository.cachedSnapshot(timeZone: firstTimeZone)
-    let third = Task(priority: .background) {
-      thirdCallStarted.value = true
-      let result = await repository.refresh(timeZone: thirdTimeZone)
+    _ = await secondEnqueued.wait()
+    let third = Task {
+      let result = await repository.refresh(
+        timeZone: thirdTimeZone,
+        _onEnqueued: { thirdEnqueued.signal($0) }
+      )
       thirdCallFinished.value = true
       return result
     }
-    while !thirdCallStarted.value {
-      await Task.yield()
-    }
-    _ = await repository.cachedSnapshot(timeZone: firstTimeZone)
+    _ = await thirdEnqueued.wait()
 
     gates[0].signal()
     while discoveryCount.value < 2 {
@@ -883,6 +1004,90 @@ struct TokenUsageRepositoryTests {
     #expect(secondResult.snapshot?.timeZoneIdentifier == secondTimeZone.identifier)
     #expect(thirdResult.snapshot?.timeZoneIdentifier == thirdTimeZone.identifier)
     #expect(committed.timeZoneIdentifier == thirdTimeZone.identifier)
+  }
+
+  @Test
+  func sameTimeZonePendingRefreshesMergeAtTheMaximumCutoff() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let gates = [
+      DispatchSemaphore(value: 0),
+      DispatchSemaphore(value: 0),
+    ]
+    let discoveryCount = LockedBox(0)
+    let lowCompletionCount = LockedBox(0)
+    let highCompletionCount = LockedBox(0)
+    let lowEnqueued =
+      EnqueueAcknowledgement<TokenUsageRepository.EnqueueObservation>()
+    let highEnqueued =
+      EnqueueAcknowledgement<TokenUsageRepository.EnqueueObservation>()
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: {
+        let invocation = discoveryCount.withValue {
+          $0 += 1
+          return $0
+        }
+        gates[invocation - 1].wait()
+        return CodexSessionDiscovery(files: [])
+      },
+      fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let activeTimeZone = TimeZone(secondsFromGMT: 0)!
+    let pendingTimeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let lowCutoff = Date(timeIntervalSince1970: 1_700_000_200)
+    let highCutoff = Date(timeIntervalSince1970: 1_700_000_300)
+
+    let active = Task {
+      await repository.refresh(timeZone: activeTimeZone)
+    }
+    while discoveryCount.value < 1 {
+      await Task.yield()
+    }
+    let low = Task {
+      let result = await repository.refresh(
+        timeZone: pendingTimeZone,
+        freshnessCutoff: lowCutoff,
+        _onEnqueued: { lowEnqueued.signal($0) }
+      )
+      lowCompletionCount.update { $0 += 1 }
+      return result
+    }
+    let lowObservation = await lowEnqueued.wait()
+    let high = Task {
+      let result = await repository.refresh(
+        timeZone: pendingTimeZone,
+        freshnessCutoff: highCutoff,
+        _onEnqueued: { highEnqueued.signal($0) }
+      )
+      highCompletionCount.update { $0 += 1 }
+      return result
+    }
+    let highObservation = await highEnqueued.wait()
+
+    #expect(lowObservation.queue == .pending)
+    #expect(lowObservation.freshnessCutoff == lowCutoff)
+    #expect(lowObservation.waiterCount == 1)
+    #expect(highObservation.queue == .pending)
+    #expect(highObservation.freshnessCutoff == highCutoff)
+    #expect(highObservation.waiterCount == 2)
+
+    gates[0].signal()
+    while discoveryCount.value < 2 {
+      await Task.yield()
+    }
+    gates[1].signal()
+    _ = await active.value
+    let lowResult = await low.value
+    let highResult = await high.value
+
+    #expect(discoveryCount.value == 2)
+    #expect(lowResult == highResult)
+    #expect(lowCompletionCount.value == 1)
+    #expect(highCompletionCount.value == 1)
   }
 
   @Test
@@ -988,6 +1193,47 @@ private final class LockedBox<Value>: @unchecked Sendable {
 
   func withValue<Result>(_ body: (inout Value) -> Result) -> Result {
     lock.withLock { body(&storage) }
+  }
+}
+
+private final class EnqueueAcknowledgement<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedValue: Value?
+  private var waiter: CheckedContinuation<Value, Never>?
+  private var didSignal = false
+  private var didWait = false
+
+  func signal(_ value: Value) {
+    let waiter: CheckedContinuation<Value, Never>? = lock.withLock {
+      precondition(!didSignal)
+      didSignal = true
+      guard let waiter = self.waiter else {
+        storedValue = value
+        return nil
+      }
+      self.waiter = nil
+      return waiter
+    }
+    waiter?.resume(returning: value)
+  }
+
+  func wait() async -> Value {
+    await withCheckedContinuation { continuation in
+      let value: Value? = lock.withLock {
+        precondition(!didWait)
+        didWait = true
+        guard let storedValue else {
+          precondition(waiter == nil)
+          waiter = continuation
+          return nil
+        }
+        self.storedValue = nil
+        return storedValue
+      }
+      if let value {
+        continuation.resume(returning: value)
+      }
+    }
   }
 }
 

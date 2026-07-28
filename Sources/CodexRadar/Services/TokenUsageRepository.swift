@@ -18,6 +18,17 @@ actor TokenUsageRepository {
   typealias ParseFile = @Sendable (URL) throws -> ParsedCodexSessionFile
   typealias Now = @Sendable () -> Date
 
+  struct EnqueueObservation: Equatable, Sendable {
+    enum Queue: Equatable, Sendable {
+      case inFlight
+      case pending
+    }
+
+    let queue: Queue
+    let freshnessCutoff: Date?
+    let waiterCount: Int
+  }
+
   private let cacheStore: TokenUsageCacheStore
   private let discoverFiles: DiscoverFiles
   private let fingerprintFile: FingerprintFile
@@ -26,7 +37,13 @@ actor TokenUsageRepository {
   private var inFlight: RefreshFlight?
   private var pendingRefreshes: [PendingRefresh] = []
   private var lastSnapshot: TokenUsageSnapshot?
+  private var lastManifest: TokenUsageManifest?
   private var nextGeneration = 0
+
+  private struct RefreshOutcome: Sendable {
+    let result: TokenUsageRepositoryResult
+    let lastGoodManifest: TokenUsageManifest?
+  }
 
   private struct RefreshFlight {
     let generation: Int
@@ -104,13 +121,15 @@ actor TokenUsageRepository {
 
   func refresh(
     timeZone: TimeZone,
-    freshnessCutoff: Date? = nil
+    freshnessCutoff: Date? = nil,
+    _onEnqueued: (@Sendable (EnqueueObservation) -> Void)? = nil
   ) async -> TokenUsageRepositoryResult {
     await withCheckedContinuation { continuation in
       enqueueRefresh(
         timeZone: timeZone,
         freshnessCutoff: freshnessCutoff,
-        continuation: continuation
+        continuation: continuation,
+        onEnqueued: _onEnqueued
       )
     }
   }
@@ -118,7 +137,8 @@ actor TokenUsageRepository {
   private func enqueueRefresh(
     timeZone: TimeZone,
     freshnessCutoff: Date?,
-    continuation: CheckedContinuation<TokenUsageRepositoryResult, Never>
+    continuation: CheckedContinuation<TokenUsageRepositoryResult, Never>,
+    onEnqueued: (@Sendable (EnqueueObservation) -> Void)?
   ) {
     if let lastIndex = pendingRefreshes.indices.last,
       pendingRefreshes[lastIndex].timeZone.identifier == timeZone.identifier
@@ -126,6 +146,14 @@ actor TokenUsageRepository {
       pendingRefreshes[lastIndex].merge(
         freshnessCutoff: freshnessCutoff,
         continuation: continuation
+      )
+      let pending = pendingRefreshes[lastIndex]
+      onEnqueued?(
+        EnqueueObservation(
+          queue: .pending,
+          freshnessCutoff: pending.freshnessCutoff,
+          waiterCount: pending.waiters.count
+        )
       )
       return
     }
@@ -136,6 +164,13 @@ actor TokenUsageRepository {
     {
       inFlight.waiters.append(continuation)
       self.inFlight = inFlight
+      onEnqueued?(
+        EnqueueObservation(
+          queue: .inFlight,
+          freshnessCutoff: inFlight.freshnessLowerBound,
+          waiterCount: inFlight.waiters.count
+        )
+      )
       return
     }
 
@@ -147,6 +182,13 @@ actor TokenUsageRepository {
         timeZone: timeZone,
         freshnessCutoff: freshnessCutoff,
         waiters: [continuation]
+      )
+    )
+    onEnqueued?(
+      EnqueueObservation(
+        queue: .pending,
+        freshnessCutoff: freshnessCutoff,
+        waiterCount: 1
       )
     )
     startNextRefreshIfNeeded()
@@ -162,6 +204,10 @@ actor TokenUsageRepository {
       lastSnapshot?.timeZoneIdentifier == timeZone.identifier
       ? lastSnapshot
       : nil
+    let memoryManifest =
+      lastManifest?.isCompatible == true
+      ? lastManifest
+      : nil
     let cacheStore = cacheStore
     let discoverFiles = discoverFiles
     let fingerprintFile = fingerprintFile
@@ -171,6 +217,7 @@ actor TokenUsageRepository {
       Self.performRefresh(
         timeZone: timeZone,
         memorySnapshot: memorySnapshot,
+        memoryManifest: memoryManifest,
         cacheStore: cacheStore,
         discoverFiles: discoverFiles,
         fingerprintFile: fingerprintFile,
@@ -192,35 +239,45 @@ actor TokenUsageRepository {
 
   private func finish(
     generation: Int,
-    with result: TokenUsageRepositoryResult
+    with outcome: RefreshOutcome
   ) {
     guard let completed = inFlight, completed.generation == generation else {
       return
     }
     inFlight = nil
-    if let snapshot = result.snapshot {
+    if let snapshot = outcome.result.snapshot {
       lastSnapshot = snapshot
+    }
+    if let lastGoodManifest = outcome.lastGoodManifest,
+      lastGoodManifest.isCompatible
+    {
+      lastManifest = lastGoodManifest
     }
     startNextRefreshIfNeeded()
     for waiter in completed.waiters {
-      waiter.resume(returning: result)
+      waiter.resume(returning: outcome.result)
     }
   }
 
   private static func performRefresh(
     timeZone: TimeZone,
     memorySnapshot: TokenUsageSnapshot?,
+    memoryManifest: TokenUsageManifest?,
     cacheStore: TokenUsageCacheStore,
     discoverFiles: DiscoverFiles,
     fingerprintFile: FingerprintFile,
     parseFile: ParseFile,
     now: Now
-  ) -> TokenUsageRepositoryResult {
+  ) -> RefreshOutcome {
     let previousManifest: TokenUsageManifest?
-    do {
-      previousManifest = try cacheStore.loadManifest()
-    } catch {
-      previousManifest = nil
+    if let memoryManifest, memoryManifest.isCompatible {
+      previousManifest = memoryManifest
+    } else {
+      do {
+        previousManifest = try cacheStore.loadManifest()
+      } catch {
+        previousManifest = nil
+      }
     }
     let fallbackSnapshot = fallbackSnapshot(
       manifest: previousManifest,
@@ -234,9 +291,12 @@ actor TokenUsageRepository {
     do {
       discovery = try discoverFiles()
     } catch {
-      return TokenUsageRepositoryResult(
-        snapshot: fallbackSnapshot,
-        issues: [.sourceUnavailable]
+      return RefreshOutcome(
+        result: TokenUsageRepositoryResult(
+          snapshot: fallbackSnapshot,
+          issues: [.sourceUnavailable]
+        ),
+        lastGoodManifest: previousManifest
       )
     }
 
@@ -305,6 +365,18 @@ actor TokenUsageRepository {
     if skippedFileCount > 0 {
       issues.append(.skippedFiles(skippedFileCount))
     }
+    if skippedFileCount > 0,
+      previousManifest == nil,
+      let fallbackSnapshot
+    {
+      return RefreshOutcome(
+        result: TokenUsageRepositoryResult(
+          snapshot: fallbackSnapshot,
+          issues: issues
+        ),
+        lastGoodManifest: nil
+      )
+    }
 
     do {
       try cacheStore.saveManifest(manifest)
@@ -312,7 +384,10 @@ actor TokenUsageRepository {
     } catch {
       issues.append(.cacheWriteFailed)
     }
-    return TokenUsageRepositoryResult(snapshot: snapshot, issues: issues)
+    return RefreshOutcome(
+      result: TokenUsageRepositoryResult(snapshot: snapshot, issues: issues),
+      lastGoodManifest: skippedFileCount == 0 ? manifest : previousManifest
+    )
   }
 
   private static func matchedPreviousRecords(
