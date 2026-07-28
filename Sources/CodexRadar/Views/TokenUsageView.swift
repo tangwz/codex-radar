@@ -4,7 +4,7 @@ import SwiftUI
 struct TokenUsageView: View {
   let snapshot: TokenUsageSnapshot?
   @State private var period: TokenUsagePeriod = .day
-  @State private var selectedBucketID: Date?
+  @State private var hoverState = TokenUsageHoverState()
   @Environment(\.locale) private var locale
 
   private var presentation: TokenUsagePresentation {
@@ -12,7 +12,7 @@ struct TokenUsageView: View {
   }
 
   private var selectedBucket: TokenUsageChartBucket? {
-    guard let selectedBucketID else { return nil }
+    guard let selectedBucketID = hoverState.selectedBucketID else { return nil }
     return presentation.buckets.first { $0.id == selectedBucketID }
   }
 
@@ -76,7 +76,8 @@ struct TokenUsageView: View {
             .foregroundStyle(Color.accentColor.gradient)
             .cornerRadius(4)
             .opacity(
-              selectedBucketID == nil || selectedBucketID == bucket.id ? 1 : 0.42
+              hoverState.selectedBucketID == nil || hoverState.selectedBucketID == bucket.id
+                ? 1 : 0.42
             )
             .accessibilityLabel(
               Text(
@@ -129,29 +130,42 @@ struct TokenUsageView: View {
               .onContinuousHover { phase in
                 switch phase {
                 case .active(let location):
-                  guard let plotFrame = proxy.plotFrame.map({ geometry[$0] }) else {
-                    selectedBucketID = nil
+                  guard
+                    let plotFrame = proxy.plotFrame.map({ geometry[$0] }),
+                    hoverState.contains(location, in: plotFrame)
+                  else {
+                    hoverState.clear()
                     return
                   }
                   let x = location.x - plotFrame.minX
-                  guard x >= 0, x <= plotFrame.width,
-                    let date = proxy.value(atX: x, as: Date.self)
+                  guard let date = proxy.value(atX: x, as: Date.self)
                   else {
-                    selectedBucketID = nil
+                    hoverState.clear()
                     return
                   }
-                  selectedBucketID = presentation.nearestBucket(to: date)?.id
+                  hoverState.selectNearestBucket(
+                    at: location,
+                    in: plotFrame,
+                    date: date,
+                    presentation: presentation
+                  )
                 case .ended:
-                  selectedBucketID = nil
+                  hoverState.clear()
                 }
               }
           }
         }
         .frame(height: 230)
-        .onChange(of: period) {
-          selectedBucketID = nil
-        }
       }
+    }
+    .onAppear {
+      hoverState.updateContext(snapshot: snapshot, period: period)
+    }
+    .onChange(of: snapshot) {
+      hoverState.updateContext(snapshot: snapshot, period: period)
+    }
+    .onChange(of: period) {
+      hoverState.updateContext(snapshot: snapshot, period: period)
     }
     .padding(22)
     .background(
