@@ -1759,7 +1759,7 @@ archive_name="CodexRadar-v0.2.0-macos-universal.zip"
 [[ "$(<"$inputs_dir/production-download-url-prefix")" == \
   "https://github.com/tangwz/codex-radar/releases/download/v0.2.0/" ]] ||
   fail "production URL prefix is not version-fixed"
-[[ "$(<"$inputs_dir/qualification-download-url-prefix")" == "./" ]] ||
+[[ "$(<"$inputs_dir/qualification-download-url-prefix")" == "." ]] ||
   fail "qualification URL prefix is not relative"
 if /usr/bin/find "$inputs_dir" -type f \( -name '*.html' -o -name '*.md' -o -name '*.markdown' -o -name '*.txt' \) | /usr/bin/grep . >/dev/null; then
   fail "preparation unexpectedly created release notes"
@@ -1832,7 +1832,7 @@ production_url="https://github.com/tangwz/codex-radar/releases/download/v0.2.0/$
 make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
 make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
-  "./$archive_name" "$archive_length" "$archive_signature"
+  "$archive_name" "$archive_length" "$archive_signature"
 
 production_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/production/appcast.xml" | /usr/bin/awk '{print $1}')"
 qualification_feed_sha="$(/usr/bin/shasum -a 256 "$inputs_dir/qualification/appcast.xml" | /usr/bin/awk '{print $1}')"
@@ -1861,7 +1861,7 @@ generated_qualification_url="$(
     "$generated_inputs/qualification/appcast.xml"
 )"
 case "$generated_qualification_url" in
-  "$archive_name" | "./$archive_name") ;;
+  "$archive_name") ;;
   *) fail "real Sparkle generated an unexpected qualification enclosure URL: $generated_qualification_url" ;;
 esac
 verify_artifacts "$generated_inputs" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
@@ -2472,6 +2472,10 @@ make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
 make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
   "https://example.invalid/$archive_name" "$archive_length" "$archive_signature"
+assert_artifact_failure "qualification enclosure URL must be relative"
+
+make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 14.0 \
+  "//$archive_name" "$archive_length" "$archive_signature"
 assert_artifact_failure "qualification enclosure URL must be relative"
 
 make_feed "$inputs_dir/qualification/appcast.xml" 0.2.0 2 15.0 \
