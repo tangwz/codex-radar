@@ -1855,6 +1855,15 @@ for channel in production qualification; do
       --ed-key-file - \
       "$generated_inputs/$channel"
 done
+generated_qualification_url="$(
+  /usr/bin/xmllint --nonet --xpath \
+    "string(/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item']/*[local-name()='enclosure']/@url)" \
+    "$generated_inputs/qualification/appcast.xml"
+)"
+case "$generated_qualification_url" in
+  "$archive_name" | "./$archive_name") ;;
+  *) fail "real Sparkle generated an unexpected qualification enclosure URL: $generated_qualification_url" ;;
+esac
 verify_artifacts "$generated_inputs" "$candidate_archive" "$candidate_manifest" "$candidate_info" \
   "$candidate_dir/version.env" "$candidate_dir/update.env"
 
