@@ -39,11 +39,15 @@
 "Total" = "Total";
 "Input" = "Input";
 "Output" = "Output";
-"Cached" = "Cached";
 "No token data" = "No token data";
 "Codex session logs will appear here after your next run." = "Codex session logs will appear here after your next run.";
 "Refresh" = "Refresh";
 "Reading Codex usage" = "Reading Codex usage";
+"Token usage source is temporarily unavailable." = "Token usage source is temporarily unavailable.";
+"Token usage skipped %lld log files." = "Token usage skipped %lld log files.";
+"Token usage cache could not be saved." = "Token usage cache could not be saved.";
+"Selected period" = "Selected period";
+"Total %@, Input %@, Output %@" = "Total %@, Input %@, Output %@";
 "Reset monitoring" = "Reset monitoring";
 "Next reset forecast" = "Next reset forecast";
 "Monitoring" = "Monitoring";
@@ -89,8 +93,6 @@
 "A reset is expected between %@ and %@." = "A reset is expected between %@ and %@.";
 "A Codex reset is expected soon." = "A Codex reset is expected soon.";
 "Codex is available to use now." = "Codex is available to use now.";
-"In" = "In";
-"Out" = "Out";
 "Reset forecast: %@" = "Reset forecast: %@";
 "Reset monitoring is starting up." = "Reset monitoring is starting up.";
 "Reset monitoring is temporarily unavailable." = "Reset monitoring is temporarily unavailable.";

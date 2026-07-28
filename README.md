@@ -9,8 +9,8 @@
 - Dashboard 打开时读取 `/v1/history`，按用户时区展示本周、本月、所选历史范围的月度统计和最近五次重置。
 - 仅在数据非 stale 且 reset 状态为 announced 时显示菜单栏红点。
 - 首次进入 announced、announced timing 变化和首次进入 completed 时，各发送一次 macOS 通知。
-- 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`。
-- 按日、月、年聚合 input、output、cached input 和 total token。
+- 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`，使用版本化本地缓存复用未变化文件的解析结果。
+- 按日、月、年展示 total、input 和 output；当前周期指标与趋势图同步切换，柱状图通过鼠标悬浮展示明细。
 - 参考 CodexBar 的累计快照、interleaved counter 与稳定 session identity 处理；统计为本地日志推算值，不依赖 CodexBar 运行时。
 - 支持跟随系统、English 和简体中文。
 - 支持 Light/Dark Mode，并使用 Sparkle 2.9.4 提供签名自动更新。

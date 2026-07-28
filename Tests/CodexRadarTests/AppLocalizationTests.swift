@@ -74,6 +74,11 @@ struct AppLocalizationTests {
       ("Retry", "重试"),
       ("Reset history is temporarily unavailable.", "重置历史暂时不可用。"),
       ("Last reset", "最近一次重置"),
+      ("Token usage source is temporarily unavailable.", "Token 用量来源暂时不可用。"),
+      ("Token usage skipped %lld log files.", "Token 用量跳过了 %lld 个日志文件。"),
+      ("Token usage cache could not be saved.", "无法保存 Token 用量缓存。"),
+      ("Selected period", "所选周期"),
+      ("Total %@, Input %@, Output %@", "总量 %@，输入 %@，输出 %@"),
     ]
 
     for (key, simplifiedChinese) in translations {
