@@ -5,6 +5,51 @@ import Testing
 
 struct CodexSessionScannerTests {
   @Test
+  func discoversAndParsesOneSessionFile() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appending(path: "sessions/2026/07/28/session.jsonl")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    let contents = """
+      {"timestamp":"2026-07-28T00:00:00Z","type":"session_meta","payload":{"session_id":"session-1"}}
+      {"timestamp":"2026-07-28T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10}}}}
+      """
+    try Data(contents.utf8).write(to: file)
+
+    let scanner = CodexSessionScanner()
+    let files = try scanner.discoverFiles(codexHome: root)
+    let parsed = try scanner.parseFile(at: try #require(files.first).url)
+
+    #expect(files.count == 1)
+    #expect(parsed.sessionID == "session-1")
+    #expect(parsed.events.map(\.totalTokens) == [110])
+  }
+
+  @Test
+  func treatsAPathChangeWithTheSameResourceAsReusableContent() {
+    let modifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let active = CodexSessionFileFingerprint(
+      path: "/tmp/sessions/a.jsonl",
+      resourceIdentifier: "resource-1",
+      size: 100,
+      modificationDate: modifiedAt
+    )
+    let archived = CodexSessionFileFingerprint(
+      path: "/tmp/archived_sessions/a.jsonl",
+      resourceIdentifier: "resource-1",
+      size: 100,
+      modificationDate: modifiedAt
+    )
+
+    #expect(active.hasSameContent(as: archived))
+    #expect(active.cacheIdentity == archived.cacheIdentity)
+  }
+
+  @Test
   func scansActiveAndArchivedJSONLSessions() throws {
     let root = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
