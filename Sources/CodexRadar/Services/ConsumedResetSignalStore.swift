@@ -19,9 +19,13 @@ final class ConsumedResetSignalStore {
 
   private let defaults: UserDefaults
   private var loadedConsumedIDs: Set<String>?
+  private var needsBaselineMigration: Bool
 
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
+    needsBaselineMigration =
+      defaults.bool(forKey: baselineKey)
+      && defaults.object(forKey: consumedIDsKey) == nil
   }
 
   var hasBaseline: Bool {
@@ -43,6 +47,14 @@ final class ConsumedResetSignalStore {
     let recoveredCorruption = loadConsumedIDsIfNeeded(
       corruptionRecoverySignalID: currentSignalID
     )
+    if needsBaselineMigration {
+      if let currentSignalID {
+        loadedConsumedIDs!.insert(currentSignalID)
+      }
+      if persist(loadedConsumedIDs!) {
+        needsBaselineMigration = false
+      }
+    }
     return ObservationState(
       hasBaseline: defaults.bool(forKey: baselineKey),
       consumedSignalIDs: loadedConsumedIDs!,
