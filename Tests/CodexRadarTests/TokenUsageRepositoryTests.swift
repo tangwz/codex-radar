@@ -57,6 +57,161 @@ struct TokenUsageRepositoryTests {
     let refreshed = await context.repository.refresh(timeZone: context.timeZone)
 
     #expect(refreshed.snapshot?.hasUsageData == false)
+    #expect(refreshed.issues.isEmpty)
+  }
+
+  @Test
+  func cachedFingerprintDiscoveryFailureRetainsItsRecord() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = descriptor(
+      path: "/tmp/sessions/cached.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let discovery = LockedBox(
+      CodexSessionDiscovery(files: [file])
+    )
+    let parseCount = LockedBox(0)
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: { discovery.value },
+      fingerprintFile: { _ in file.fingerprint },
+      parseFile: { _ in
+        parseCount.update { $0 += 1 }
+        return ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: 100,
+              cachedInputTokens: 0,
+              outputTokens: 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    _ = await repository.refresh(timeZone: timeZone)
+    discovery.value = CodexSessionDiscovery(
+      files: [],
+      failedPaths: [file.fingerprint.path]
+    )
+    let failed = await repository.refresh(timeZone: timeZone)
+
+    #expect(failed.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(failed.issues == [.skippedFiles(1)])
+    #expect(parseCount.value == 1)
+  }
+
+  @Test
+  func failedPathDoesNotDuplicateARecordReusedByResourceIdentity() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let active = descriptor(
+      path: "/tmp/sessions/moved.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let archived = descriptor(
+      path: "/tmp/archived_sessions/moved.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let discovery = LockedBox(
+      CodexSessionDiscovery(files: [active])
+    )
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: { discovery.value },
+      fingerprintFile: { url in
+        url == active.url ? active.fingerprint : archived.fingerprint
+      },
+      parseFile: { _ in
+        ParsedCodexSessionFile(
+          sessionID: nil,
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: 100,
+              cachedInputTokens: 0,
+              outputTokens: 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    _ = await repository.refresh(timeZone: timeZone)
+    discovery.value = CodexSessionDiscovery(
+      files: [archived],
+      failedPaths: [active.fingerprint.path]
+    )
+    let result = await repository.refresh(timeZone: timeZone)
+
+    #expect(result.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(result.issues == [.skippedFiles(1)])
+  }
+
+  @Test
+  func uncachedFingerprintDiscoveryFailureWarnsAndRetriesLater() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = descriptor(
+      path: "/tmp/sessions/new.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let discovery = LockedBox(
+      CodexSessionDiscovery(
+        files: [],
+        failedPaths: [file.fingerprint.path]
+      )
+    )
+    let parseCount = LockedBox(0)
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: { discovery.value },
+      fingerprintFile: { _ in file.fingerprint },
+      parseFile: { _ in
+        parseCount.update { $0 += 1 }
+        return ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: 100,
+              cachedInputTokens: 0,
+              outputTokens: 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    let failed = await repository.refresh(timeZone: timeZone)
+    discovery.value = CodexSessionDiscovery(files: [file])
+    let recovered = await repository.refresh(timeZone: timeZone)
+
+    #expect(failed.snapshot?.hasUsageData == false)
+    #expect(failed.issues == [.skippedFiles(1)])
+    #expect(recovered.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(recovered.issues.isEmpty)
+    #expect(parseCount.value == 1)
   }
 
   @Test
@@ -106,7 +261,7 @@ struct TokenUsageRepositoryTests {
     )
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { [current.value] },
+      discoverFiles: { CodexSessionDiscovery(files: [current.value]) },
       fingerprintFile: { _ in current.value.fingerprint },
       parseFile: { _ in
         parseCount.update { $0 += 1 }
@@ -150,7 +305,7 @@ struct TokenUsageRepositoryTests {
     let parseCount = LockedBox(0)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { [initial] },
+      discoverFiles: { CodexSessionDiscovery(files: [initial]) },
       fingerprintFile: { _ in
         fingerprints.withValue { $0.removeFirst() }
       },
@@ -189,7 +344,7 @@ struct TokenUsageRepositoryTests {
     let parseCount = LockedBox(0)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { [initial] },
+      discoverFiles: { CodexSessionDiscovery(files: [initial]) },
       fingerprintFile: { _ in
         fingerprints.withValue { $0.removeFirst() }
       },
@@ -233,7 +388,7 @@ struct TokenUsageRepositoryTests {
     let parseCount = LockedBox(0)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { [file] },
+      discoverFiles: { CodexSessionDiscovery(files: [file]) },
       fingerprintFile: { _ in file.fingerprint },
       parseFile: { _ in
         parseCount.update { $0 += 1 }
@@ -289,7 +444,7 @@ struct TokenUsageRepositoryTests {
     let parseCount = LockedBox(0)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { [current.value] },
+      discoverFiles: { CodexSessionDiscovery(files: [current.value]) },
       fingerprintFile: { _ in current.value.fingerprint },
       parseFile: { _ in
         parseCount.update { $0 += 1 }
@@ -354,7 +509,7 @@ struct TokenUsageRepositoryTests {
     let shouldFail = LockedBox(false)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { current.value },
+      discoverFiles: { CodexSessionDiscovery(files: current.value) },
       fingerprintFile: { url in
         try #require(current.value.first { $0.url == url }).fingerprint
       },
@@ -409,7 +564,7 @@ struct TokenUsageRepositoryTests {
     let parseCount = LockedBox(0)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
-      discoverFiles: { [current.value] },
+      discoverFiles: { CodexSessionDiscovery(files: [current.value]) },
       fingerprintFile: { _ in current.value.fingerprint },
       parseFile: { _ in
         parseCount.update { $0 += 1 }
@@ -454,7 +609,7 @@ struct TokenUsageRepositoryTests {
     try Data("file".utf8).write(to: blockedDirectory)
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: blockedDirectory),
-      discoverFiles: { [] },
+      discoverFiles: { CodexSessionDiscovery(files: []) },
       fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
       parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
       now: { Date(timeIntervalSince1970: 1_700_000_100) }
@@ -485,7 +640,7 @@ struct TokenUsageRepositoryTests {
         if invocation == 1 {
           allowDiscoveryToFinish.wait()
         }
-        return []
+        return CodexSessionDiscovery(files: [])
       },
       fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
       parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
@@ -515,6 +670,134 @@ struct TokenUsageRepositoryTests {
   }
 
   @Test
+  func midnightCutoffQueuesAfterAnActivePreMidnightSnapshot() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let beforeMidnight = Date(timeIntervalSince1970: 1_785_542_399)
+    let midnight = Date(timeIntervalSince1970: 1_785_542_400)
+    let afterMidnight = Date(timeIntervalSince1970: 1_785_542_401)
+    let dates = LockedBox([
+      beforeMidnight,
+      beforeMidnight,
+      afterMidnight,
+      afterMidnight,
+    ])
+    let allowFirstDiscoveryToFinish = DispatchSemaphore(value: 0)
+    let discoveryCount = LockedBox(0)
+    let cutoffCallStarted = LockedBox(false)
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: {
+        let invocation = discoveryCount.withValue {
+          $0 += 1
+          return $0
+        }
+        if invocation == 1 {
+          allowFirstDiscoveryToFinish.wait()
+        }
+        return CodexSessionDiscovery(files: [])
+      },
+      fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      now: {
+        dates.withValue { $0.removeFirst() }
+      }
+    )
+
+    let preMidnight = Task {
+      await repository.refresh(timeZone: timeZone)
+    }
+    while discoveryCount.value == 0 {
+      await Task.yield()
+    }
+    let boundary = Task {
+      cutoffCallStarted.value = true
+      return await repository.refresh(
+        timeZone: timeZone,
+        freshnessCutoff: midnight
+      )
+    }
+    while !cutoffCallStarted.value {
+      await Task.yield()
+    }
+    _ = await repository.cachedSnapshot(timeZone: timeZone)
+
+    allowFirstDiscoveryToFinish.signal()
+    let preMidnightResult = await preMidnight.value
+    let boundaryResult = await boundary.value
+
+    #expect(discoveryCount.value == 2)
+    #expect(preMidnightResult.snapshot?.generatedAt == beforeMidnight)
+    #expect(boundaryResult.snapshot?.generatedAt == afterMidnight)
+  }
+
+  @Test
+  func wakeCutoffQueuesAfterAnActivePreSleepSnapshot() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let beforeSleep = Date(timeIntervalSince1970: 1_785_585_600)
+    let wakeTime = Date(timeIntervalSince1970: 1_785_589_200)
+    let afterWake = Date(timeIntervalSince1970: 1_785_589_201)
+    let dates = LockedBox([
+      beforeSleep,
+      beforeSleep,
+      afterWake,
+      afterWake,
+    ])
+    let allowPreSleepDiscoveryToFinish = DispatchSemaphore(value: 0)
+    let discoveryCount = LockedBox(0)
+    let recoveryCallStarted = LockedBox(false)
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: {
+        let invocation = discoveryCount.withValue {
+          $0 += 1
+          return $0
+        }
+        if invocation == 1 {
+          allowPreSleepDiscoveryToFinish.wait()
+        }
+        return CodexSessionDiscovery(files: [])
+      },
+      fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      now: {
+        dates.withValue { $0.removeFirst() }
+      }
+    )
+
+    let preSleep = Task {
+      await repository.refresh(timeZone: timeZone)
+    }
+    while discoveryCount.value == 0 {
+      await Task.yield()
+    }
+    let recovery = Task {
+      recoveryCallStarted.value = true
+      return await repository.refresh(
+        timeZone: timeZone,
+        freshnessCutoff: wakeTime
+      )
+    }
+    while !recoveryCallStarted.value {
+      await Task.yield()
+    }
+    _ = await repository.cachedSnapshot(timeZone: timeZone)
+
+    allowPreSleepDiscoveryToFinish.signal()
+    let preSleepResult = await preSleep.value
+    let recoveryResult = await recovery.value
+
+    #expect(discoveryCount.value == 2)
+    #expect(preSleepResult.snapshot?.generatedAt == beforeSleep)
+    #expect(recoveryResult.snapshot?.generatedAt == afterWake)
+  }
+
+  @Test
   func crossTimeZoneRefreshesCommitInFirstEntryOrder() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -538,7 +821,7 @@ struct TokenUsageRepositoryTests {
           return $0
         }
         gates[invocation - 1].wait()
-        return []
+        return CodexSessionDiscovery(files: [])
       },
       fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
       parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
@@ -554,7 +837,7 @@ struct TokenUsageRepositoryTests {
     while discoveryCount.value < 1 {
       await Task.yield()
     }
-    let second = Task(priority: .background) {
+    let second = Task(priority: .high) {
       secondCallStarted.value = true
       let result = await repository.refresh(timeZone: secondTimeZone)
       secondCallFinished.value = true
@@ -564,7 +847,7 @@ struct TokenUsageRepositoryTests {
       await Task.yield()
     }
     _ = await repository.cachedSnapshot(timeZone: firstTimeZone)
-    let third = Task(priority: .high) {
+    let third = Task(priority: .background) {
       thirdCallStarted.value = true
       let result = await repository.refresh(timeZone: thirdTimeZone)
       thirdCallFinished.value = true
@@ -615,7 +898,7 @@ struct TokenUsageRepositoryTests {
       cacheStore: TokenUsageCacheStore(directoryURL: blockedDirectory),
       discoverFiles: {
         if let error = discoveryError.value { throw error }
-        return []
+        return CodexSessionDiscovery(files: [])
       },
       fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
       parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
@@ -651,7 +934,7 @@ struct TokenUsageRepositoryTests {
     )
     let repository = TokenUsageRepository(
       cacheStore: TokenUsageCacheStore(directoryURL: blockedDirectory),
-      discoverFiles: { [file] },
+      discoverFiles: { CodexSessionDiscovery(files: [file]) },
       fingerprintFile: { _ in file.fingerprint },
       parseFile: { _ in throw CocoaError(.fileReadCorruptFile) },
       now: { Date(timeIntervalSince1970: 1_700_000_100) }
@@ -673,7 +956,7 @@ struct TokenUsageRepositoryTests {
       cacheStore: TokenUsageCacheStore(directoryURL: directory),
       discoverFiles: {
         mainThreadChecks.update { $0.append(Thread.isMainThread) }
-        return []
+        return CodexSessionDiscovery(files: [])
       },
       fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
       parseFile: { _ in throw CocoaError(.fileNoSuchFile) },

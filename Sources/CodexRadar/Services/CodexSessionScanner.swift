@@ -26,6 +26,19 @@ struct CodexSessionFileDescriptor: Equatable, Sendable {
   let fingerprint: CodexSessionFileFingerprint
 }
 
+struct CodexSessionDiscovery: Equatable, Sendable {
+  let files: [CodexSessionFileDescriptor]
+  let failedPaths: [String]
+
+  init(
+    files: [CodexSessionFileDescriptor],
+    failedPaths: [String] = []
+  ) {
+    self.files = files
+    self.failedPaths = failedPaths
+  }
+}
+
 struct ParsedCodexSessionFile: Equatable, Sendable {
   let sessionID: String?
   let events: [TokenUsageEvent]
@@ -55,8 +68,19 @@ struct TokenUsageManifest: Codable, Equatable, Sendable {
 }
 
 struct CodexSessionScanner: Sendable {
+  typealias FingerprintFile =
+    @Sendable (URL) throws -> CodexSessionFileFingerprint
+
+  private let fingerprintFile: FingerprintFile
+
+  init(
+    fingerprintFile: @escaping FingerprintFile = Self.readFingerprint
+  ) {
+    self.fingerprintFile = fingerprintFile
+  }
+
   func scan(codexHome: URL = Self.defaultCodexHome()) throws -> [TokenUsageEvent] {
-    let records = try discoverFiles(codexHome: codexHome).compactMap {
+    let records = try discoverFiles(codexHome: codexHome).files.compactMap {
       descriptor -> CodexSessionFileRecord? in
       guard let parsed = try? parseFile(at: descriptor.url) else { return nil }
       return CodexSessionFileRecord(
@@ -70,17 +94,27 @@ struct CodexSessionScanner: Sendable {
 
   func discoverFiles(
     codexHome: URL = Self.defaultCodexHome()
-  ) throws -> [CodexSessionFileDescriptor] {
+  ) throws -> CodexSessionDiscovery {
     let roots = [
       codexHome.appending(path: "sessions", directoryHint: .isDirectory),
       codexHome.appending(path: "archived_sessions", directoryHint: .isDirectory),
     ]
-    return try roots.flatMap(sessionFiles).sorted {
-      $0.fingerprint.path < $1.fingerprint.path
-    }
+    let discoveries = try roots.map(sessionFiles)
+    return CodexSessionDiscovery(
+      files: discoveries.flatMap(\.files).sorted {
+        $0.fingerprint.path < $1.fingerprint.path
+      },
+      failedPaths: discoveries.flatMap(\.failedPaths).sorted()
+    )
   }
 
   func fingerprint(for fileURL: URL) throws -> CodexSessionFileFingerprint {
+    try fingerprintFile(fileURL)
+  }
+
+  private static func readFingerprint(
+    for fileURL: URL
+  ) throws -> CodexSessionFileFingerprint {
     let values = try fileURL.resourceValues(
       forKeys: [
         .isRegularFileKey,
@@ -147,8 +181,10 @@ struct CodexSessionScanner: Sendable {
 
   private func sessionFiles(
     under root: URL
-  ) throws -> [CodexSessionFileDescriptor] {
-    guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+  ) throws -> CodexSessionDiscovery {
+    guard FileManager.default.fileExists(atPath: root.path) else {
+      return CodexSessionDiscovery(files: [])
+    }
     var enumerationError: Error?
     guard
       let enumerator = FileManager.default.enumerator(
@@ -170,16 +206,28 @@ struct CodexSessionScanner: Sendable {
     }
 
     var descriptors: [CodexSessionFileDescriptor] = []
+    var failedPaths: [String] = []
     for case let url as URL in enumerator where url.pathExtension == "jsonl" {
-      guard let fingerprint = try? fingerprint(for: url) else { continue }
-      descriptors.append(
-        CodexSessionFileDescriptor(url: url, fingerprint: fingerprint)
-      )
+      do {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+        guard values.isRegularFile == true else { continue }
+        descriptors.append(
+          CodexSessionFileDescriptor(
+            url: url,
+            fingerprint: try fingerprint(for: url)
+          )
+        )
+      } catch {
+        failedPaths.append(url.standardizedFileURL.path)
+      }
     }
     if let enumerationError {
       throw enumerationError
     }
-    return descriptors
+    return CodexSessionDiscovery(
+      files: descriptors,
+      failedPaths: failedPaths
+    )
   }
 }
 
