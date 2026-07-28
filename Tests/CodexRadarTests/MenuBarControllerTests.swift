@@ -226,7 +226,6 @@ struct MenuBarControllerTests {
   func updatesStatusPresentationWhenForecastChanges() async throws {
     let forecast = resetAlertForecast()
     let store = DashboardStore(
-      scanSessions: { [] },
       fetchForecast: { _ in .updated(forecast, etag: nil) },
       prepareNotifications: {},
       observeForecast: { _ in },
@@ -301,7 +300,6 @@ private func systemRedColor(for appearance: NSAppearance) -> CGColor {
 @MainActor
 private func makeStore() -> DashboardStore {
   DashboardStore(
-    scanSessions: { [] },
     fetchForecast: { _ in .notModified },
     prepareNotifications: {},
     observeForecast: { _ in },

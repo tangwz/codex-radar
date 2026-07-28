@@ -90,7 +90,6 @@ struct MenuActionLayoutTests {
 @MainActor
 private func makeStore() -> DashboardStore {
   DashboardStore(
-    scanSessions: { [] },
     fetchForecast: { _ in .notModified },
     prepareNotifications: {},
     observeForecast: { _ in },

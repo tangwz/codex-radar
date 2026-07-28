@@ -2,30 +2,16 @@ import Charts
 import SwiftUI
 
 struct TokenUsageView: View {
-  let events: [TokenUsageEvent]
+  let snapshot: TokenUsageSnapshot?
   @State private var period: TokenUsagePeriod = .day
   @Environment(\.locale) private var locale
 
-  private var buckets: [TokenUsageBucket] {
-    TokenUsageAggregator.aggregate(events, by: period)
+  private var metrics: TokenUsageMetrics {
+    snapshot?.metrics(for: period) ?? .zero
   }
 
-  private var visibleBuckets: [TokenUsageBucket] {
-    let limit =
-      switch period {
-      case .day: 14
-      case .month: 12
-      case .year: 6
-      }
-    return Array(buckets.suffix(limit))
-  }
-
-  private var totals: (input: Int, cached: Int, output: Int) {
-    events.reduce(into: (input: 0, cached: 0, output: 0)) { result, event in
-      result.input += event.inputTokens
-      result.cached += event.cachedInputTokens
-      result.output += event.outputTokens
-    }
+  private var buckets: [TokenUsageChartBucket] {
+    snapshot?.buckets(for: period) ?? []
   }
 
   var body: some View {
@@ -52,14 +38,26 @@ struct TokenUsageView: View {
 
       HStack(spacing: 12) {
         MetricTile(
-          title: "Total", value: totals.input + totals.output, tint: .accentColor,
-          locale: locale)
-        MetricTile(title: "Input", value: totals.input, tint: .blue, locale: locale)
-        MetricTile(title: "Output", value: totals.output, tint: .purple, locale: locale)
-        MetricTile(title: "Cached", value: totals.cached, tint: .green, locale: locale)
+          title: "Total",
+          value: metrics.totalTokens,
+          tint: .accentColor,
+          locale: locale
+        )
+        MetricTile(
+          title: "Input",
+          value: metrics.inputTokens,
+          tint: .blue,
+          locale: locale
+        )
+        MetricTile(
+          title: "Output",
+          value: metrics.outputTokens,
+          tint: .purple,
+          locale: locale
+        )
       }
 
-      if visibleBuckets.isEmpty {
+      if snapshot?.hasUsageData != true {
         ContentUnavailableView(
           "No token data",
           systemImage: "chart.bar.xaxis",
@@ -67,7 +65,7 @@ struct TokenUsageView: View {
         )
         .frame(maxWidth: .infinity, minHeight: 240)
       } else {
-        Chart(visibleBuckets) { bucket in
+        Chart(buckets) { bucket in
           BarMark(
             x: .value("Period", bucket.startDate),
             y: .value("Tokens", bucket.totalTokens)
@@ -86,17 +84,6 @@ struct TokenUsageView: View {
           }
         }
         .frame(height: 230)
-
-        VStack(spacing: 0) {
-          ForEach(Array(visibleBuckets.reversed())) { bucket in
-            UsageRow(bucket: bucket, period: period, locale: locale)
-            if bucket.id != visibleBuckets.first?.id {
-              Divider()
-            }
-          }
-        }
-        .padding(.horizontal, 14)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
       }
     }
     .padding(22)
@@ -122,38 +109,5 @@ private struct MetricTile: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(13)
     .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-  }
-}
-
-private struct UsageRow: View {
-  let bucket: TokenUsageBucket
-  let period: TokenUsagePeriod
-  let locale: Locale
-
-  var body: some View {
-    HStack(spacing: 16) {
-      Text(DisplayFormatting.bucketDate(bucket.startDate, period: period, locale: locale))
-        .font(.subheadline.weight(.medium))
-        .frame(width: 95, alignment: .leading)
-
-      Spacer()
-
-      tokenLabel("In", bucket.inputTokens)
-      tokenLabel("Out", bucket.outputTokens)
-      tokenLabel("Cached", bucket.cachedInputTokens)
-
-      Text(DisplayFormatting.tokenCount(bucket.totalTokens, locale: locale))
-        .font(.body.weight(.semibold))
-        .monospacedDigit()
-        .frame(width: 72, alignment: .trailing)
-    }
-    .padding(.vertical, 11)
-  }
-
-  private func tokenLabel(_ title: LocalizedStringKey, _ value: Int) -> some View {
-    (Text(title) + Text(" \(DisplayFormatting.tokenCount(value, locale: locale))"))
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .frame(width: 82, alignment: .trailing)
   }
 }

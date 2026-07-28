@@ -370,7 +370,6 @@ private func makeStore(
   }
 ) -> DashboardStore {
   DashboardStore(
-    scanSessions: { [] },
     fetchForecast: fetch,
     prepareNotifications: prepare,
     observeForecast: observe,
