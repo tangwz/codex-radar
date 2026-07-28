@@ -10,7 +10,7 @@ struct ContentView: View {
       VStack(spacing: 18) {
         ResetForecastCard(forecast: store.forecast)
         ResetHistoryView(store: historyStore, timeZone: timeZone)
-        TokenUsageView(events: store.tokenEvents)
+        TokenUsageView(snapshot: store.tokenUsageSnapshot)
 
         if !store.issues.isEmpty {
           VStack(alignment: .leading, spacing: 6) {
@@ -39,7 +39,7 @@ struct ContentView: View {
       }
     }
     .overlay {
-      if store.isRefreshing && store.tokenEvents.isEmpty {
+      if store.isRefreshing && store.tokenUsageSnapshot == nil {
         ProgressView("Reading Codex usage")
           .padding(18)
           .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -57,6 +57,9 @@ struct ContentView: View {
     }
     .onChange(of: timeZone.identifier) {
       historyStore.refresh(timeZone: timeZone)
+      Task {
+        await store.refreshTokenUsage(timeZone: timeZone)
+      }
     }
     .onChange(of: store.forecast.lastResetAt) {
       historyStore.lastResetDidChange(store.forecast.lastResetAt, timeZone: timeZone)

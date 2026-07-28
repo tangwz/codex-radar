@@ -68,48 +68,4 @@ struct CodexSessionParserTests {
     #expect(events.map(\.totalTokens) == [70])
   }
 
-  @Test
-  func aggregatesEventsByRequestedCalendarUnit() throws {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
-    let events = [
-      TokenUsageEvent(
-        timestamp: try parseDate("2026-07-14T01:00:00Z"), inputTokens: 100, cachedInputTokens: 20,
-        outputTokens: 10),
-      TokenUsageEvent(
-        timestamp: try parseDate("2026-07-15T01:00:00Z"), inputTokens: 50, cachedInputTokens: 5,
-        outputTokens: 5),
-      TokenUsageEvent(
-        timestamp: try parseDate("2026-08-01T01:00:00Z"), inputTokens: 25, cachedInputTokens: 0,
-        outputTokens: 5),
-    ]
-
-    let daily = TokenUsageAggregator.aggregate(events, by: .day, calendar: calendar)
-    let monthly = TokenUsageAggregator.aggregate(events, by: .month, calendar: calendar)
-    let yearly = TokenUsageAggregator.aggregate(events, by: .year, calendar: calendar)
-
-    #expect(daily.map(\.totalTokens) == [110, 55, 30])
-    #expect(monthly.map(\.totalTokens) == [165, 30])
-    #expect(yearly.map(\.totalTokens) == [195])
-  }
-
-  @Test
-  func returnsZeroWhenCurrentCalendarBucketHasNoEvents() throws {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
-    let events = [
-      TokenUsageEvent(
-        timestamp: try parseDate("2026-06-30T23:00:00Z"), inputTokens: 100,
-        cachedInputTokens: 0, outputTokens: 10
-      )
-    ]
-    let now = try parseDate("2026-07-15T01:00:00Z")
-
-    #expect(TokenUsageAggregator.total(events, in: .day, at: now, calendar: calendar) == 0)
-    #expect(TokenUsageAggregator.total(events, in: .month, at: now, calendar: calendar) == 0)
-  }
-
-  private func parseDate(_ value: String) throws -> Date {
-    try #require(ISO8601DateFormatter().date(from: value))
-  }
 }

@@ -27,7 +27,7 @@ private struct PendingForecastRefresh {
 @MainActor
 final class DashboardStore: ObservableObject {
   @Published private(set) var forecast = ResetForecast.placeholder
-  @Published private(set) var tokenEvents: [TokenUsageEvent] = []
+  @Published private(set) var tokenUsageSnapshot: TokenUsageSnapshot?
   @Published private(set) var isRefreshing = false
   @Published private(set) var lastUpdated: Date?
   @Published private(set) var issues: [String] = []
@@ -39,7 +39,9 @@ final class DashboardStore: ObservableObject {
     isRefreshing && lastUpdated == nil
   }
 
-  private let scanSessions: @Sendable () throws -> [TokenUsageEvent]
+  private let loadCachedTokenUsage: @Sendable (TimeZone) async -> TokenUsageSnapshot?
+  private let refreshTokenUsageSource: @Sendable (TimeZone) async -> TokenUsageRepositoryResult
+  private let formatTokenUsageIssue: @MainActor @Sendable (TokenUsageRepositoryIssue) -> String
   private let fetchForecast: @Sendable (String?) async throws -> ResetForecastFetchResult
   private let prepareNotifications: @MainActor @Sendable () async -> Void
   private let observeForecast: @MainActor @Sendable (ResetForecast) async -> Void
@@ -60,15 +62,40 @@ final class DashboardStore: ObservableObject {
   private var currentRefreshWaiters: [CheckedContinuation<Void, Never>] = []
   private var refreshActivityCount = 0
   private var forecastGeneration: UInt64 = 0
+  private var tokenUsageGeneration: UInt64 = 0
   private var activeFetchGeneration: UInt64?
   private var forecastIssue: String?
+  private var tokenUsageIssues: [String] = []
 
   init(
-    sessionScanner: CodexSessionScanner = CodexSessionScanner(),
     forecastService: ResetForecastService = ResetForecastService(),
     notificationService: ResetNotificationService = ResetNotificationService()
   ) {
-    scanSessions = { try sessionScanner.scan() }
+    let tokenUsageRepository = TokenUsageRepository()
+    loadCachedTokenUsage = {
+      await tokenUsageRepository.cachedSnapshot(timeZone: $0)
+    }
+    refreshTokenUsageSource = {
+      await tokenUsageRepository.refresh(timeZone: $0)
+    }
+    formatTokenUsageIssue = { issue in
+      let message =
+        switch issue {
+        case .sourceUnavailable:
+          AppLocalization.string("Token usage source is temporarily unavailable.")
+        case .skippedFiles(let count):
+          String(
+            format: AppLocalization.string("Token usage skipped %lld log files."),
+            count
+          )
+        case .cacheWriteFailed:
+          AppLocalization.string("Token usage cache could not be saved.")
+        }
+      return String(
+        format: AppLocalization.string("Token usage: %@"),
+        message
+      )
+    }
     fetchForecast = { try await forecastService.fetch(etag: $0) }
     prepareNotifications = { await notificationService.prepare() }
     observeForecast = { await notificationService.observe($0) }
@@ -84,7 +111,17 @@ final class DashboardStore: ObservableObject {
   }
 
   init(
-    scanSessions: @escaping @Sendable () throws -> [TokenUsageEvent],
+    loadCachedTokenUsage: @escaping @Sendable (TimeZone) async -> TokenUsageSnapshot? = {
+      _ in nil
+    },
+    refreshTokenUsageSource:
+      @escaping @Sendable (TimeZone) async -> TokenUsageRepositoryResult = {
+        _ in TokenUsageRepositoryResult(snapshot: nil, issues: [])
+      },
+    formatTokenUsageIssue:
+      @escaping @MainActor @Sendable (TokenUsageRepositoryIssue) -> String = {
+        "Token usage issue: \(String(describing: $0))"
+      },
     fetchForecast: @escaping @Sendable (String?) async throws -> ResetForecastFetchResult,
     prepareNotifications: @escaping @MainActor @Sendable () async -> Void,
     observeForecast: @escaping @MainActor @Sendable (ResetForecast) async -> Void,
@@ -93,7 +130,9 @@ final class DashboardStore: ObservableObject {
     sleep: @escaping @Sendable (Duration) async throws -> Void,
     observesWakeEvents: Bool
   ) {
-    self.scanSessions = scanSessions
+    self.loadCachedTokenUsage = loadCachedTokenUsage
+    self.refreshTokenUsageSource = refreshTokenUsageSource
+    self.formatTokenUsageIssue = formatTokenUsageIssue
     self.fetchForecast = fetchForecast
     self.prepareNotifications = prepareNotifications
     self.observeForecast = observeForecast
@@ -129,6 +168,7 @@ final class DashboardStore: ObservableObject {
   func stopMonitoring() {
     isMonitoring = false
     forecastGeneration &+= 1
+    tokenUsageGeneration &+= 1
     pollingTimerTask?.cancel()
     pollingTimerTask = nil
     initialRefreshTask?.cancel()
@@ -164,36 +204,48 @@ final class DashboardStore: ObservableObject {
     await refresh(generation: forecastGeneration)
   }
 
+  func refreshTokenUsage(timeZone: TimeZone) async {
+    tokenUsageGeneration &+= 1
+    let generation = tokenUsageGeneration
+    let result = await refreshTokenUsageSource(timeZone)
+    guard generation == tokenUsageGeneration, !Task.isCancelled else { return }
+    applyTokenUsage(result)
+  }
+
   private func refresh(generation: UInt64) async {
     guard generation == forecastGeneration else { return }
     guard !isRefreshing else { return }
     beginRefreshActivity()
-    issues = forecastIssue.map { [$0] } ?? []
+    rebuildIssues()
     defer {
       if generation == forecastGeneration {
         endRefreshActivity()
       }
     }
 
-    let scanSessions = scanSessions
-    let usageTask = Task.detached(priority: .userInitiated) {
-      try scanSessions()
+    let timeZone = TimeZone.autoupdatingCurrent
+    tokenUsageGeneration &+= 1
+    let tokenGeneration = tokenUsageGeneration
+
+    if tokenUsageSnapshot == nil,
+      let cached = await loadCachedTokenUsage(timeZone),
+      generation == forecastGeneration,
+      tokenGeneration == tokenUsageGeneration,
+      !Task.isCancelled
+    {
+      tokenUsageSnapshot = cached
     }
 
+    async let usageResult = refreshTokenUsageSource(timeZone)
     await requestForecastRefresh(trigger: .manual, generation: generation)
-    guard generation == forecastGeneration, !Task.isCancelled else { return }
-
-    switch await usageTask.result {
-    case .success(let events):
-      tokenEvents = events
-    case .failure(let error):
-      issues.append(
-        String(
-          format: AppLocalization.string("Token usage: %@"),
-          error.localizedDescription
-        )
-      )
+    let result = await usageResult
+    guard generation == forecastGeneration,
+      tokenGeneration == tokenUsageGeneration,
+      !Task.isCancelled
+    else {
+      return
     }
+    applyTokenUsage(result)
   }
 
   private func ensureForecastScheduler() {
@@ -304,7 +356,8 @@ final class DashboardStore: ObservableObject {
 
   private func scheduleNextPoll(generation: UInt64) {
     pollingTimerTask?.cancel()
-    let delay = consecutiveForecastFailures == 0
+    let delay =
+      consecutiveForecastFailures == 0
       ? pollingSchedule.successDelay
       : pollingSchedule.failureDelay(consecutiveFailures: consecutiveForecastFailures)
     let sleep = sleep
@@ -367,19 +420,30 @@ final class DashboardStore: ObservableObject {
     }
   }
 
+  private func applyTokenUsage(_ result: TokenUsageRepositoryResult) {
+    if let snapshot = result.snapshot {
+      tokenUsageSnapshot = snapshot
+    }
+    tokenUsageIssues = result.issues.map(formatTokenUsageIssue)
+    rebuildIssues()
+  }
+
+  private func rebuildIssues() {
+    issues = forecastIssue.map { [$0] } ?? []
+    issues.append(contentsOf: tokenUsageIssues)
+  }
+
   private func removeForecastIssue() {
-    guard let forecastIssue else { return }
-    issues.removeAll { $0 == forecastIssue }
-    self.forecastIssue = nil
+    forecastIssue = nil
+    rebuildIssues()
   }
 
   private func setForecastIssue(error: Error) {
-    removeForecastIssue()
-    let message = error as? ResetForecastServiceError == .notInitialized
+    let message =
+      error as? ResetForecastServiceError == .notInitialized
       ? AppLocalization.string("Reset monitoring is starting up.")
       : AppLocalization.string("Reset monitoring is temporarily unavailable.")
-    let issue = formatForecastIssue(message)
-    forecastIssue = issue
-    issues.append(issue)
+    forecastIssue = formatForecastIssue(message)
+    rebuildIssues()
   }
 }

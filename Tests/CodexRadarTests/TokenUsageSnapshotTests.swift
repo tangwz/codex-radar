@@ -64,6 +64,26 @@ struct TokenUsageSnapshotTests {
     #expect(historical.metrics(for: .day) == .zero)
   }
 
+  @Test
+  func aggregatesEventsIntoRequestedCalendarPeriods() throws {
+    let timeZone = try #require(TimeZone(secondsFromGMT: 0))
+    let now = try date("2026-08-01T12:00:00Z")
+    let snapshot = TokenUsageSnapshotBuilder.make(
+      events: [
+        event("2026-07-30T01:00:00Z", input: 100, output: 10),
+        event("2026-07-31T01:00:00Z", input: 50, output: 5),
+        event("2026-08-01T01:00:00Z", input: 25, output: 5),
+      ],
+      at: now,
+      timeZone: timeZone
+    )
+
+    #expect(
+      snapshot.dailyBuckets.filter { $0.totalTokens > 0 }.map(\.totalTokens) == [110, 55, 30])
+    #expect(snapshot.monthlyBuckets.filter { $0.totalTokens > 0 }.map(\.totalTokens) == [165, 30])
+    #expect(snapshot.yearlyBuckets.filter { $0.totalTokens > 0 }.map(\.totalTokens) == [195])
+  }
+
   private func event(
     _ timestamp: String,
     input: Int,

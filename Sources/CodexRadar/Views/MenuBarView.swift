@@ -71,11 +71,11 @@ struct MenuBarView: View {
   }
 
   private var todayTokens: Int {
-    TokenUsageAggregator.total(store.tokenEvents, in: .day)
+    store.tokenUsageSnapshot?.metrics(for: .day).totalTokens ?? 0
   }
 
   private var monthTokens: Int {
-    TokenUsageAggregator.total(store.tokenEvents, in: .month)
+    store.tokenUsageSnapshot?.metrics(for: .month).totalTokens ?? 0
   }
 
   var body: some View {
