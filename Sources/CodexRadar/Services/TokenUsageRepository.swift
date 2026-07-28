@@ -12,7 +12,7 @@ struct TokenUsageRepositoryResult: Equatable, Sendable {
 }
 
 actor TokenUsageRepository {
-  typealias DiscoverFiles = @Sendable () throws -> [CodexSessionFileDescriptor]
+  typealias DiscoverFiles = @Sendable () throws -> CodexSessionDiscovery
   typealias FingerprintFile =
     @Sendable (URL) throws -> CodexSessionFileFingerprint
   typealias ParseFile = @Sendable (URL) throws -> ParsedCodexSessionFile
@@ -31,13 +31,32 @@ actor TokenUsageRepository {
   private struct RefreshFlight {
     let generation: Int
     let timeZoneIdentifier: String
+    let freshnessLowerBound: Date
     var waiters: [CheckedContinuation<TokenUsageRepositoryResult, Never>]
+
+    func canSatisfy(freshnessCutoff: Date?) -> Bool {
+      guard let freshnessCutoff else { return true }
+      return freshnessLowerBound >= freshnessCutoff
+    }
   }
 
   private struct PendingRefresh {
     let generation: Int
     let timeZone: TimeZone
+    var freshnessCutoff: Date?
     var waiters: [CheckedContinuation<TokenUsageRepositoryResult, Never>]
+
+    mutating func merge(
+      freshnessCutoff: Date?,
+      continuation: CheckedContinuation<TokenUsageRepositoryResult, Never>
+    ) {
+      if let freshnessCutoff,
+        self.freshnessCutoff.map({ $0 < freshnessCutoff }) ?? true
+      {
+        self.freshnessCutoff = freshnessCutoff
+      }
+      waiters.append(continuation)
+    }
   }
 
   init(
@@ -83,25 +102,37 @@ actor TokenUsageRepository {
     return snapshot
   }
 
-  func refresh(timeZone: TimeZone) async -> TokenUsageRepositoryResult {
+  func refresh(
+    timeZone: TimeZone,
+    freshnessCutoff: Date? = nil
+  ) async -> TokenUsageRepositoryResult {
     await withCheckedContinuation { continuation in
-      enqueueRefresh(timeZone: timeZone, continuation: continuation)
+      enqueueRefresh(
+        timeZone: timeZone,
+        freshnessCutoff: freshnessCutoff,
+        continuation: continuation
+      )
     }
   }
 
   private func enqueueRefresh(
     timeZone: TimeZone,
+    freshnessCutoff: Date?,
     continuation: CheckedContinuation<TokenUsageRepositoryResult, Never>
   ) {
     if let lastIndex = pendingRefreshes.indices.last,
       pendingRefreshes[lastIndex].timeZone.identifier == timeZone.identifier
     {
-      pendingRefreshes[lastIndex].waiters.append(continuation)
+      pendingRefreshes[lastIndex].merge(
+        freshnessCutoff: freshnessCutoff,
+        continuation: continuation
+      )
       return
     }
     if pendingRefreshes.isEmpty,
       var inFlight,
-      inFlight.timeZoneIdentifier == timeZone.identifier
+      inFlight.timeZoneIdentifier == timeZone.identifier,
+      inFlight.canSatisfy(freshnessCutoff: freshnessCutoff)
     {
       inFlight.waiters.append(continuation)
       self.inFlight = inFlight
@@ -114,6 +145,7 @@ actor TokenUsageRepository {
       PendingRefresh(
         generation: generation,
         timeZone: timeZone,
+        freshnessCutoff: freshnessCutoff,
         waiters: [continuation]
       )
     )
@@ -125,6 +157,7 @@ actor TokenUsageRepository {
     let request = pendingRefreshes.removeFirst()
     let generation = request.generation
     let timeZone = request.timeZone
+    let freshnessLowerBound = now()
     let memorySnapshot =
       lastSnapshot?.timeZoneIdentifier == timeZone.identifier
       ? lastSnapshot
@@ -148,6 +181,7 @@ actor TokenUsageRepository {
     inFlight = RefreshFlight(
       generation: generation,
       timeZoneIdentifier: timeZone.identifier,
+      freshnessLowerBound: freshnessLowerBound,
       waiters: request.waiters
     )
     Task { [weak self] in
@@ -196,9 +230,9 @@ actor TokenUsageRepository {
       now: now
     )
 
-    let descriptors: [CodexSessionFileDescriptor]
+    let discovery: CodexSessionDiscovery
     do {
-      descriptors = try discoverFiles()
+      discovery = try discoverFiles()
     } catch {
       return TokenUsageRepositoryResult(
         snapshot: fallbackSnapshot,
@@ -206,12 +240,27 @@ actor TokenUsageRepository {
       )
     }
 
+    let descriptors = discovery.files
+    let failedPaths = Set(discovery.failedPaths.map(normalizedPath))
+    let discoveredPaths = Set(
+      descriptors.map { normalizedPath($0.fingerprint.path) }
+    )
+    let retainedFailurePaths = failedPaths.subtracting(discoveredPaths)
+    let previousRecords = previousManifest?.files ?? []
     let previousMatches = matchedPreviousRecords(
       for: descriptors,
-      previousRecords: previousManifest?.files ?? []
+      previousRecords: previousRecords
     )
-    var records: [CodexSessionFileRecord] = []
-    var skippedFileCount = 0
+    let reusedPreviousPaths = Set(
+      previousMatches.compactMap { $0 }.map {
+        normalizedPath($0.fingerprint.path)
+      }
+    )
+    var records = previousRecords.filter {
+      retainedFailurePaths.contains(normalizedPath($0.fingerprint.path))
+        && !reusedPreviousPaths.contains(normalizedPath($0.fingerprint.path))
+    }
+    var skippedFileCount = failedPaths.count
 
     for (index, descriptor) in descriptors.enumerated() {
       let previous = previousMatches[index]

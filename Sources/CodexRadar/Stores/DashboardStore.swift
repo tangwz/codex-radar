@@ -44,7 +44,8 @@ final class DashboardStore: ObservableObject {
   }
 
   private let loadCachedTokenUsage: @Sendable (TimeZone) async -> TokenUsageSnapshot?
-  private let refreshTokenUsageSource: @Sendable (TimeZone) async -> TokenUsageRepositoryResult
+  private let refreshTokenUsageSource:
+    @Sendable (TimeZone, Date?) async -> TokenUsageRepositoryResult
   private let formatTokenUsageIssue: @MainActor @Sendable (TokenUsageRepositoryIssue) -> String
   private let fetchForecast: @Sendable (String?) async throws -> ResetForecastFetchResult
   private let prepareNotifications: @MainActor @Sendable () async -> Void
@@ -87,8 +88,11 @@ final class DashboardStore: ObservableObject {
     loadCachedTokenUsage = {
       await tokenUsageRepository.cachedSnapshot(timeZone: $0)
     }
-    refreshTokenUsageSource = {
-      await tokenUsageRepository.refresh(timeZone: $0)
+    refreshTokenUsageSource = { timeZone, freshnessCutoff in
+      await tokenUsageRepository.refresh(
+        timeZone: timeZone,
+        freshnessCutoff: freshnessCutoff
+      )
     }
     formatTokenUsageIssue = { issue in
       let message =
@@ -133,8 +137,8 @@ final class DashboardStore: ObservableObject {
       _ in nil
     },
     refreshTokenUsageSource:
-      @escaping @Sendable (TimeZone) async -> TokenUsageRepositoryResult = {
-        _ in TokenUsageRepositoryResult(snapshot: nil, issues: [])
+      @escaping @Sendable (TimeZone, Date?) async -> TokenUsageRepositoryResult = {
+        _, _ in TokenUsageRepositoryResult(snapshot: nil, issues: [])
       },
     formatTokenUsageIssue:
       @escaping @MainActor @Sendable (TokenUsageRepositoryIssue) -> String = {
@@ -234,6 +238,7 @@ final class DashboardStore: ObservableObject {
     guard isMonitoring, lifecycleGeneration == forecastGeneration else { return }
 
     let timeZone = tokenUsageTimeZone ?? TimeZone.autoupdatingCurrent
+    let freshnessCutoff = now()
     tokenUsageTimeZone = timeZone
     scheduleTokenUsageBoundary(timeZone: timeZone)
     tokenUsageGeneration &+= 1
@@ -241,6 +246,7 @@ final class DashboardStore: ObservableObject {
 
     async let tokenUsageRefresh: Void = refreshTokenUsageForRecovery(
       timeZone: timeZone,
+      freshnessCutoff: freshnessCutoff,
       lifecycleGeneration: lifecycleGeneration,
       tokenGeneration: tokenGeneration
     )
@@ -253,10 +259,11 @@ final class DashboardStore: ObservableObject {
 
   private func refreshTokenUsageForRecovery(
     timeZone: TimeZone,
+    freshnessCutoff: Date,
     lifecycleGeneration: UInt64,
     tokenGeneration: UInt64
   ) async {
-    let result = await refreshTokenUsageSource(timeZone)
+    let result = await refreshTokenUsageSource(timeZone, freshnessCutoff)
     guard isMonitoring,
       lifecycleGeneration == forecastGeneration,
       tokenGeneration == tokenUsageGeneration,
@@ -272,11 +279,18 @@ final class DashboardStore: ObservableObject {
   }
 
   func refreshTokenUsage(timeZone: TimeZone) async {
+    await refreshTokenUsage(timeZone: timeZone, freshnessCutoff: nil)
+  }
+
+  private func refreshTokenUsage(
+    timeZone: TimeZone,
+    freshnessCutoff: Date?
+  ) async {
     tokenUsageTimeZone = timeZone
     scheduleTokenUsageBoundary(timeZone: timeZone)
     tokenUsageGeneration &+= 1
     let generation = tokenUsageGeneration
-    let result = await refreshTokenUsageSource(timeZone)
+    let result = await refreshTokenUsageSource(timeZone, freshnessCutoff)
     guard generation == tokenUsageGeneration, !Task.isCancelled else { return }
     applyTokenUsage(result, timeZone: timeZone)
   }
@@ -307,7 +321,7 @@ final class DashboardStore: ObservableObject {
       publishTokenUsageSnapshot(cached, timeZone: timeZone)
     }
 
-    async let usageResult = refreshTokenUsageSource(timeZone)
+    async let usageResult = refreshTokenUsageSource(timeZone, nil)
     await requestForecastRefresh(trigger: .manual, generation: generation)
     let result = await usageResult
     guard generation == forecastGeneration,
@@ -550,7 +564,10 @@ final class DashboardStore: ObservableObject {
         return
       }
       clearTokenUsageBoundary(ifOwnedBy: identity)
-      await refreshTokenUsage(timeZone: timeZone)
+      await refreshTokenUsage(
+        timeZone: timeZone,
+        freshnessCutoff: boundary
+      )
     }
   }
 

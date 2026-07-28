@@ -21,10 +21,13 @@ struct CodexSessionScannerTests {
     try Data(contents.utf8).write(to: file)
 
     let scanner = CodexSessionScanner()
-    let files = try scanner.discoverFiles(codexHome: root)
-    let parsed = try scanner.parseFile(at: try #require(files.first).url)
+    let discovery = try scanner.discoverFiles(codexHome: root)
+    let parsed = try scanner.parseFile(
+      at: try #require(discovery.files.first).url
+    )
 
-    #expect(files.count == 1)
+    #expect(discovery.files.count == 1)
+    #expect(discovery.failedPaths.isEmpty)
     #expect(parsed.sessionID == "session-1")
     #expect(parsed.events.map(\.totalTokens) == [110])
   }
@@ -66,9 +69,35 @@ struct CodexSessionScannerTests {
       """
     try Data(contents.utf8).write(to: validFile)
 
-    let events = try CodexSessionScanner().scan(codexHome: root)
+    let scanner = CodexSessionScanner()
+    let discovery = try scanner.discoverFiles(codexHome: root)
+    let events = try scanner.scan(codexHome: root)
 
+    #expect(discovery.failedPaths.isEmpty)
     #expect(events.map(\.totalTokens) == [110])
+  }
+
+  @Test
+  func reportsAStandardizedPathWhenRegularFileFingerprintingFails() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appending(path: "sessions/fingerprint-failure.jsonl")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("{}".utf8).write(to: file)
+    let scanner = CodexSessionScanner(
+      fingerprintFile: { _ in
+        throw CocoaError(.fileReadNoPermission)
+      }
+    )
+
+    let discovery = try scanner.discoverFiles(codexHome: root)
+
+    #expect(discovery.files.isEmpty)
+    #expect(discovery.failedPaths == [file.standardizedFileURL.path])
   }
 
   @Test

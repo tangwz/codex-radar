@@ -50,7 +50,7 @@ struct DashboardStoreTokenUsageTests {
     let source = OutOfOrderTokenUsageSource()
     let store = DashboardStore(
       loadCachedTokenUsage: { _ in nil },
-      refreshTokenUsageSource: { _ in await source.refresh() },
+      refreshTokenUsageSource: { _, _ in await source.refresh() },
       formatTokenUsageIssue: { _ in "Token usage issue" },
       fetchForecast: { _ in .notModified },
       prepareNotifications: {},
@@ -90,15 +90,16 @@ struct DashboardStoreTokenUsageTests {
       second: 59,
       timeZone: timeZone
     )
-    let afterMidnight = try localDate(
+    let midnight = try localDate(
       year: 2026,
       month: 8,
       day: 1,
       hour: 0,
       minute: 0,
-      second: 1,
+      second: 0,
       timeZone: timeZone
     )
+    let afterMidnight = midnight.addingTimeInterval(1)
     let initial = snapshot(
       events: [event(at: beforeMidnight, total: 10)],
       generatedAt: beforeMidnight,
@@ -115,8 +116,10 @@ struct DashboardStoreTokenUsageTests {
     let source = SequencedTokenUsageSource(snapshots: [initial, rolled])
     let waiter = ControlledTokenUsageBoundaryWaiter()
     let clock = MutableDate(beforeMidnight)
-    let store = makeBoundaryStore(
-      refresh: { timeZone in await source.refresh(timeZone: timeZone) },
+    let store = makeFreshnessBoundaryStore(
+      refresh: {
+        await source.refresh(timeZone: $0, freshnessCutoff: $1)
+      },
       waiter: waiter,
       now: { clock.value }
     )
@@ -133,6 +136,8 @@ struct DashboardStoreTokenUsageTests {
     await waitForSnapshot(rolled, in: store)
 
     #expect(await source.callCount == 2)
+    #expect(await source.freshnessCutoff(at: 0) == nil)
+    #expect(await source.freshnessCutoff(at: 1) == midnight)
     #expect(store.tokenUsageSnapshot?.metrics(for: .day).totalTokens == 20)
   }
 
@@ -322,8 +327,10 @@ struct DashboardStoreTokenUsageTests {
     let source = SequencedTokenUsageSource(snapshots: [initial, recovered])
     let waiter = ControlledTokenUsageBoundaryWaiter()
     let clock = MutableDate(beforeMidnight)
-    let store = makeBoundaryStore(
-      refresh: { timeZone in await source.refresh(timeZone: timeZone) },
+    let store = makeFreshnessBoundaryStore(
+      refresh: {
+        await source.refresh(timeZone: $0, freshnessCutoff: $1)
+      },
       waiter: waiter,
       now: { clock.value }
     )
@@ -341,6 +348,8 @@ struct DashboardStoreTokenUsageTests {
     }
 
     #expect(await source.callCount == 2)
+    #expect(await source.freshnessCutoff(at: 0) == nil)
+    #expect(await source.freshnessCutoff(at: 1) == afterMidnight)
     #expect(store.tokenUsageSnapshot == recovered)
     #expect(await waiter.dates.count == 2)
   }
@@ -358,7 +367,7 @@ struct DashboardStoreTokenUsageTests {
       .failure(.invalidResponse),
     ])
     let store = DashboardStore(
-      refreshTokenUsageSource: { _ in await tokenSource.next() },
+      refreshTokenUsageSource: { _, _ in await tokenSource.next() },
       formatTokenUsageIssue: { _ in "Token issue" },
       fetchForecast: { _ in try await forecastSource.next() },
       prepareNotifications: {},
@@ -620,6 +629,7 @@ private actor OutOfOrderTokenUsageSource {
 
 private actor SequencedTokenUsageSource {
   private var snapshots: [TokenUsageSnapshot]
+  private var freshnessCutoffs: [Date?] = []
   private(set) var callCount = 0
 
   init(snapshots: [TokenUsageSnapshot]) {
@@ -627,7 +637,15 @@ private actor SequencedTokenUsageSource {
   }
 
   func refresh(timeZone: TimeZone) -> TokenUsageRepositoryResult {
+    refresh(timeZone: timeZone, freshnessCutoff: nil)
+  }
+
+  func refresh(
+    timeZone: TimeZone,
+    freshnessCutoff: Date?
+  ) -> TokenUsageRepositoryResult {
     callCount += 1
+    freshnessCutoffs.append(freshnessCutoff)
     guard !snapshots.isEmpty else {
       return TokenUsageRepositoryResult(snapshot: nil, issues: [])
     }
@@ -638,6 +656,10 @@ private actor SequencedTokenUsageSource {
     while callCount < count {
       await Task.yield()
     }
+  }
+
+  func freshnessCutoff(at index: Int) -> Date? {
+    freshnessCutoffs[index]
   }
 }
 
@@ -823,7 +845,7 @@ private func makeTokenStore(
     loadCachedTokenUsage: { _ in
       await repository.cachedSnapshot()
     },
-    refreshTokenUsageSource: { _ in
+    refreshTokenUsageSource: { _, _ in
       await repository.refresh()
     },
     formatTokenUsageIssue: { issue in
@@ -855,7 +877,9 @@ private func makeBoundaryStore(
 ) -> DashboardStore {
   DashboardStore(
     loadCachedTokenUsage: loadCached,
-    refreshTokenUsageSource: refresh,
+    refreshTokenUsageSource: { timeZone, _ in
+      await refresh(timeZone)
+    },
     fetchForecast: fetchForecast,
     prepareNotifications: {},
     observeForecast: { _ in },
@@ -867,6 +891,29 @@ private func makeBoundaryStore(
     },
     now: now,
     recoveryBarrier: recoveryBarrier,
+    observesWakeEvents: false
+  )
+}
+
+@MainActor
+private func makeFreshnessBoundaryStore(
+  refresh:
+    @escaping @Sendable (TimeZone, Date?) async -> TokenUsageRepositoryResult,
+  waiter: ControlledTokenUsageBoundaryWaiter,
+  now: @escaping @Sendable () -> Date
+) -> DashboardStore {
+  DashboardStore(
+    refreshTokenUsageSource: refresh,
+    fetchForecast: { _ in .notModified },
+    prepareNotifications: {},
+    observeForecast: { _ in },
+    formatForecastIssue: { $0 ?? "" },
+    pollingSchedule: ResetPollingSchedule(jitter: { 0 }),
+    sleep: { _ in throw CancellationError() },
+    waitUntilTokenUsageBoundary: {
+      try await waiter.wait(until: $0)
+    },
+    now: now,
     observesWakeEvents: false
   )
 }
