@@ -1631,7 +1631,7 @@ make_feed() {
     if [[ "$second_entry" == true ]]; then
       printf '%s\n' '<item><sparkle:version>1</sparkle:version></item>'
     fi
-    printf '%s\n' '</channel></rss>'
+    printf '%s' '</channel></rss>'
   } >"$content_path"
   feed_signature="$(sign_file "$content_path")"
   content_length="$(/usr/bin/stat -f '%z' "$content_path")"
@@ -2374,6 +2374,13 @@ assert_artifact_failure "enclosure is missing an Ed25519 signature"
 make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
   "$production_url" "$archive_length" "$archive_signature"
 printf ' ' >>"$inputs_dir/production/appcast.xml"
+assert_artifact_failure "invalid signed feed block"
+
+make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \
+  "$production_url" "$archive_length" "$archive_signature"
+/usr/bin/perl -0pi -e \
+  's/<!-- sparkle-signatures:/<!-- sparkle-signaturex:/' \
+  "$inputs_dir/production/appcast.xml"
 assert_artifact_failure "invalid signed feed block"
 
 make_feed "$inputs_dir/production/appcast.xml" 0.2.0 2 14.0 \

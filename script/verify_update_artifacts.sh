@@ -333,19 +333,18 @@ verify_ed25519_signature() {
 feed_counter=0
 extract_and_verify_signed_feed() {
   local feed_path="$1" description="$2"
-  local first_line signature_line length_line final_line signature length
+  local signature_line length_line final_line signature length
   local content_path expected_block block_path total_length block_length
 
   assert_real_file "$feed_path" "$description"
   total_length="$(/usr/bin/stat -f '%z' "$feed_path")"
   [[ "$total_length" =~ ^[1-9][0-9]*$ && "$total_length" -le 8388608 ]] ||
     die "$description exceeds the signed feed size limit" || return 1
-  first_line="$(/usr/bin/tail -n 4 "$feed_path" | /usr/bin/sed -n '1p')"
-  signature_line="$(/usr/bin/tail -n 4 "$feed_path" | /usr/bin/sed -n '2p')"
-  length_line="$(/usr/bin/tail -n 4 "$feed_path" | /usr/bin/sed -n '3p')"
-  final_line="$(/usr/bin/tail -n 4 "$feed_path" | /usr/bin/sed -n '4p')"
-  [[ "$first_line" == '<!-- sparkle-signatures:' && "$final_line" == '-->' && \
-    "$signature_line" == 'edSignature: '* && "$length_line" == 'length: '* ]] ||
+  signature_line="$(/usr/bin/tail -n 3 "$feed_path" | /usr/bin/sed -n '1p')"
+  length_line="$(/usr/bin/tail -n 3 "$feed_path" | /usr/bin/sed -n '2p')"
+  final_line="$(/usr/bin/tail -n 3 "$feed_path" | /usr/bin/sed -n '3p')"
+  [[ "$final_line" == '-->' && "$signature_line" == 'edSignature: '* && \
+    "$length_line" == 'length: '* ]] ||
     die "invalid signed feed block" || return 1
   signature="${signature_line#edSignature: }"
   length="${length_line#length: }"
