@@ -26,6 +26,9 @@ private struct PendingForecastRefresh {
 
 @MainActor
 final class DashboardStore: ObservableObject {
+  typealias WaitUntilTokenUsageBoundary = @Sendable (Date) async throws -> Void
+  typealias Now = @Sendable () -> Date
+
   @Published private(set) var forecast = ResetForecast.placeholder
   @Published private(set) var tokenUsageSnapshot: TokenUsageSnapshot?
   @Published private(set) var isRefreshing = false
@@ -48,6 +51,8 @@ final class DashboardStore: ObservableObject {
   private let formatForecastIssue: @MainActor @Sendable (String?) -> String
   private let pollingSchedule: ResetPollingSchedule
   private let sleep: @Sendable (Duration) async throws -> Void
+  private let waitUntilTokenUsageBoundary: WaitUntilTokenUsageBoundary
+  private let now: Now
   private let observesWakeEvents: Bool
 
   private var isMonitoring = false
@@ -56,6 +61,11 @@ final class DashboardStore: ObservableObject {
   private var pollingTimerTask: Task<Void, Never>?
   private var notificationPreparationTask: Task<Void, Never>?
   private var initialRefreshTask: Task<Void, Never>?
+  private var tokenUsageBoundaryTask: Task<Void, Never>?
+  private var tokenUsageBoundaryIdentity: UUID?
+  private var tokenUsageBoundaryDate: Date?
+  private var tokenUsageBoundaryTimeZoneIdentifier: String?
+  private var tokenUsageTimeZone: TimeZone?
   private var wakeObserver: MonitoringWakeObserver?
   private var pendingForecastRefresh: PendingForecastRefresh?
   private var forecastFetchInProgress = false
@@ -107,6 +117,11 @@ final class DashboardStore: ObservableObject {
     }
     pollingSchedule = ResetPollingSchedule { Int.random(in: -10...10) }
     sleep = { try await Task.sleep(for: $0) }
+    waitUntilTokenUsageBoundary = { date in
+      let duration = max(0, date.timeIntervalSinceNow)
+      try await Task.sleep(for: .seconds(duration))
+    }
+    now = Date.init
     observesWakeEvents = true
   }
 
@@ -128,6 +143,12 @@ final class DashboardStore: ObservableObject {
     formatForecastIssue: @escaping @MainActor @Sendable (String?) -> String,
     pollingSchedule: ResetPollingSchedule,
     sleep: @escaping @Sendable (Duration) async throws -> Void,
+    waitUntilTokenUsageBoundary:
+      @escaping WaitUntilTokenUsageBoundary = { date in
+        let duration = max(0, date.timeIntervalSinceNow)
+        try await Task.sleep(for: .seconds(duration))
+      },
+    now: @escaping Now = Date.init,
     observesWakeEvents: Bool
   ) {
     self.loadCachedTokenUsage = loadCachedTokenUsage
@@ -139,6 +160,8 @@ final class DashboardStore: ObservableObject {
     self.formatForecastIssue = formatForecastIssue
     self.pollingSchedule = pollingSchedule
     self.sleep = sleep
+    self.waitUntilTokenUsageBoundary = waitUntilTokenUsageBoundary
+    self.now = now
     self.observesWakeEvents = observesWakeEvents
   }
 
@@ -151,7 +174,9 @@ final class DashboardStore: ObservableObject {
     if observesWakeEvents {
       let observer = MonitoringWakeObserver()
       observer.start { [weak self] in
-        self?.enqueueForecastRefresh(trigger: .recovery)
+        Task { @MainActor [weak self] in
+          await self?.monitoringDidRecover()
+        }
       }
       wakeObserver = observer
     }
@@ -169,6 +194,7 @@ final class DashboardStore: ObservableObject {
     isMonitoring = false
     forecastGeneration &+= 1
     tokenUsageGeneration &+= 1
+    cancelTokenUsageBoundary()
     pollingTimerTask?.cancel()
     pollingTimerTask = nil
     initialRefreshTask?.cancel()
@@ -197,7 +223,11 @@ final class DashboardStore: ObservableObject {
   }
 
   func monitoringDidRecover() async {
+    guard isMonitoring else { return }
+    let timeZone = tokenUsageTimeZone ?? TimeZone.autoupdatingCurrent
+    async let tokenUsageRefresh: Void = refreshTokenUsage(timeZone: timeZone)
     await requestForecastRefresh(trigger: .recovery, generation: forecastGeneration)
+    await tokenUsageRefresh
   }
 
   func refresh() async {
@@ -205,11 +235,13 @@ final class DashboardStore: ObservableObject {
   }
 
   func refreshTokenUsage(timeZone: TimeZone) async {
+    tokenUsageTimeZone = timeZone
+    scheduleTokenUsageBoundary(timeZone: timeZone)
     tokenUsageGeneration &+= 1
     let generation = tokenUsageGeneration
     let result = await refreshTokenUsageSource(timeZone)
     guard generation == tokenUsageGeneration, !Task.isCancelled else { return }
-    applyTokenUsage(result)
+    applyTokenUsage(result, timeZone: timeZone)
   }
 
   private func refresh(generation: UInt64) async {
@@ -224,6 +256,8 @@ final class DashboardStore: ObservableObject {
     }
 
     let timeZone = TimeZone.autoupdatingCurrent
+    tokenUsageTimeZone = timeZone
+    scheduleTokenUsageBoundary(timeZone: timeZone)
     tokenUsageGeneration &+= 1
     let tokenGeneration = tokenUsageGeneration
 
@@ -233,7 +267,7 @@ final class DashboardStore: ObservableObject {
       tokenGeneration == tokenUsageGeneration,
       !Task.isCancelled
     {
-      tokenUsageSnapshot = cached
+      publishTokenUsageSnapshot(cached, timeZone: timeZone)
     }
 
     async let usageResult = refreshTokenUsageSource(timeZone)
@@ -245,7 +279,7 @@ final class DashboardStore: ObservableObject {
     else {
       return
     }
-    applyTokenUsage(result)
+    applyTokenUsage(result, timeZone: timeZone)
   }
 
   private func ensureForecastScheduler() {
@@ -420,12 +454,84 @@ final class DashboardStore: ObservableObject {
     }
   }
 
-  private func applyTokenUsage(_ result: TokenUsageRepositoryResult) {
+  private func applyTokenUsage(
+    _ result: TokenUsageRepositoryResult,
+    timeZone: TimeZone
+  ) {
     if let snapshot = result.snapshot {
-      tokenUsageSnapshot = snapshot
+      publishTokenUsageSnapshot(snapshot, timeZone: timeZone)
     }
     tokenUsageIssues = result.issues.map(formatTokenUsageIssue)
     rebuildIssues()
+  }
+
+  private func publishTokenUsageSnapshot(
+    _ snapshot: TokenUsageSnapshot,
+    timeZone: TimeZone
+  ) {
+    tokenUsageSnapshot = snapshot
+    scheduleTokenUsageBoundary(timeZone: timeZone)
+  }
+
+  private func scheduleTokenUsageBoundary(timeZone: TimeZone) {
+    tokenUsageTimeZone = timeZone
+    guard isMonitoring else { return }
+
+    let current = now()
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    guard let boundary = calendar.dateInterval(of: .day, for: current)?.end else {
+      return
+    }
+
+    if tokenUsageBoundaryTask != nil,
+      tokenUsageBoundaryDate == boundary,
+      tokenUsageBoundaryTimeZoneIdentifier == timeZone.identifier
+    {
+      return
+    }
+
+    cancelTokenUsageBoundary()
+    let waitUntilTokenUsageBoundary = waitUntilTokenUsageBoundary
+    let identity = UUID()
+    tokenUsageBoundaryIdentity = identity
+    tokenUsageBoundaryDate = boundary
+    tokenUsageBoundaryTimeZoneIdentifier = timeZone.identifier
+    tokenUsageTimeZone = timeZone
+    tokenUsageBoundaryTask = Task { @MainActor [weak self] in
+      do {
+        try await waitUntilTokenUsageBoundary(boundary)
+      } catch {
+        self?.clearTokenUsageBoundary(ifOwnedBy: identity)
+        return
+      }
+      guard !Task.isCancelled,
+        let self,
+        tokenUsageBoundaryIdentity == identity,
+        isMonitoring
+      else {
+        return
+      }
+      clearTokenUsageBoundary(ifOwnedBy: identity)
+      await refreshTokenUsage(timeZone: timeZone)
+    }
+  }
+
+  private func cancelTokenUsageBoundary() {
+    let task = tokenUsageBoundaryTask
+    tokenUsageBoundaryTask = nil
+    tokenUsageBoundaryIdentity = nil
+    tokenUsageBoundaryDate = nil
+    tokenUsageBoundaryTimeZoneIdentifier = nil
+    task?.cancel()
+  }
+
+  private func clearTokenUsageBoundary(ifOwnedBy identity: UUID) {
+    guard tokenUsageBoundaryIdentity == identity else { return }
+    tokenUsageBoundaryTask = nil
+    tokenUsageBoundaryIdentity = nil
+    tokenUsageBoundaryDate = nil
+    tokenUsageBoundaryTimeZoneIdentifier = nil
   }
 
   private func rebuildIssues() {
