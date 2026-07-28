@@ -268,6 +268,126 @@ struct TokenUsageRepositoryTests {
   }
 
   @Test
+  func replacedFileParseFailureKeepsPathMatchedRecordAndRetriesLater() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let original = descriptor(
+      path: "/tmp/sessions/session.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let replacement = descriptor(
+      path: original.fingerprint.path,
+      resource: "resource-2",
+      size: 120,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_020)
+    )
+    let current = LockedBox(original)
+    let shouldFail = LockedBox(false)
+    let parseCount = LockedBox(0)
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: { [current.value] },
+      fingerprintFile: { _ in current.value.fingerprint },
+      parseFile: { _ in
+        parseCount.update { $0 += 1 }
+        if shouldFail.value {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+        let input = current.value.fingerprint.resourceIdentifier == "resource-1" ? 100 : 250
+        return ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: input,
+              cachedInputTokens: 0,
+              outputTokens: input / 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    _ = await repository.refresh(timeZone: timeZone)
+    current.value = replacement
+    shouldFail.value = true
+    let failed = await repository.refresh(timeZone: timeZone)
+    shouldFail.value = false
+    let recovered = await repository.refresh(timeZone: timeZone)
+
+    #expect(failed.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(failed.issues == [.skippedFiles(1)])
+    #expect(recovered.snapshot?.metrics(for: .day).totalTokens == 275)
+    #expect(recovered.issues.isEmpty)
+    #expect(parseCount.value == 3)
+  }
+
+  @Test
+  func identityMatchPrecedesPathFallbackAndConsumesOldRecordOnce() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let original = descriptor(
+      path: "/tmp/sessions/session.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let replacement = descriptor(
+      path: original.fingerprint.path,
+      resource: "resource-2",
+      size: 120,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_020)
+    )
+    let renamed = descriptor(
+      path: "/tmp/archived_sessions/session.jsonl",
+      resource: "resource-1",
+      size: 120,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_020)
+    )
+    let current = LockedBox([original])
+    let shouldFail = LockedBox(false)
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: { current.value },
+      fingerprintFile: { url in
+        try #require(current.value.first { $0.url == url }).fingerprint
+      },
+      parseFile: { _ in
+        if shouldFail.value {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+        return ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: 100,
+              cachedInputTokens: 0,
+              outputTokens: 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    _ = await repository.refresh(timeZone: timeZone)
+    current.value = [replacement, renamed]
+    shouldFail.value = true
+    let failed = await repository.refresh(timeZone: timeZone)
+
+    #expect(failed.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(failed.issues == [.skippedFiles(2)])
+  }
+
+  @Test
   func modifiedFileParseFailureKeepsOldRecordAndRetriesLater() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -392,6 +512,94 @@ struct TokenUsageRepositoryTests {
 
     #expect(discoveryCount.value == 1)
     #expect(secondResult == firstResult)
+  }
+
+  @Test
+  func crossTimeZoneRefreshesCommitInFirstEntryOrder() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let gates = [
+      DispatchSemaphore(value: 0),
+      DispatchSemaphore(value: 0),
+      DispatchSemaphore(value: 0),
+    ]
+    let discoveryCount = LockedBox(0)
+    let secondCallStarted = LockedBox(false)
+    let thirdCallStarted = LockedBox(false)
+    let secondCallFinished = LockedBox(false)
+    let thirdCallFinished = LockedBox(false)
+    let cacheStore = TokenUsageCacheStore(directoryURL: directory)
+    let repository = TokenUsageRepository(
+      cacheStore: cacheStore,
+      discoverFiles: {
+        let invocation = discoveryCount.withValue {
+          $0 += 1
+          return $0
+        }
+        gates[invocation - 1].wait()
+        return []
+      },
+      fingerprintFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      parseFile: { _ in throw CocoaError(.fileNoSuchFile) },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let firstTimeZone = TimeZone(secondsFromGMT: 0)!
+    let secondTimeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let thirdTimeZone = TimeZone(identifier: "America/Los_Angeles")!
+
+    let first = Task {
+      await repository.refresh(timeZone: firstTimeZone)
+    }
+    while discoveryCount.value < 1 {
+      await Task.yield()
+    }
+    let second = Task(priority: .background) {
+      secondCallStarted.value = true
+      let result = await repository.refresh(timeZone: secondTimeZone)
+      secondCallFinished.value = true
+      return result
+    }
+    while !secondCallStarted.value {
+      await Task.yield()
+    }
+    _ = await repository.cachedSnapshot(timeZone: firstTimeZone)
+    let third = Task(priority: .high) {
+      thirdCallStarted.value = true
+      let result = await repository.refresh(timeZone: thirdTimeZone)
+      thirdCallFinished.value = true
+      return result
+    }
+    while !thirdCallStarted.value {
+      await Task.yield()
+    }
+    _ = await repository.cachedSnapshot(timeZone: firstTimeZone)
+
+    gates[0].signal()
+    while discoveryCount.value < 2 {
+      await Task.yield()
+    }
+    gates[1].signal()
+    while !secondCallFinished.value && !thirdCallFinished.value {
+      await Task.yield()
+    }
+
+    #expect(secondCallFinished.value)
+    #expect(!thirdCallFinished.value)
+
+    while discoveryCount.value < 3 {
+      await Task.yield()
+    }
+    gates[2].signal()
+    _ = await first.value
+    let secondResult = await second.value
+    let thirdResult = await third.value
+    let loadedSnapshot = try cacheStore.loadSnapshot()
+    let committed = try #require(loadedSnapshot)
+
+    #expect(secondResult.snapshot?.timeZoneIdentifier == secondTimeZone.identifier)
+    #expect(thirdResult.snapshot?.timeZoneIdentifier == thirdTimeZone.identifier)
+    #expect(committed.timeZoneIdentifier == thirdTimeZone.identifier)
   }
 
   @Test
