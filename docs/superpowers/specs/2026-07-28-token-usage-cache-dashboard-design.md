@@ -283,7 +283,7 @@ CI 不使用容易受机器负载影响的 300 ms 硬断言。发布前在本机
 
 ```sh
 swift test
-./script/verify_app.sh
+./script/build_and_run.sh --verify
 ```
 
 随后使用真实本地日志执行上述性能与交互人工检查。
