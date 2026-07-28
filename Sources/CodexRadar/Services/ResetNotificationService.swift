@@ -108,7 +108,6 @@ final class ResetNotificationService {
     let observationState = consumedSignalStore.stateForObservation(
       currentSignalID: forecast.signalID
     )
-    guard !observationState.recoveredCorruption else { return }
 
     let decision = ResetNotificationPolicy.decision(
       forecast: forecast,

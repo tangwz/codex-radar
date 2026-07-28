@@ -5,7 +5,6 @@ final class ConsumedResetSignalStore {
   struct ObservationState {
     let hasBaseline: Bool
     let consumedSignalIDs: Set<String>
-    let recoveredCorruption: Bool
   }
 
   private let baselineKey = "hasResetSignalBaseline"
@@ -44,7 +43,7 @@ final class ConsumedResetSignalStore {
   }
 
   func stateForObservation(currentSignalID: String?) -> ObservationState {
-    let recoveredCorruption = loadConsumedIDsIfNeeded(
+    loadConsumedIDsIfNeeded(
       corruptionRecoverySignalID: currentSignalID
     )
     if needsBaselineMigration {
@@ -57,8 +56,7 @@ final class ConsumedResetSignalStore {
     }
     return ObservationState(
       hasBaseline: defaults.bool(forKey: baselineKey),
-      consumedSignalIDs: loadedConsumedIDs!,
-      recoveredCorruption: recoveredCorruption
+      consumedSignalIDs: loadedConsumedIDs!
     )
   }
 
@@ -78,11 +76,10 @@ final class ConsumedResetSignalStore {
     persist(loadedConsumedIDs!)
   }
 
-  @discardableResult
   private func loadConsumedIDsIfNeeded(
     corruptionRecoverySignalID: String? = nil
-  ) -> Bool {
-    guard loadedConsumedIDs == nil else { return false }
+  ) {
+    guard loadedConsumedIDs == nil else { return }
 
     var consumedIDs: Set<String>
     var shouldPersist = false
@@ -121,7 +118,6 @@ final class ConsumedResetSignalStore {
     if shouldPersist, persist(consumedIDs), legacyID != nil {
       defaults.removeObject(forKey: legacyLastIDKey)
     }
-    return recoveredCorruption
   }
 
   @discardableResult
