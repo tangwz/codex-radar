@@ -4,14 +4,16 @@ import SwiftUI
 struct TokenUsageView: View {
   let snapshot: TokenUsageSnapshot?
   @State private var period: TokenUsagePeriod = .day
+  @State private var selectedBucketID: Date?
   @Environment(\.locale) private var locale
 
-  private var metrics: TokenUsageMetrics {
-    snapshot?.metrics(for: period) ?? .zero
+  private var presentation: TokenUsagePresentation {
+    TokenUsagePresentation(snapshot: snapshot, period: period)
   }
 
-  private var buckets: [TokenUsageChartBucket] {
-    snapshot?.buckets(for: period) ?? []
+  private var selectedBucket: TokenUsageChartBucket? {
+    guard let selectedBucketID else { return nil }
+    return presentation.buckets.first { $0.id == selectedBucketID }
   }
 
   var body: some View {
@@ -39,19 +41,19 @@ struct TokenUsageView: View {
       HStack(spacing: 12) {
         MetricTile(
           title: "Total",
-          value: metrics.totalTokens,
+          value: presentation.metrics.totalTokens,
           tint: .accentColor,
           locale: locale
         )
         MetricTile(
           title: "Input",
-          value: metrics.inputTokens,
+          value: presentation.metrics.inputTokens,
           tint: .blue,
           locale: locale
         )
         MetricTile(
           title: "Output",
-          value: metrics.outputTokens,
+          value: presentation.metrics.outputTokens,
           tint: .purple,
           locale: locale
         )
@@ -65,13 +67,49 @@ struct TokenUsageView: View {
         )
         .frame(maxWidth: .infinity, minHeight: 240)
       } else {
-        Chart(buckets) { bucket in
-          BarMark(
-            x: .value("Period", bucket.startDate),
-            y: .value("Tokens", bucket.totalTokens)
-          )
-          .foregroundStyle(Color.accentColor.gradient)
-          .cornerRadius(4)
+        Chart {
+          ForEach(presentation.buckets) { bucket in
+            BarMark(
+              x: .value("Period", bucket.startDate),
+              y: .value("Tokens", bucket.totalTokens)
+            )
+            .foregroundStyle(Color.accentColor.gradient)
+            .cornerRadius(4)
+            .opacity(
+              selectedBucketID == nil || selectedBucketID == bucket.id ? 1 : 0.42
+            )
+            .accessibilityLabel(
+              Text(
+                DisplayFormatting.bucketDate(
+                  bucket.startDate,
+                  period: period,
+                  locale: locale
+                )
+              )
+            )
+            .accessibilityValue(Text(accessibilityValue(for: bucket)))
+          }
+
+          if let selectedBucket {
+            RuleMark(
+              x: .value("Selected period", selectedBucket.startDate)
+            )
+            .foregroundStyle(.secondary.opacity(0.55))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            .annotation(
+              position: .top,
+              overflowResolution: .init(
+                x: .fit(to: .chart),
+                y: .disabled
+              )
+            ) {
+              TokenUsageTooltip(
+                bucket: selectedBucket,
+                period: period,
+                locale: locale
+              )
+            }
+          }
         }
         .chartYAxis {
           AxisMarks(position: .leading) { value in
@@ -83,11 +121,58 @@ struct TokenUsageView: View {
             }
           }
         }
+        .chartOverlay { proxy in
+          GeometryReader { geometry in
+            Rectangle()
+              .fill(.clear)
+              .contentShape(Rectangle())
+              .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                  guard let plotFrame = proxy.plotFrame.map({ geometry[$0] }) else {
+                    selectedBucketID = nil
+                    return
+                  }
+                  let x = location.x - plotFrame.minX
+                  guard x >= 0, x <= plotFrame.width,
+                    let date = proxy.value(atX: x, as: Date.self)
+                  else {
+                    selectedBucketID = nil
+                    return
+                  }
+                  selectedBucketID = presentation.nearestBucket(to: date)?.id
+                case .ended:
+                  selectedBucketID = nil
+                }
+              }
+          }
+        }
         .frame(height: 230)
+        .onChange(of: period) {
+          selectedBucketID = nil
+        }
       }
     }
     .padding(22)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    .background(
+      .regularMaterial,
+      in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+    )
+  }
+
+  private func accessibilityValue(
+    for bucket: TokenUsageChartBucket
+  ) -> String {
+    String(
+      format: String(
+        localized: "Total %@, Input %@, Output %@",
+        bundle: .main,
+        locale: locale
+      ),
+      DisplayFormatting.tokenCount(bucket.totalTokens, locale: locale),
+      DisplayFormatting.tokenCount(bucket.inputTokens, locale: locale),
+      DisplayFormatting.tokenCount(bucket.outputTokens, locale: locale)
+    )
   }
 }
 
@@ -109,5 +194,48 @@ private struct MetricTile: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(13)
     .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+  }
+}
+
+private struct TokenUsageTooltip: View {
+  let bucket: TokenUsageChartBucket
+  let period: TokenUsagePeriod
+  let locale: Locale
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Text(
+        DisplayFormatting.bucketDate(
+          bucket.startDate,
+          period: period,
+          locale: locale
+        )
+      )
+      .font(.caption.weight(.semibold))
+
+      metric("Total", bucket.totalTokens)
+      metric("Input", bucket.inputTokens)
+      metric("Output", bucket.outputTokens)
+    }
+    .padding(10)
+    .background(
+      .regularMaterial,
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+    )
+    .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+  }
+
+  private func metric(
+    _ title: LocalizedStringKey,
+    _ value: Int
+  ) -> some View {
+    HStack(spacing: 12) {
+      Text(title)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 8)
+      Text(DisplayFormatting.tokenCount(value, locale: locale))
+        .monospacedDigit()
+    }
+    .font(.caption)
   }
 }
