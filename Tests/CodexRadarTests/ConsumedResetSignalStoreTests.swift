@@ -68,6 +68,22 @@ struct ConsumedResetSignalStoreTests {
   }
 
   @Test
+  func consumesCurrentSignalWhenMigratingAnExistingBaseline() throws {
+    let (defaults, suiteName) = try makeDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(true, forKey: "hasResetSignalBaseline")
+
+    let store = ConsumedResetSignalStore(defaults: defaults)
+    let state = store.stateForObservation(currentSignalID: "200")
+
+    #expect(state.hasBaseline)
+    #expect(state.consumedSignalIDs == ["200"])
+
+    let data = try #require(defaults.data(forKey: "consumedResetSignalIDs"))
+    #expect(try JSONDecoder().decode([String].self, from: data) == ["200"])
+  }
+
+  @Test
   func migrationIsIdempotent() throws {
     let (defaults, suiteName) = try makeDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
