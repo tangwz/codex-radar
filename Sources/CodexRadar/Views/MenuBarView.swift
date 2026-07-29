@@ -125,6 +125,11 @@ struct MenuBarView: View {
     .task {
       store.startMonitoring()
     }
+    .onChange(of: timeZone.identifier) {
+      Task {
+        await store.refreshTokenUsage(timeZone: timeZone)
+      }
+    }
   }
 
   @ViewBuilder
