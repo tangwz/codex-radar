@@ -77,8 +77,8 @@ struct ResetNotificationPolicyTests {
     let suiteName = "ResetNotificationPolicyTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
-    defaults.set(true, forKey: "hasResetSignalBaseline")
     let consumedSignalStore = ConsumedResetSignalStore(defaults: defaults)
+    consumedSignalStore.establishBaseline(signalID: "signal-1")
     let deliveryGate = DeliveryGate()
     let service = ResetNotificationService(
       defaults: defaults,
