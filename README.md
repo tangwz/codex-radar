@@ -7,8 +7,8 @@
 - 每分钟读取公开的 `/v1/current`，展示 Tibo 的 reset 状态、时间和原始 X 证据。
 - 从 `/v1/current` 展示服务端确认的最近一次重置时间；旧协议缺字段、明确无历史与暂时不可用使用不同状态。
 - Dashboard 打开时读取 `/v1/history`，按用户时区展示本周、本月、所选历史范围的月度统计和最近五次重置。
-- 仅在数据非 stale 且 reset 状态为 announced 时显示菜单栏红点。
-- 首次进入 announced、announced timing 变化和首次进入 completed 时，各发送一次 macOS 通知。
+- 数据非 stale 且 reset 状态为 candidate、announced 或 completed 时显示菜单栏红点；红点表示当前服务端状态，不表示未读。
+- 对首次观察到的 candidate、announced 或 completed signal ID 最多发送一次 macOS 通知；首次安装或升级只建立 baseline，不补发已有信号。
 - 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`，使用版本化本地缓存复用未变化文件的解析结果。
 - 按日、月、年展示 total、input 和 output；当前周期指标与趋势图同步切换，柱状图通过鼠标悬浮展示明细。
 - 参考 CodexBar 的累计快照、interleaved counter 与稳定 session identity 处理；统计为本地日志推算值，不依赖 CodexBar 运行时。
