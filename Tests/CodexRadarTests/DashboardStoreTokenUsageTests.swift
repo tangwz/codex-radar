@@ -46,6 +46,41 @@ struct DashboardStoreTokenUsageTests {
 
   @MainActor
   @Test
+  func timeZoneChangeClearsAnIncompatibleSnapshotWhenRefreshFails() async throws {
+    let originalTimeZone = try #require(TimeZone(identifier: "Etc/UTC"))
+    let newTimeZone = try #require(TimeZone(identifier: "Asia/Shanghai"))
+    let original = snapshot(
+      events: [event(at: Date(timeIntervalSince1970: 1_700_000_000), total: 10)],
+      generatedAt: Date(timeIntervalSince1970: 1_700_000_100),
+      timeZone: originalTimeZone
+    )
+    let results = TokenUsageResultQueue([
+      TokenUsageRepositoryResult(snapshot: original, issues: []),
+      TokenUsageRepositoryResult(snapshot: nil, issues: [.sourceUnavailable]),
+    ])
+    let store = DashboardStore(
+      refreshTokenUsageSource: { _, _ in await results.next() },
+      formatTokenUsageIssue: { _ in "Token usage issue" },
+      fetchForecast: { _ in .notModified },
+      prepareNotifications: {},
+      observeForecast: { _ in },
+      formatForecastIssue: { $0 ?? "" },
+      pollingSchedule: ResetPollingSchedule(jitter: { 0 }),
+      sleep: { _ in },
+      observesWakeEvents: false
+    )
+
+    await store.refreshTokenUsage(timeZone: originalTimeZone)
+    #expect(store.tokenUsageSnapshot == original)
+
+    await store.refreshTokenUsage(timeZone: newTimeZone)
+
+    #expect(store.tokenUsageSnapshot == nil)
+    #expect(store.issues == ["Token usage issue"])
+  }
+
+  @MainActor
+  @Test
   func olderTimeZoneRefreshCannotOverwriteNewerResult() async {
     let source = OutOfOrderTokenUsageSource()
     let store = DashboardStore(

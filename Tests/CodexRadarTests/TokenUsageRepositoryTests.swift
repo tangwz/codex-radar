@@ -47,6 +47,59 @@ struct TokenUsageRepositoryTests {
   }
 
   @Test
+  func sourceFailureRebuildsTheSnapshotForTheCurrentPeriod() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+    let currentDate = LockedBox(
+      ISO8601DateFormatter().date(from: "2026-07-28T12:00:00Z")!
+    )
+    let discoveryError = LockedBox<Error?>(nil)
+    let file = descriptor(
+      path: "/tmp/sessions/session.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: {
+        if let error = discoveryError.value { throw error }
+        return CodexSessionDiscovery(files: [file])
+      },
+      fingerprintFile: { _ in file.fingerprint },
+      parseFile: { _ in
+        ParsedCodexSessionFile(
+          sessionID: "session-1",
+          events: [
+            TokenUsageEvent(
+              timestamp: ISO8601DateFormatter().date(
+                from: "2026-07-28T01:00:00Z"
+              )!,
+              inputTokens: 100,
+              cachedInputTokens: 0,
+              outputTokens: 10
+            )
+          ]
+        )
+      },
+      now: { currentDate.value }
+    )
+
+    let first = await repository.refresh(timeZone: timeZone)
+    currentDate.value =
+      ISO8601DateFormatter().date(from: "2026-07-29T12:00:00Z")!
+    discoveryError.value = CocoaError(.fileReadNoPermission)
+    let failed = await repository.refresh(timeZone: timeZone)
+
+    #expect(first.snapshot?.metrics(for: .day).totalTokens == 110)
+    #expect(failed.snapshot?.generatedAt == currentDate.value)
+    #expect(failed.snapshot?.metrics(for: .day) == .zero)
+    #expect(failed.issues == [.sourceUnavailable])
+  }
+
+  @Test
   func deletingTheOnlyFileProducesAnEmptySnapshot() async throws {
     let context = try RepositoryTestContext()
     defer { context.remove() }
@@ -107,6 +160,81 @@ struct TokenUsageRepositoryTests {
     #expect(failed.snapshot?.metrics(for: .day).totalTokens == 110)
     #expect(failed.issues == [.skippedFiles(1)])
     #expect(parseCount.value == 1)
+  }
+
+  @Test
+  func partialRefreshKeepsSuccessfulManifestUpdatesInMemory() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let originalUpdatedFile = descriptor(
+      path: "/tmp/sessions/updated.jsonl",
+      resource: "resource-1",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let originalFailingFile = descriptor(
+      path: "/tmp/sessions/failing.jsonl",
+      resource: "resource-2",
+      size: 100,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let modifiedUpdatedFile = descriptor(
+      path: originalUpdatedFile.fingerprint.path,
+      resource: "resource-1",
+      size: 200,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_100)
+    )
+    let modifiedFailingFile = descriptor(
+      path: originalFailingFile.fingerprint.path,
+      resource: "resource-2",
+      size: 200,
+      modifiedAt: Date(timeIntervalSince1970: 1_700_000_100)
+    )
+    let currentFiles = LockedBox([originalUpdatedFile, originalFailingFile])
+    let failingFileShouldFail = LockedBox(false)
+    let parseCounts = LockedBox<[String: Int]>([:])
+    let repository = TokenUsageRepository(
+      cacheStore: TokenUsageCacheStore(directoryURL: directory),
+      discoverFiles: { CodexSessionDiscovery(files: currentFiles.value) },
+      fingerprintFile: { url in
+        currentFiles.value.first { $0.url == url }!.fingerprint
+      },
+      parseFile: { url in
+        parseCounts.update { $0[url.lastPathComponent, default: 0] += 1 }
+        if url == modifiedFailingFile.url, failingFileShouldFail.value {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+        let isUpdatedFile = url == modifiedUpdatedFile.url
+        let isModified =
+          currentFiles.value.first { $0.url == url }?.fingerprint.size == 200
+        return ParsedCodexSessionFile(
+          sessionID: url.deletingPathExtension().lastPathComponent,
+          events: [
+            TokenUsageEvent(
+              timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+              inputTokens: isUpdatedFile && isModified ? 200 : 100,
+              cachedInputTokens: 0,
+              outputTokens: isUpdatedFile && isModified ? 20 : 10
+            )
+          ]
+        )
+      },
+      now: { Date(timeIntervalSince1970: 1_700_000_100) }
+    )
+    let timeZone = TimeZone(secondsFromGMT: 0)!
+
+    _ = await repository.refresh(timeZone: timeZone)
+    currentFiles.value = [modifiedUpdatedFile, modifiedFailingFile]
+    failingFileShouldFail.value = true
+    let firstPartial = await repository.refresh(timeZone: timeZone)
+    let secondPartial = await repository.refresh(timeZone: timeZone)
+
+    #expect(firstPartial.snapshot == secondPartial.snapshot)
+    #expect(firstPartial.issues == [.skippedFiles(1)])
+    #expect(secondPartial.issues == [.skippedFiles(1)])
+    #expect(parseCounts.value["updated.jsonl"] == 2)
+    #expect(parseCounts.value["failing.jsonl"] == 3)
   }
 
   @Test
