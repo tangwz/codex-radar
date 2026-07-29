@@ -286,6 +286,11 @@ final class DashboardStore: ObservableObject {
     timeZone: TimeZone,
     freshnessCutoff: Date?
   ) async {
+    if let tokenUsageSnapshot,
+      tokenUsageSnapshot.timeZoneIdentifier != timeZone.identifier
+    {
+      self.tokenUsageSnapshot = nil
+    }
     tokenUsageTimeZone = timeZone
     scheduleTokenUsageBoundary(timeZone: timeZone)
     tokenUsageGeneration &+= 1

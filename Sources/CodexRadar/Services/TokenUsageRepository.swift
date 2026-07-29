@@ -279,18 +279,17 @@ actor TokenUsageRepository {
         previousManifest = nil
       }
     }
-    let fallbackSnapshot = fallbackSnapshot(
-      manifest: previousManifest,
-      timeZone: timeZone,
-      memorySnapshot: memorySnapshot,
-      cacheStore: cacheStore,
-      now: now
-    )
-
     let discovery: CodexSessionDiscovery
     do {
       discovery = try discoverFiles()
     } catch {
+      let fallbackSnapshot = fallbackSnapshot(
+        manifest: previousManifest,
+        timeZone: timeZone,
+        memorySnapshot: memorySnapshot,
+        cacheStore: cacheStore,
+        now: now
+      )
       return RefreshOutcome(
         result: TokenUsageRepositoryResult(
           snapshot: fallbackSnapshot,
@@ -367,7 +366,13 @@ actor TokenUsageRepository {
     }
     if skippedFileCount > 0,
       previousManifest == nil,
-      let fallbackSnapshot
+      let fallbackSnapshot = fallbackSnapshot(
+        manifest: previousManifest,
+        timeZone: timeZone,
+        memorySnapshot: memorySnapshot,
+        cacheStore: cacheStore,
+        now: now
+      )
     {
       return RefreshOutcome(
         result: TokenUsageRepositoryResult(
@@ -386,7 +391,7 @@ actor TokenUsageRepository {
     }
     return RefreshOutcome(
       result: TokenUsageRepositoryResult(snapshot: snapshot, issues: issues),
-      lastGoodManifest: skippedFileCount == 0 ? manifest : previousManifest
+      lastGoodManifest: manifest
     )
   }
 
@@ -486,6 +491,13 @@ actor TokenUsageRepository {
     cacheStore: TokenUsageCacheStore,
     now: Now
   ) -> TokenUsageSnapshot? {
+    if let manifest {
+      return TokenUsageSnapshotBuilder.make(
+        events: CodexSessionScanner.deduplicatedEvents(from: manifest.files),
+        at: now(),
+        timeZone: timeZone
+      )
+    }
     if let memorySnapshot {
       return memorySnapshot
     }
@@ -494,11 +506,6 @@ actor TokenUsageRepository {
     {
       return cached
     }
-    guard let manifest else { return nil }
-    return TokenUsageSnapshotBuilder.make(
-      events: CodexSessionScanner.deduplicatedEvents(from: manifest.files),
-      at: now(),
-      timeZone: timeZone
-    )
+    return nil
   }
 }
