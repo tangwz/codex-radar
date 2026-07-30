@@ -7,37 +7,30 @@ struct ContentView: View {
 
   var body: some View {
     ScrollView {
-      VStack(spacing: 18) {
-        ResetForecastCard(forecast: store.forecast)
-        ResetHistoryView(store: historyStore, timeZone: timeZone)
-        TokenUsageView(snapshot: store.tokenUsageSnapshot)
+      VStack(spacing: 0) {
+        refreshControl
 
-        if !store.issues.isEmpty {
-          VStack(alignment: .leading, spacing: 6) {
-            ForEach(store.issues, id: \.self) { issue in
-              Label(issue, systemImage: "exclamationmark.triangle")
+        VStack(spacing: 18) {
+          ResetForecastCard(forecast: store.forecast)
+          ResetHistoryView(store: historyStore, timeZone: timeZone)
+          TokenUsageView(snapshot: store.tokenUsageSnapshot)
+
+          if !store.issues.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+              ForEach(store.issues, id: \.self) { issue in
+                Label(issue, systemImage: "exclamationmark.triangle")
+              }
             }
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .frame(maxWidth: .infinity, alignment: .leading)
           }
-          .font(.caption)
-          .foregroundStyle(.orange)
-          .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.top, 12)
       }
-      .padding(24)
     }
+    .padding(24)
     .frame(minWidth: 760, minHeight: 620)
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button {
-          historyStore.refresh(timeZone: timeZone)
-          Task { await store.refresh() }
-        } label: {
-          Label("Refresh", systemImage: "arrow.clockwise")
-        }
-        .keyboardShortcut("r", modifiers: .command)
-        .disabled(store.isRefreshing)
-      }
-    }
     .overlay {
       if store.isRefreshing && store.tokenUsageSnapshot == nil {
         ProgressView("Reading Codex usage")
@@ -63,6 +56,22 @@ struct ContentView: View {
     }
     .onChange(of: store.forecast.lastResetAt) {
       historyStore.lastResetDidChange(store.forecast.lastResetAt, timeZone: timeZone)
+    }
+  }
+
+  private var refreshControl: some View {
+    HStack {
+      Spacer()
+
+      Button {
+        historyStore.refresh(timeZone: timeZone)
+        Task { await store.refresh() }
+      } label: {
+        Label("Refresh", systemImage: "arrow.clockwise")
+      }
+      .buttonStyle(.bordered)
+      .keyboardShortcut("r", modifiers: .command)
+      .disabled(store.isRefreshing)
     }
   }
 }
