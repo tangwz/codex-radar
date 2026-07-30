@@ -28,8 +28,8 @@ struct ContentView: View {
         }
         .padding(.top, 12)
       }
+      .padding(24)
     }
-    .padding(24)
     .frame(minWidth: 760, minHeight: 620)
     .overlay {
       if store.isRefreshing && store.tokenUsageSnapshot == nil {
