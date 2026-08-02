@@ -152,6 +152,26 @@ struct ResetHistoryDecodingTests {
   }
 
   @Test
+  func rejectsCurrentMonthWithDifferentBankedCountFromFinalBucket() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: currentMonthJSON(banked: 3, both: 2),
+      with: currentMonthJSON(banked: 4, both: 2)
+    )
+
+    expectDataCorruptedFailure(json, forKey: "current")
+  }
+
+  @Test
+  func rejectsCurrentMonthWithDifferentBothCountFromFinalBucket() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: currentMonthJSON(banked: 3, both: 2),
+      with: currentMonthJSON(banked: 3, both: 1)
+    )
+
+    expectDataCorruptedFailure(json, forKey: "current")
+  }
+
+  @Test
   func rejectsCurrentIntervalsOutsideGeneratedAtNaturalBuckets() {
     let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
     let current = resetHistoryCurrentIntervals(
@@ -280,6 +300,28 @@ struct ResetHistoryDecodingTests {
 
 private func decodeHistory(_ json: String) throws -> ResetHistory {
   try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
+}
+
+private func currentMonthJSON(banked: Int, both: Int) -> String {
+  let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+  let current = resetHistoryCurrentIntervals(
+    generatedAt: generatedAt,
+    timeZoneIdentifier: "Asia/Shanghai"
+  )
+  return """
+    "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":7,"counts":{"hard":7,"banked":\(banked),"both":\(both)}}
+    """
+}
+
+private func expectDataCorruptedFailure(_ json: String, forKey key: String) {
+  do {
+    _ = try decodeHistory(json)
+    Issue.record("Expected decoding to fail.")
+  } catch let DecodingError.dataCorrupted(context) {
+    #expect(context.codingPath.last?.stringValue == key)
+  } catch {
+    Issue.record("Expected a data-corrupted decoding error, got \(error).")
+  }
 }
 
 private func expectDecodingFailure(_ json: String) {
