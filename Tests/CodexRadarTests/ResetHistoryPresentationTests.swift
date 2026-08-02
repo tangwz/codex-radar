@@ -147,19 +147,56 @@ struct ResetHistoryPresentationTests {
 
   @Test
   func allChartScrollsOnAppearanceAndLatestMonthIdentityChanges() throws {
-    let repositoryRoot = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-    let viewSource = try String(
-      contentsOf: repositoryRoot.appendingPathComponent(
-        "Sources/CodexRadar/Views/ResetHistoryView.swift"),
-      encoding: .utf8
-    )
+    let viewSource = try resetHistoryViewSource()
 
     #expect(viewSource.contains(".onAppear {"))
     #expect(viewSource.contains(".onChange(of: presentation.months.last?.id)"))
     #expect(!viewSource.contains(".onChange(of: presentation.responseRevision)"))
+  }
+
+  @Test
+  func resetMetricSelectionIsViewLocalAndDefaultsToBoth() throws {
+    let viewSource = try resetHistoryViewSource()
+
+    #expect(
+      viewSource.contains(
+        "@State private var selectedMetric: ResetHistoryMetric = .both"))
+    #expect(viewSource.contains("Picker(\"Reset type\", selection: $selectedMetric)"))
+    #expect(viewSource.contains("metric: selectedMetric"))
+
+    let bothTag = try #require(viewSource.range(of: ".tag(ResetHistoryMetric.both)"))
+    let hardTag = try #require(viewSource.range(of: ".tag(ResetHistoryMetric.hard)"))
+    let bankedTag = try #require(viewSource.range(of: ".tag(ResetHistoryMetric.banked)"))
+    #expect(bothTag.lowerBound < hardTag.lowerBound)
+    #expect(hardTag.lowerBound < bankedTag.lowerBound)
+  }
+
+  @Test
+  func resetChartUsesMetricSpecificTitlesWithoutRecentDetails() throws {
+    let viewSource = try resetHistoryViewSource()
+
+    #expect(viewSource.contains("Hard + banked resets by month"))
+    #expect(viewSource.contains("Hard resets by month"))
+    #expect(viewSource.contains("Banked resets by month"))
+    #expect(!viewSource.contains("recentList("))
+    #expect(!viewSource.contains("Text(\"Recent resets\")"))
+    #expect(!viewSource.contains("Text(\"Latest 5\")"))
+    #expect(!viewSource.contains("Text(month.count, format: .number)"))
+  }
+
+  @Test
+  func resetChartHoverResolvesStableMonthIDsAndClearsOnExit() throws {
+    let viewSource = try resetHistoryViewSource()
+
+    #expect(viewSource.contains("x: .value(\"Month\", month.id)"))
+    #expect(viewSource.contains(".chartXAxis"))
+    #expect(viewSource.contains("AxisMarks(values: months.map(\\.id))"))
+    #expect(viewSource.contains("RuleMark("))
+    #expect(viewSource.contains(".chartOverlay"))
+    #expect(viewSource.contains(".onContinuousHover"))
+    #expect(viewSource.contains("chartProxy.value(atX: plotX)"))
+    #expect(viewSource.contains("hoveredMonthID = nil"))
+    #expect(viewSource.contains("monthAccessibilityLabel"))
   }
 
   @Test
@@ -214,4 +251,16 @@ struct ResetHistoryPresentationTests {
 
 private func decodeHistory(_ json: String) throws -> ResetHistory {
   try APIJSONCoding.makeDecoder().decode(ResetHistory.self, from: Data(json.utf8))
+}
+
+private func resetHistoryViewSource() throws -> String {
+  let repositoryRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+  return try String(
+    contentsOf: repositoryRoot.appendingPathComponent(
+      "Sources/CodexRadar/Views/ResetHistoryView.swift"),
+    encoding: .utf8
+  )
 }
