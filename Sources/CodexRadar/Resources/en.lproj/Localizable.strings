@@ -59,6 +59,14 @@
 "This month" = "This month";
 "Reset statistics" = "Reset statistics";
 "This week" = "This week";
+"Reset type" = "Reset type";
+"Both" = "Both";
+"Hard" = "Hard";
+"Banked" = "Banked";
+"Hard + banked resets by month" = "Hard + banked resets by month";
+"Hard resets by month" = "Hard resets by month";
+"Banked resets by month" = "Banked resets by month";
+"%@, %lld resets" = "%@, %lld resets";
 "Monthly resets" = "Monthly resets";
 "Resets by month" = "Resets by month";
 "Time range" = "Time range";
