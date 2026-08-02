@@ -165,7 +165,8 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     }
     guard current.month.from == finalMonth.from,
       current.month.to == finalMonth.to,
-      current.month.count == finalMonth.count
+      current.month.count == finalMonth.count,
+      current.month.counts == finalMonth.counts
     else {
       throw invalidValue(
         forKey: .current,
