@@ -59,6 +59,14 @@
 "This month" = "本月";
 "Reset statistics" = "重置统计";
 "This week" = "本周";
+"Reset type" = "重置类型";
+"Both" = "二者同时";
+"Hard" = "硬重置";
+"Banked" = "Banked 重置";
+"Hard + banked resets by month" = "按月 Hard + Banked 重置次数";
+"Hard resets by month" = "按月 Hard 重置次数";
+"Banked resets by month" = "按月 Banked 重置次数";
+"%@, %lld resets" = "%@，%lld 次重置";
 "Monthly resets" = "每月重置次数";
 "Resets by month" = "按月重置次数";
 "Time range" = "时间范围";
