@@ -6,6 +6,8 @@ struct ResetHistoryView: View {
   let timeZone: TimeZone
   @Environment(\.locale) private var locale
   @State private var isShowingMonthInfo = false
+  @State private var selectedMetric: ResetHistoryMetric = .both
+  @State private var hoveredMonthID: String?
 
   var body: some View {
     Group {
@@ -14,7 +16,7 @@ struct ResetHistoryView: View {
           ResetHistoryPresentation(
             history: history,
             selectedRange: store.selectedRange,
-            metric: .both,
+            metric: selectedMetric,
             locale: locale
           )
         )
@@ -52,6 +54,21 @@ struct ResetHistoryView: View {
       }
 
       Spacer()
+
+      Picker("Reset type", selection: $selectedMetric) {
+        Text("Both")
+          .tag(ResetHistoryMetric.both)
+        Text("Hard")
+          .tag(ResetHistoryMetric.hard)
+        Text("Banked")
+          .tag(ResetHistoryMetric.banked)
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .frame(width: 270)
+      .onChange(of: selectedMetric) {
+        hoveredMonthID = nil
+      }
     }
   }
 
@@ -60,7 +77,7 @@ struct ResetHistoryView: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
         VStack(alignment: .leading, spacing: 2) {
-          Text("Resets by month")
+          Text(chartTitle(presentation.metric))
             .font(.headline)
           Text(presentation.rangeDescription)
             .font(.caption)
@@ -113,7 +130,7 @@ struct ResetHistoryView: View {
       GeometryReader { proxy in
         ScrollViewReader { scrollProxy in
           ScrollView(.horizontal) {
-            monthlyBars(presentation.months)
+            monthlyBars(presentation.months, metric: presentation.metric)
               .frame(
                 width: max(proxy.size.width, CGFloat(presentation.months.count) * 56),
                 height: 220
@@ -130,26 +147,81 @@ struct ResetHistoryView: View {
       }
       .frame(height: 220)
     } else {
-      monthlyBars(presentation.months)
+      monthlyBars(presentation.months, metric: presentation.metric)
         .frame(height: 220)
     }
   }
 
-  private func monthlyBars(_ months: [ResetHistoryPresentation.Month]) -> some View {
-    Chart(months) { month in
-      BarMark(
-        x: .value("Month", month.label),
-        y: .value("Count", month.count)
-      )
-      .foregroundStyle(Color.accentColor.gradient)
-      .cornerRadius(4)
-      .annotation(position: .top) {
-        Text(month.count, format: .number)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
+  private func monthlyBars(
+    _ months: [ResetHistoryPresentation.Month],
+    metric: ResetHistoryMetric
+  ) -> some View {
+    Chart {
+      ForEach(months) { month in
+        BarMark(
+          x: .value("Month", month.id),
+          y: .value("Count", month.count)
+        )
+        .foregroundStyle(Color.accentColor.gradient)
+        .cornerRadius(4)
+        .accessibilityLabel(Text(monthAccessibilityLabel(month, metric: metric)))
+      }
+
+      if let hoveredMonth = months.first(where: { $0.id == hoveredMonthID }) {
+        RuleMark(
+          x: .value("Month", hoveredMonth.id)
+        )
+        .foregroundStyle(.clear)
+        .annotation(position: .top, spacing: 8) {
+          Text(monthSummary(hoveredMonth))
+            .font(.caption.weight(.medium))
+            .monospacedDigit()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+              .regularMaterial,
+              in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
+        }
       }
     }
-    .accessibilityLabel(Text("Resets by month"))
+    .chartXAxis {
+      AxisMarks(values: months.map(\.id)) { value in
+        AxisValueLabel {
+          if let monthID = value.as(String.self),
+            let month = months.first(where: { $0.id == monthID })
+          {
+            Text(month.label)
+          }
+        }
+      }
+    }
+    .chartOverlay { chartProxy in
+      GeometryReader { geometryProxy in
+        Color.clear
+          .contentShape(Rectangle())
+          .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+              guard let plotFrame = chartProxy.plotFrame else {
+                hoveredMonthID = nil
+                return
+              }
+              let plotRect = geometryProxy[plotFrame]
+              let plotX = location.x - plotRect.minX
+              guard plotX >= 0, plotX <= plotRect.width else {
+                hoveredMonthID = nil
+                return
+              }
+              let monthID: String? = chartProxy.value(atX: plotX)
+              hoveredMonthID = months.contains(where: { $0.id == monthID }) ? monthID : nil
+            case .ended:
+              hoveredMonthID = nil
+            }
+          }
+      }
+    }
+    .accessibilityLabel(Text(chartTitle(metric)))
   }
 
   private func scrollToLatestMonth(
@@ -170,6 +242,42 @@ struct ResetHistoryView: View {
     case .twelveMonths: "12M"
     case .all: "All"
     }
+  }
+
+  private func chartTitle(_ metric: ResetHistoryMetric) -> LocalizedStringKey {
+    switch metric {
+    case .both: "Hard + banked resets by month"
+    case .hard: "Hard resets by month"
+    case .banked: "Banked resets by month"
+    }
+  }
+
+  private func monthSummary(_ month: ResetHistoryPresentation.Month) -> String {
+    String(
+      format: String(
+        localized: "%@, %lld resets",
+        bundle: .main,
+        locale: locale
+      ),
+      locale: locale,
+      month.label,
+      Int64(month.count)
+    )
+  }
+
+  private func monthAccessibilityLabel(
+    _ month: ResetHistoryPresentation.Month,
+    metric: ResetHistoryMetric
+  ) -> String {
+    let localizedMetric: String = switch metric {
+    case .both:
+      String(localized: "Both", bundle: .main, locale: locale)
+    case .hard:
+      String(localized: "Hard", bundle: .main, locale: locale)
+    case .banked:
+      String(localized: "Banked", bundle: .main, locale: locale)
+    }
+    return "\(localizedMetric): \(monthSummary(month))"
   }
 
   private func rangeAccessibilityLabel(_ range: ResetHistoryRange) -> LocalizedStringKey {
