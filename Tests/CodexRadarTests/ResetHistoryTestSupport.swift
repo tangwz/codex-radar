@@ -61,15 +61,19 @@ func resetHistoryMonthSummaryJSON(
   identifier: String? = nil,
   from: String? = nil,
   to: String? = nil,
-  count: Int? = nil
+  count: Int? = nil,
+  bankedCount: Int = 3,
+  bothCount: Int? = nil
 ) -> String {
   let interval = resetHistoryMonthInterval(
     year: year,
     month: month,
     timeZoneIdentifier: timeZoneIdentifier
   )
+  let hardCount = count ?? month
+  let resolvedBothCount = bothCount ?? min(2, hardCount, bankedCount)
   return """
-    {"month":"\(identifier ?? String(format: "%04d-%02d", year, month))","from":"\(from ?? interval.from)","to":"\(to ?? interval.to)","count":\(count ?? month)}
+    {"month":"\(identifier ?? String(format: "%04d-%02d", year, month))","from":"\(from ?? interval.from)","to":"\(to ?? interval.to)","count":\(hardCount),"counts":{"hard":\(hardCount),"banked":\(bankedCount),"both":\(resolvedBothCount)}}
     """
 }
 
@@ -96,6 +100,7 @@ func resetHistoryMonthSummariesJSON(
 }
 
 func resetHistoryJSON(
+  schemaVersion: String = "1.1",
   range: String = "6m",
   startYear: Int = 2026,
   startMonth: Int = 2,
@@ -142,13 +147,13 @@ func resetHistoryJSON(
 
   return """
     {
-      "schema_version":"1.0",
+      "schema_version":"\(schemaVersion)",
       "generated_at":"\(generatedAt)",
       "time_zone":"\(timeZoneIdentifier)",
       "range":"\(range)",
       "current":{
-        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2},
-        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(resolvedCurrentMonthCount)}
+        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2,"counts":{"hard":2,"banked":3,"both":2}},
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(resolvedCurrentMonthCount),"counts":{"hard":\(resolvedCurrentMonthCount),"banked":3,"both":\(min(2, resolvedCurrentMonthCount))}}
       },
       "months":[\(months)],
       "recent":[\(resolvedRecent)]

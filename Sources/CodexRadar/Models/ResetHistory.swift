@@ -1,9 +1,32 @@
 import Foundation
 
+struct ResetCounts: Decodable, Equatable, Sendable {
+  let hard: Int
+  let banked: Int
+  let both: Int
+
+  func validate() throws {
+    guard
+      hard >= 0,
+      banked >= 0,
+      both >= 0,
+      both <= hard,
+      both <= banked
+    else {
+      throw ResetCountsValidationError.invalidCounts
+    }
+  }
+}
+
+private enum ResetCountsValidationError: Error {
+  case invalidCounts
+}
+
 struct ResetHistoryInterval: Decodable, Equatable, Sendable {
   let from: Date
   let to: Date
   let count: Int
+  let counts: ResetCounts
 }
 
 struct ResetMonthSummary: Decodable, Equatable, Identifiable, Sendable {
@@ -11,6 +34,7 @@ struct ResetMonthSummary: Decodable, Equatable, Identifiable, Sendable {
   let from: Date
   let to: Date
   let count: Int
+  let counts: ResetCounts
 
   var id: String { month }
 }
@@ -59,6 +83,13 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     months = try container.decode([ResetMonthSummary].self, forKey: .months)
     recent = try container.decode([ResetHistoryEvent].self, forKey: .recent)
 
+    guard schemaVersion == "1.1" else {
+      throw invalidValue(
+        forKey: .schemaVersion,
+        in: container,
+        description: "Expected reset history schema version 1.1."
+      )
+    }
     guard let decodedTimeZone = TimeZone(identifier: timeZone) else {
       throw invalidValue(
         forKey: .timeZone, in: container, description: "Expected a valid time zone.")
@@ -250,6 +281,22 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     forKey key: CodingKeys,
     in container: KeyedDecodingContainer<CodingKeys>
   ) throws {
+    do {
+      try interval.counts.validate()
+    } catch {
+      throw invalidValue(
+        forKey: key,
+        in: container,
+        description: "Reset counts must be nonnegative and both cannot exceed hard or banked."
+      )
+    }
+    guard interval.count == interval.counts.hard else {
+      throw invalidValue(
+        forKey: key,
+        in: container,
+        description: "Legacy count must equal the hard reset count."
+      )
+    }
     guard interval.count >= 0 else {
       throw invalidValue(
         forKey: key, in: container, description: "Interval counts cannot be negative.")
@@ -266,7 +313,12 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     in container: KeyedDecodingContainer<CodingKeys>
   ) throws {
     try validate(
-      interval: ResetHistoryInterval(from: interval.from, to: interval.to, count: interval.count),
+      interval: ResetHistoryInterval(
+        from: interval.from,
+        to: interval.to,
+        count: interval.count,
+        counts: interval.counts
+      ),
       forKey: key,
       in: container
     )
