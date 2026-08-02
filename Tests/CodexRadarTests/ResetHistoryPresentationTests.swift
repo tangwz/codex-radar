@@ -5,12 +5,45 @@ import Testing
 
 struct ResetHistoryPresentationTests {
   @Test
+  func ordersMetricsForDashboardSelection() {
+    #expect(ResetHistoryMetric.allCases == [.both, .hard, .banked])
+  }
+
+  @Test(
+    arguments: [
+      (metric: ResetHistoryMetric.both, week: 2, month: 2, months: [2, 2, 2]),
+      (metric: ResetHistoryMetric.hard, week: 2, month: 7, months: [5, 6, 7]),
+      (metric: ResetHistoryMetric.banked, week: 3, month: 3, months: [3, 3, 3]),
+    ])
+  func projectsCountsForSelectedMetric(
+    metric: ResetHistoryMetric,
+    week: Int,
+    month: Int,
+    months: [Int]
+  ) throws {
+    let history = try decodeHistory(resetHistoryJSON())
+
+    let presentation = ResetHistoryPresentation(
+      history: history,
+      selectedRange: .threeMonths,
+      metric: metric,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(presentation.metric == metric)
+    #expect(presentation.weekCount == week)
+    #expect(presentation.monthCount == month)
+    #expect(presentation.months.map(\.count) == months)
+  }
+
+  @Test
   func cropsFixedRangeToNewestMonths() throws {
     let history = try decodeHistory(resetHistoryJSON())
 
     let presentation = ResetHistoryPresentation(
       history: history,
       selectedRange: .threeMonths,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
 
@@ -19,7 +52,6 @@ struct ResetHistoryPresentationTests {
     #expect(presentation.months.map(\.label) == ["May", "Jun", "Jul"])
     #expect(presentation.weekCount == 2)
     #expect(presentation.monthCount == 7)
-    #expect(presentation.recent.count == 2)
   }
 
   @Test
@@ -29,6 +61,7 @@ struct ResetHistoryPresentationTests {
     let presentation = ResetHistoryPresentation(
       history: history,
       selectedRange: .sixMonths,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
 
@@ -50,6 +83,7 @@ struct ResetHistoryPresentationTests {
     let presentation = ResetHistoryPresentation(
       history: history,
       selectedRange: .twelveMonths,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
 
@@ -76,6 +110,7 @@ struct ResetHistoryPresentationTests {
     let presentation = ResetHistoryPresentation(
       history: history,
       selectedRange: .all,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
 
@@ -97,11 +132,13 @@ struct ResetHistoryPresentationTests {
     let firstPresentation = ResetHistoryPresentation(
       history: firstHistory,
       selectedRange: .sixMonths,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
     let secondPresentation = ResetHistoryPresentation(
       history: secondHistory,
       selectedRange: .sixMonths,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
 
@@ -126,7 +163,7 @@ struct ResetHistoryPresentationTests {
   }
 
   @Test
-  func formatsLabelsAndRecentRowsInResponseTimeZone() throws {
+  func formatsLabelsInResponseTimeZone() throws {
     let resetAt = "2025-12-31T10:30:00Z"
     let kiritimatiHistory = try decodeHistory(
       resetHistoryJSON(
@@ -158,25 +195,20 @@ struct ResetHistoryPresentationTests {
     let kiritimatiPresentation = ResetHistoryPresentation(
       history: kiritimatiHistory,
       selectedRange: .all,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
     let losAngelesPresentation = ResetHistoryPresentation(
       history: losAngelesHistory,
       selectedRange: .all,
+      metric: .hard,
       locale: Locale(identifier: "en_US")
     )
 
-    #expect(kiritimatiHistory.recent.first?.resetAt == losAngelesHistory.recent.first?.resetAt)
     #expect(kiritimatiPresentation.months.map(\.label) == ["Dec 25", "Jan 26"])
     #expect(losAngelesPresentation.months.map(\.label) == ["Dec 25"])
     #expect(kiritimatiPresentation.rangeDescription == "Dec 2025 – Jan 2026")
     #expect(losAngelesPresentation.rangeDescription == "Dec 2025 – Dec 2025")
-    #expect(
-      kiritimatiPresentation.recent.first?.dateTime == "Jan 1, 2026 at 12:30\u{202F}AM"
-    )
-    #expect(
-      losAngelesPresentation.recent.first?.dateTime == "Dec 31, 2025 at 2:30\u{202F}AM"
-    )
   }
 }
 

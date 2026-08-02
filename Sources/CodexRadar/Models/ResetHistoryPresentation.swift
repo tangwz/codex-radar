@@ -1,5 +1,26 @@
 import Foundation
 
+enum ResetHistoryMetric: String, CaseIterable, Identifiable {
+  case both
+  case hard
+  case banked
+
+  var id: Self { self }
+}
+
+extension ResetCounts {
+  func count(for metric: ResetHistoryMetric) -> Int {
+    switch metric {
+    case .both:
+      both
+    case .hard:
+      hard
+    case .banked:
+      banked
+    }
+  }
+}
+
 struct ResetHistoryPresentation {
   struct Month: Identifiable, Equatable {
     let id: String
@@ -7,21 +28,17 @@ struct ResetHistoryPresentation {
     let count: Int
   }
 
-  struct Recent: Identifiable, Equatable {
-    let id: String
-    let dateTime: String
-  }
-
   let selectedRange: ResetHistoryRange
+  let metric: ResetHistoryMetric
   let rangeDescription: String
   let weekCount: Int
   let monthCount: Int
   let months: [Month]
-  let recent: [Recent]
 
   init(
     history: ResetHistory,
     selectedRange: ResetHistoryRange,
+    metric: ResetHistoryMetric,
     locale: Locale
   ) {
     let timeZone = TimeZone(identifier: history.timeZone)!
@@ -53,26 +70,17 @@ struct ResetHistoryPresentation {
     ).month(.abbreviated).year()
 
     self.selectedRange = selectedRange
+    self.metric = metric
     rangeDescription = [visibleSummaries.first, visibleSummaries.last]
       .compactMap { $0?.from.formatted(rangeStyle) }
       .joined(separator: " – ")
-    weekCount = history.current.week.count
-    monthCount = history.current.month.count
+    weekCount = history.current.week.counts.count(for: metric)
+    monthCount = history.current.month.counts.count(for: metric)
     months = visibleSummaries.map { summary in
       Month(
         id: summary.id,
         label: summary.from.formatted(monthStyle),
-        count: summary.count
-      )
-    }
-    recent = history.recent.map { event in
-      Recent(
-        id: event.id,
-        dateTime: DisplayFormatting.absoluteDate(
-          event.resetAt,
-          locale: locale,
-          timeZone: timeZone
-        )
+        count: summary.counts.count(for: metric)
       )
     }
   }

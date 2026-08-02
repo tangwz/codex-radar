@@ -14,6 +14,7 @@ struct ResetHistoryView: View {
           ResetHistoryPresentation(
             history: history,
             selectedRange: store.selectedRange,
+            metric: .both,
             locale: locale
           )
         )
@@ -35,7 +36,6 @@ struct ResetHistoryView: View {
         ResetCountTile(title: "This month", count: presentation.monthCount)
       }
       monthlyChart(presentation)
-      recentList(presentation)
       historyIssue
     }
   }
@@ -178,46 +178,6 @@ struct ResetHistoryView: View {
     case .sixMonths: "6 months"
     case .twelveMonths: "12 months"
     case .all: "All months"
-    }
-  }
-
-  private func recentList(_ presentation: ResetHistoryPresentation) -> some View {
-    let recent = Array(presentation.recent.prefix(5))
-
-    return VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Text("Recent resets")
-          .font(.headline)
-        Spacer()
-        Text("Latest 5")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-
-      if presentation.recent.isEmpty {
-        Text("No reset history")
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-      } else {
-        VStack(spacing: 0) {
-          ForEach(recent) { event in
-            HStack(spacing: 10) {
-              Image(systemName: "clock.arrow.circlepath")
-                .foregroundStyle(.secondary)
-              Text(event.dateTime)
-                .monospacedDigit()
-              Spacer()
-            }
-            .padding(.vertical, 10)
-
-            if event.id != recent.last?.id {
-              Divider()
-            }
-          }
-        }
-        .padding(.horizontal, 14)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
-      }
     }
   }
 
