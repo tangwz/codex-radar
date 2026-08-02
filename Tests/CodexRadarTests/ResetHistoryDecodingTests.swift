@@ -8,7 +8,7 @@ struct ResetHistoryDecodingTests {
   func decodesSixMonthRangeEndingInGeneratedAtMonth() throws {
     let history = try decodeHistory(resetHistoryJSON())
 
-    #expect(history.schemaVersion == "1.0")
+    #expect(history.schemaVersion == "1.1")
     #expect(history.range == .sixMonths)
     #expect(
       history.months.map(\.month) == [
@@ -16,6 +16,65 @@ struct ResetHistoryDecodingTests {
         "2026-05", "2026-06", "2026-07",
       ])
     #expect(history.current.month.count == history.months.last?.count)
+    #expect(history.current.week.counts == ResetCounts(hard: 2, banked: 3, both: 2))
+    #expect(history.current.month.counts == ResetCounts(hard: 7, banked: 3, both: 2))
+    #expect(history.months.first?.counts == ResetCounts(hard: 2, banked: 3, both: 2))
+  }
+
+  @Test
+  func rejectsMissingCounts() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: ",\"counts\":{\"hard\":2,\"banked\":3,\"both\":2}",
+      with: ""
+    )
+
+    expectDecodingFailure(json)
+  }
+
+  @Test(arguments: ["hard", "banked", "both"])
+  func rejectsNegativeResetCounts(_ field: String) {
+    let validValue = field == "banked" ? 3 : 2
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: "\"\(field)\":\(validValue)",
+      with: "\"\(field)\":-1"
+    )
+
+    expectDecodingFailure(json)
+  }
+
+  @Test
+  func rejectsLegacyCountDifferentFromHardCount() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: "\"hard\":2",
+      with: "\"hard\":3"
+    )
+
+    expectDecodingFailure(json)
+  }
+
+  @Test
+  func rejectsBothCountGreaterThanHardCount() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: "\"hard\":2,\"banked\":3,\"both\":2",
+      with: "\"hard\":2,\"banked\":3,\"both\":3"
+    )
+
+    expectDecodingFailure(json)
+  }
+
+  @Test
+  func rejectsBothCountGreaterThanBankedCount() {
+    let json = resetHistoryJSON().replacingOccurrences(
+      of: "\"hard\":2,\"banked\":3,\"both\":2",
+      with: "\"hard\":2,\"banked\":1,\"both\":2"
+    )
+
+    expectDecodingFailure(json)
+  }
+
+  @Test
+  func rejectsUnsupportedSchemaVersion() {
+    expectDecodingFailure(resetHistoryJSON(schemaVersion: "1.0"))
   }
 
   @Test(arguments: ["3m", "12m", "all"])
@@ -157,9 +216,9 @@ struct ResetHistoryDecodingTests {
     )
     let week = resetHistoryJSON().replacingOccurrences(
       of:
-        "\"week\":{\"from\":\"\(current.weekFrom)\",\"to\":\"\(current.weekTo)\",\"count\":2}",
+        "\"week\":{\"from\":\"\(current.weekFrom)\",\"to\":\"\(current.weekTo)\",\"count\":2,\"counts\":{\"hard\":2,\"banked\":3,\"both\":2}}",
       with:
-        "\"week\":{\"from\":\"\(current.weekFrom)\",\"to\":\"\(current.weekTo)\",\"count\":1}"
+        "\"week\":{\"from\":\"\(current.weekFrom)\",\"to\":\"\(current.weekTo)\",\"count\":1,\"counts\":{\"hard\":1,\"banked\":3,\"both\":1}}"
     )
     let currentMonthSummary = resetHistoryMonthSummaryJSON(
       year: 2026,
