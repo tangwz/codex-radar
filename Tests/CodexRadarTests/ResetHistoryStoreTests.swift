@@ -1739,8 +1739,22 @@ private func historyV12(
   generatedAt: Date = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
 ) -> ResetHistory {
   let formatter = ISO8601DateFormatter()
+  let generatedAtText = formatter.string(from: generatedAt)
+  let days = resetHistoryDayJSONs(
+    generatedAt: generatedAtText,
+    activeKinds: [
+      28: .hardAndBanked(2),
+      29: .banked(1),
+    ]
+  )
   return try! APIJSONCoding.makeDecoder().decode(
     ResetHistory.self,
-    from: Data(resetHistoryV12JSON(generatedAt: formatter.string(from: generatedAt)).utf8)
+    from: Data(
+      resetHistoryV12JSON(
+        generatedAt: generatedAtText,
+        days: days,
+        currentWeekCounts: ResetHistoryCountsFixture(hard: 2, banked: 3, both: 2)
+      ).utf8
+    )
   )
 }

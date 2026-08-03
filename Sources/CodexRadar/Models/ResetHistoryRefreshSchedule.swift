@@ -5,17 +5,8 @@ enum ResetHistoryRefreshSchedule {
     after generatedAt: Date,
     timeZone: TimeZone
   ) -> Date? {
-    var weekCalendar = Calendar(identifier: .iso8601)
-    weekCalendar.timeZone = timeZone
-    var monthCalendar = Calendar(identifier: .gregorian)
-    monthCalendar.timeZone = timeZone
-
-    guard
-      let week = weekCalendar.dateInterval(of: .weekOfYear, for: generatedAt),
-      let month = monthCalendar.dateInterval(of: .month, for: generatedAt)
-    else {
-      return nil
-    }
-    return min(week.end, month.end).addingTimeInterval(1)
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    return calendar.dateInterval(of: .day, for: generatedAt)?.end.addingTimeInterval(1)
   }
 }

@@ -5,9 +5,9 @@ import Testing
 
 struct ResetHistoryRefreshScheduleTests {
   @Test
-  func choosesFollowingISOMondayBeforeMonthEnd() throws {
+  func choosesNextLocalDayBoundaryOnOrdinaryWeekday() throws {
     let generatedAt = try date("2026-07-22T09:00:00Z")
-    let expected = try date("2026-07-26T16:00:01Z")
+    let expected = try date("2026-07-22T16:00:01Z")
     let zone = try #require(TimeZone(identifier: "Asia/Shanghai"))
 
     #expect(
@@ -16,7 +16,7 @@ struct ResetHistoryRefreshScheduleTests {
   }
 
   @Test
-  func choosesMonthBoundaryBeforeWeekEnd() throws {
+  func choosesNextLocalDayAtMonthEnd() throws {
     let generatedAt = try date("2026-07-31T12:00:00Z")
     let expected = try date("2026-07-31T16:00:01Z")
     let zone = try #require(TimeZone(identifier: "Asia/Shanghai"))
@@ -45,7 +45,7 @@ struct ResetHistoryRefreshScheduleTests {
   @Test
   func targetsLocalMidnightAcrossDSTTransition() throws {
     let generatedAt = try date("2026-03-07T20:00:00Z")
-    let expected = try date("2026-03-09T07:00:01Z")
+    let expected = try date("2026-03-08T08:00:01Z")
     let zone = try #require(TimeZone(identifier: "America/Los_Angeles"))
 
     #expect(

@@ -14,6 +14,12 @@ struct ResetHistoryCurrentIntervals {
   let monthTo: String
 }
 
+struct ResetHistoryCountsFixture {
+  let hard: Int
+  let banked: Int
+  let both: Int
+}
+
 func resetHistoryCurrentIntervals(
   generatedAt: Date,
   timeZoneIdentifier: String
@@ -115,8 +121,13 @@ func resetHistoryJSON(
   timeZoneIdentifier: String = "Asia/Shanghai",
   generatedAt: String = "2026-07-19T09:00:00Z",
   currentMonthCount: Int? = nil,
+  currentWeekCounts: ResetHistoryCountsFixture = ResetHistoryCountsFixture(
+    hard: 2,
+    banked: 3,
+    both: 2
+  ),
   days: String? = nil,
-  recent: String = ""
+  recent: String? = nil
 ) -> String {
   let boundaryTimeZone =
     TimeZone(identifier: timeZoneIdentifier) == nil ? "UTC" : timeZoneIdentifier
@@ -146,12 +157,10 @@ func resetHistoryJSON(
   let resolvedCurrentMonthCount = currentMonthCount ?? derivedCurrentMonthCount
   let formatter = ISO8601DateFormatter()
   let resolvedRecent =
-    recent.isEmpty
-    ? """
-    {"id":"reset-2","reset_at":"\(formatter.string(from: generatedAtDate.addingTimeInterval(-3_600)))"},
-    {"id":"reset-1","reset_at":"\(formatter.string(from: generatedAtDate.addingTimeInterval(-7_200)))"}
-    """
-    : recent
+    recent ?? """
+      {"id":"reset-2","reset_at":"\(formatter.string(from: generatedAtDate.addingTimeInterval(-3_600)))"},
+      {"id":"reset-1","reset_at":"\(formatter.string(from: generatedAtDate.addingTimeInterval(-7_200)))"}
+      """
   let resolvedDays = days.map { ",\n  \"days\":[\($0)]" } ?? ""
 
   return """
@@ -161,7 +170,7 @@ func resetHistoryJSON(
       "time_zone":"\(timeZoneIdentifier)",
       "range":"\(range)",
       "current":{
-        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":2,"counts":{"hard":2,"banked":3,"both":2}},
+        "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":\(currentWeekCounts.hard),"counts":{"hard":\(currentWeekCounts.hard),"banked":\(currentWeekCounts.banked),"both":\(currentWeekCounts.both)}},
         "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(resolvedCurrentMonthCount),"counts":{"hard":\(resolvedCurrentMonthCount),"banked":3,"both":\(min(2, resolvedCurrentMonthCount))}}
       },
       "months":[\(months)]\(resolvedDays),
@@ -231,7 +240,12 @@ func resetHistoryDayJSONs(
 func resetHistoryV12JSON(
   generatedAt: String = "2026-07-19T09:00:00Z",
   timeZoneIdentifier: String = "Asia/Shanghai",
-  days: [String]? = nil
+  days: [String]? = nil,
+  currentWeekCounts: ResetHistoryCountsFixture = ResetHistoryCountsFixture(
+    hard: 0,
+    banked: 0,
+    both: 0
+  )
 ) -> String {
   let generatedAtDate = ISO8601DateFormatter().date(from: generatedAt)!
   let timeZone = TimeZone(identifier: timeZoneIdentifier)!
@@ -253,6 +267,8 @@ func resetHistoryV12JSON(
     startMonth: calendar.component(.month, from: firstMonth),
     timeZoneIdentifier: timeZoneIdentifier,
     generatedAt: generatedAt,
-    days: resolvedDays.joined(separator: ",")
+    currentWeekCounts: currentWeekCounts,
+    days: resolvedDays.joined(separator: ","),
+    recent: ""
   )
 }
