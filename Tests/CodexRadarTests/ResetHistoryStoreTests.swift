@@ -7,6 +7,112 @@ import Testing
 struct ResetHistoryStoreTests {
   @MainActor
   @Test
+  func v11HistoryKeepsStatisticsWithUnavailableRadarCapability() async throws {
+    let context = makeContext()
+    await loadInitialHistory(context)
+    let retained = try #require(context.store.history)
+
+    let statistics = ResetHistoryPresentation(
+      history: retained,
+      selectedRange: context.store.selectedRange,
+      metric: .both,
+      locale: Locale(identifier: "en_US")
+    )
+
+    #expect(statistics.months.count == 6)
+    #expect(statistics.weekCount == 2)
+    #expect(ResetRadarPresentation(history: retained, locale: Locale(identifier: "en_US")) == nil)
+  }
+
+  @MainActor
+  @Test
+  func v12HistoryKeepsStatisticsAndThirtyRadarDays() async throws {
+    let context = makeContext()
+    let snapshot = historyV12()
+
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(snapshot))
+    await expectStoreIdle(context.store)
+
+    let retained = try #require(context.store.history)
+    let statistics = ResetHistoryPresentation(
+      history: retained,
+      selectedRange: context.store.selectedRange,
+      metric: .both,
+      locale: Locale(identifier: "en_US")
+    )
+    let radar = try #require(
+      ResetRadarPresentation(history: retained, locale: Locale(identifier: "en_US"))
+    )
+
+    #expect(statistics.months.count == 6)
+    #expect(statistics.weekCount == 2)
+    #expect(radar.days.count == 30)
+  }
+
+  @MainActor
+  @Test
+  func invalidV12RefreshRetainsLastGoodSnapshot() async throws {
+    let context = makeContext()
+    let snapshot = historyV12()
+
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(snapshot))
+    await expectStoreIdle(context.store)
+
+    context.store.refresh(timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .failure(.invalidResponse))
+    await expectStoreIdle(context.store)
+
+    #expect(context.store.history == snapshot)
+    #expect(context.store.history?.radarDays?.count == 30)
+    #expect(context.store.issue == "History unavailable")
+  }
+
+  @MainActor
+  @Test
+  func failedBoundaryRefreshRetainsRadarAsLatestAfterLocalMidnight() async throws {
+    let generatedAt = try #require(
+      ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")
+    )
+    let afterLocalMidnight = try #require(
+      ISO8601DateFormatter().date(from: "2026-07-19T16:01:00Z")
+    )
+    let context = makeContext(now: { generatedAt })
+    let snapshot = historyV12(generatedAt: generatedAt)
+
+    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(snapshot))
+    await expectStoreIdle(context.store)
+    await expectWaitCount(1, waiter: context.waiter)
+
+    await context.waiter.fireNext()
+    await expectCallCount(2, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .failure(.unavailable))
+    await expectStoreIdle(context.store)
+
+    let retained = try #require(context.store.history)
+    let radar = try #require(
+      ResetRadarPresentation(
+        history: retained,
+        locale: Locale(identifier: "en_US"),
+        now: afterLocalMidnight
+      )
+    )
+    let todayDays = radar.days.filter { $0.isToday }
+
+    #expect(retained == snapshot)
+    #expect(radar.endMarker == .latest)
+    #expect(todayDays.isEmpty)
+    #expect(context.store.issue == "History unavailable")
+  }
+
+  @MainActor
+  @Test
   func firstDashboardAppearanceRequestsSixMonths() async {
     let context = makeContext()
 
@@ -1626,5 +1732,15 @@ private func history(
         generatedAt: formatter.string(from: generatedAt)
       ).utf8
     )
+  )
+}
+
+private func historyV12(
+  generatedAt: Date = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
+) -> ResetHistory {
+  let formatter = ISO8601DateFormatter()
+  return try! APIJSONCoding.makeDecoder().decode(
+    ResetHistory.self,
+    from: Data(resetHistoryV12JSON(generatedAt: formatter.string(from: generatedAt)).utf8)
   )
 }
