@@ -192,6 +192,13 @@ struct ResetHistory: Decodable, Equatable, Sendable {
             "Reset radar days must be contiguous natural days with one valid classification."
         )
       }
+      guard day.counts.hard >= recentCount(from: day.from, to: day.to) else {
+        throw invalidValue(
+          forKey: .days,
+          in: container,
+          description: "Reset radar days cannot be lower than matching recent reset events."
+        )
+      }
       previousEnd = day.to
     }
 

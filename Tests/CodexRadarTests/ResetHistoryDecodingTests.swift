@@ -435,6 +435,23 @@ struct ResetHistoryDecodingTests {
   }
 
   @Test
+  func rejectsRadarDayBelowMatchingRecentCount() {
+    let days = resetHistoryDayJSONs(activeKinds: [23: .hard(1)])
+
+    expectDataCorruptedFailure(
+      resetHistoryV12JSON(
+        days: days,
+        recent: """
+          {"id":"reset-sunday","reset_at":"2026-07-19T08:00:00Z"}
+          """,
+        currentMonthCounts: ResetHistoryCountsFixture(hard: 1, banked: 0, both: 0),
+        currentWeekCounts: ResetHistoryCountsFixture(hard: 1, banked: 0, both: 0)
+      ),
+      forKey: "days"
+    )
+  }
+
+  @Test
   func rejectsCurrentAggregatesBelowMatchingRecentCount() {
     let generatedAt = ISO8601DateFormatter().date(from: "2026-07-19T09:00:00Z")!
     let current = resetHistoryCurrentIntervals(

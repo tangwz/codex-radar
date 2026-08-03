@@ -255,6 +255,7 @@ func resetHistoryV12JSON(
   generatedAt: String = "2026-07-19T09:00:00Z",
   timeZoneIdentifier: String = "Asia/Shanghai",
   days: [String]? = nil,
+  recent: String = "",
   currentMonthCounts: ResetHistoryCountsFixture = ResetHistoryCountsFixture(
     hard: 0,
     banked: 0,
@@ -289,6 +290,6 @@ func resetHistoryV12JSON(
     currentMonthCounts: currentMonthCounts,
     currentWeekCounts: currentWeekCounts,
     days: resolvedDays.joined(separator: ","),
-    recent: ""
+    recent: recent
   )
 }
