@@ -325,9 +325,11 @@ struct ResetHistory: Decodable, Equatable, Sendable {
         description: "Current counts cannot be lower than matching recent reset events."
       )
     }
-    guard months.allSatisfy({
-      $0.count >= recentCount(from: $0.from, to: $0.to)
-    }) else {
+    guard
+      months.allSatisfy({
+        $0.count >= recentCount(from: $0.from, to: $0.to)
+      })
+    else {
       throw invalidValue(
         forKey: .months,
         in: container,

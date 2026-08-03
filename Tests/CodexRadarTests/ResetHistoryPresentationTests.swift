@@ -205,8 +205,12 @@ struct ResetHistoryPresentationTests {
       )
     )
     #expect(viewSource.contains("ResetRadarUnavailableView()"))
-    #expect(!viewSource.contains("ResetRadarPresentation(\n            history: history,\n            selectedRange:"))
-    #expect(!viewSource.contains("ResetRadarPresentation(\n            history: history,\n            metric:"))
+    #expect(
+      !viewSource.contains(
+        "ResetRadarPresentation(\n            history: history,\n            selectedRange:"))
+    #expect(
+      !viewSource.contains(
+        "ResetRadarPresentation(\n            history: history,\n            metric:"))
   }
 
   @Test
