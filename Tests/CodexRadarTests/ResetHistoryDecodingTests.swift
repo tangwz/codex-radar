@@ -153,6 +153,16 @@ struct ResetHistoryDecodingTests {
   }
 
   @Test
+  func rejectsRadarDaysThatDisagreeWithCurrentWeekCounts() {
+    expectDataCorruptedFailure(
+      resetHistoryV12JSON(
+        currentWeekCounts: ResetHistoryCountsFixture(hard: 1, banked: 0, both: 0)
+      ),
+      forKey: "days"
+    )
+  }
+
+  @Test
   func rejectsV11ResponseContainingRadarDays() {
     expectDecodingFailure(
       resetHistoryJSON(

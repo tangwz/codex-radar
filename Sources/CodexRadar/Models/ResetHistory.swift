@@ -194,6 +194,26 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       }
       previousEnd = day.to
     }
+
+    let currentWeekCounts = radarDays.reduce(
+      into: (hard: 0, banked: 0, both: 0)
+    ) { result, day in
+      guard day.from >= current.week.from, day.to <= current.week.to else { return }
+      result.hard += day.counts.hard
+      result.banked += day.counts.banked
+      result.both += day.counts.both
+    }
+    guard
+      currentWeekCounts.hard == current.week.counts.hard,
+      currentWeekCounts.banked == current.week.counts.banked,
+      currentWeekCounts.both == current.week.counts.both
+    else {
+      throw invalidValue(
+        forKey: .days,
+        in: container,
+        description: "Reset radar days must match the current week counts."
+      )
+    }
   }
 
   private func naturalDayInterval(
