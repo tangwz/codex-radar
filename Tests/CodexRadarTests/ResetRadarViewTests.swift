@@ -45,6 +45,7 @@ struct ResetRadarViewTests {
     #expect(source.contains(".focused($focusedDayID"))
     #expect(source.contains(".accessibilityLabel"))
     #expect(source.contains("selectedDayID"))
+    #expect(!source.contains(".help("))
   }
 
   @Test

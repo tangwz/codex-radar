@@ -80,6 +80,37 @@ struct ResetHistoryDecodingTests {
   }
 
   @Test
+  func validatesNaturalRadarDayWhenLocalMidnightIsSkipped() throws {
+    let generatedAt = "2018-11-10T12:00:00Z"
+    let timeZone = "America/Sao_Paulo"
+    let days = resetHistoryDayJSONs(
+      generatedAt: generatedAt,
+      timeZoneIdentifier: timeZone
+    )
+
+    let history = try decodeHistory(
+      resetHistoryV12JSON(
+        generatedAt: generatedAt,
+        timeZoneIdentifier: timeZone,
+        days: days
+      )
+    )
+    let skippedMidnight = try #require(
+      history.radarDays?.first { $0.day == "2018-11-04" }
+    )
+
+    #expect(
+      skippedMidnight.from
+        == ISO8601DateFormatter().date(from: "2018-11-04T03:00:00Z")
+    )
+    #expect(
+      skippedMidnight.to
+        == ISO8601DateFormatter().date(from: "2018-11-05T02:00:00Z")
+    )
+    #expect(skippedMidnight.to.timeIntervalSince(skippedMidnight.from) == 23 * 60 * 60)
+  }
+
+  @Test
   func rejectsRadarWindowThatDoesNotEndOnGeneratedAtLocalDay() {
     expectDecodingFailure(
       resetHistoryJSON(

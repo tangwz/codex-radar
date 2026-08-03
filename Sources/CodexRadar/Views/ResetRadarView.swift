@@ -101,7 +101,6 @@ struct ResetRadarView: View {
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(Text(accessibilityLabel(for: day)))
-      .help(accessibilityLabel(for: day))
       .zIndex(selectedDayID == day.id ? 1 : 0)
   }
 

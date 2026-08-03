@@ -183,7 +183,7 @@ func resetHistoryDayJSON(
   var calendar = Calendar(identifier: .gregorian)
   calendar.timeZone = timeZone
   let start = calendar.startOfDay(for: date)
-  let end = calendar.date(byAdding: .day, value: 1, to: start)!
+  let end = calendar.dateInterval(of: .day, for: start)!.end
   let dayFormatter = DateFormatter()
   dayFormatter.calendar = calendar
   dayFormatter.locale = Locale(identifier: "en_US_POSIX")

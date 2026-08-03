@@ -145,12 +145,6 @@ struct ResetHistory: Decodable, Equatable, Sendable {
 
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = timeZone
-    let dayFormatter = DateFormatter()
-    dayFormatter.calendar = calendar
-    dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-    dayFormatter.timeZone = timeZone
-    dayFormatter.dateFormat = "yyyy-MM-dd"
-    dayFormatter.isLenient = false
 
     let expectedLastStart = calendar.startOfDay(for: generatedAt)
     guard
@@ -183,11 +177,12 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       guard
         day.count == day.counts.hard,
         hasValidRadarClassification(day.counts),
-        let parsedDay = dayFormatter.date(from: day.day),
-        dayFormatter.string(from: parsedDay) == day.day,
-        parsedDay == day.from,
-        let expectedEnd = calendar.date(byAdding: .day, value: 1, to: parsedDay),
-        day.to == expectedEnd,
+        let expectedInterval = naturalDayInterval(
+          for: day.day,
+          calendar: calendar
+        ),
+        expectedInterval.start == day.from,
+        expectedInterval.end == day.to,
         previousEnd == nil || previousEnd == day.from
       else {
         throw invalidValue(
@@ -199,6 +194,48 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       }
       previousEnd = day.to
     }
+  }
+
+  private func naturalDayInterval(
+    for identifier: String,
+    calendar: Calendar
+  ) -> DateInterval? {
+    guard
+      identifier.range(
+        of: #"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"#,
+        options: .regularExpression
+      ) != nil
+    else { return nil }
+    let parts = identifier.split(separator: "-")
+    guard
+      parts.count == 3,
+      let year = Int(parts[0]),
+      let month = Int(parts[1]),
+      let day = Int(parts[2])
+    else { return nil }
+    let components = DateComponents(
+      timeZone: calendar.timeZone,
+      year: year,
+      month: month,
+      day: day,
+      hour: 0,
+      minute: 0,
+      second: 0
+    )
+    guard
+      let candidate = calendar.date(from: components),
+      let interval = calendar.dateInterval(of: .day, for: candidate)
+    else { return nil }
+    let resolved = calendar.dateComponents(
+      [.year, .month, .day],
+      from: interval.start
+    )
+    guard
+      resolved.year == year,
+      resolved.month == month,
+      resolved.day == day
+    else { return nil }
+    return interval
   }
 
   private func hasValidRadarClassification(_ counts: ResetCounts) -> Bool {
