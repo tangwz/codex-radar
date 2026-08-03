@@ -25,14 +25,14 @@
 
 ## 下载与首次安装
 
-当前公开版本是 [CodexRadar v0.1.3](https://github.com/tangwz/codex-radar/releases/tag/v0.1.3)。下载版本固定的
-Universal ZIP <https://github.com/tangwz/codex-radar/releases/download/v0.1.3/CodexRadar-v0.1.3-macos-universal.zip>
-和对应的 SHA-256 文件 <https://github.com/tangwz/codex-radar/releases/download/v0.1.3/CodexRadar-v0.1.3-macos-universal.zip.sha256>，然后校验：
+当前公开版本是 [CodexRadar v0.1.4](https://github.com/tangwz/codex-radar/releases/tag/v0.1.4)。下载版本固定的
+Universal ZIP <https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip>
+和对应的 SHA-256 文件 <https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip.sha256>，然后校验：
 
 ```bash
-curl -LO https://github.com/tangwz/codex-radar/releases/download/v0.1.3/CodexRadar-v0.1.3-macos-universal.zip
-curl -LO https://github.com/tangwz/codex-radar/releases/download/v0.1.3/CodexRadar-v0.1.3-macos-universal.zip.sha256
-shasum -a 256 --check CodexRadar-v0.1.3-macos-universal.zip.sha256
+curl -LO https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip
+curl -LO https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip.sha256
+shasum -a 256 --check CodexRadar-v0.1.4-macos-universal.zip.sha256
 ```
 
 SHA-256 只能确认下载字节与该 Release 资产一致，不能证明开发者身份。当前应用是 ad-hoc signed，不是 Developer ID signed，也未 notarized；首次手动下载与 GitHub 分发渠道仍是独立的引导信任边界。
