@@ -58,6 +58,16 @@
 "Today" = "今天";
 "This month" = "本月";
 "Reset statistics" = "重置统计";
+"Reset radar" = "重置雷达";
+"Last 30 days" = "最近 30 天";
+"%lld active days" = "%lld 个活跃日";
+"Hard reset" = "硬重置";
+"Banked reset" = "Banked 重置";
+"Hard + banked" = "Hard + Banked";
+"No reset" = "无重置";
+"Today · %@" = "今天 · %@";
+"Latest · %@" = "最新 · %@";
+"Reset radar unavailable" = "重置雷达暂不可用";
 "This week" = "本周";
 "Reset type" = "重置类型";
 "Both" = "二者同时";

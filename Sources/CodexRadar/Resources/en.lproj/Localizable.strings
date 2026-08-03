@@ -58,6 +58,16 @@
 "Today" = "Today";
 "This month" = "This month";
 "Reset statistics" = "Reset statistics";
+"Reset radar" = "Reset radar";
+"Last 30 days" = "Last 30 days";
+"%lld active days" = "%lld active days";
+"Hard reset" = "Hard reset";
+"Banked reset" = "Banked reset";
+"Hard + banked" = "Hard + banked";
+"No reset" = "No reset";
+"Today · %@" = "Today · %@";
+"Latest · %@" = "Latest · %@";
+"Reset radar unavailable" = "Reset radar unavailable";
 "This week" = "This week";
 "Reset type" = "Reset type";
 "Both" = "Both";
