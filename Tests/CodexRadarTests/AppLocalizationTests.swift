@@ -179,9 +179,10 @@ struct AppLocalizationTests {
   }
 
   private func localizedStringsTable(for language: AppLanguage) -> [String: String] {
-    let languageCode = Bundle.module.localizations.first {
-      $0.caseInsensitiveCompare(language.rawValue) == .orderedSame
-    } ?? language.rawValue
+    let languageCode =
+      Bundle.module.localizations.first {
+        $0.caseInsensitiveCompare(language.rawValue) == .orderedSame
+      } ?? language.rawValue
     let localizationPath = try! #require(
       Bundle.module.path(forResource: languageCode, ofType: "lproj")
     )

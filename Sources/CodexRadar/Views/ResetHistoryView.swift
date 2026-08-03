@@ -278,14 +278,15 @@ struct ResetHistoryView: View {
     _ month: ResetHistoryPresentation.Month,
     metric: ResetHistoryMetric
   ) -> String {
-    let localizedMetric: String = switch metric {
-    case .both:
-      String(localized: "Both", bundle: .main, locale: locale)
-    case .hard:
-      String(localized: "Hard", bundle: .main, locale: locale)
-    case .banked:
-      String(localized: "Banked", bundle: .main, locale: locale)
-    }
+    let localizedMetric: String =
+      switch metric {
+      case .both:
+        String(localized: "Both", bundle: .main, locale: locale)
+      case .hard:
+        String(localized: "Hard", bundle: .main, locale: locale)
+      case .banked:
+        String(localized: "Banked", bundle: .main, locale: locale)
+      }
     return "\(localizedMetric): \(monthSummary(month))"
   }
 

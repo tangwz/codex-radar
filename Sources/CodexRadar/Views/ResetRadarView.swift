@@ -156,12 +156,13 @@ struct ResetRadarView: View {
   }
 
   private var endMarkerLabel: String {
-    let format: String = switch presentation.endMarker {
-    case .today:
-      String(localized: "Today · %@", bundle: .main, locale: locale)
-    case .latest:
-      String(localized: "Latest · %@", bundle: .main, locale: locale)
-    }
+    let format: String =
+      switch presentation.endMarker {
+      case .today:
+        String(localized: "Today · %@", bundle: .main, locale: locale)
+      case .latest:
+        String(localized: "Latest · %@", bundle: .main, locale: locale)
+      }
     return String(format: format, locale: locale, presentation.endLabel)
   }
 
