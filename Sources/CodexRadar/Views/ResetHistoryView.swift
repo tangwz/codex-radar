@@ -18,7 +18,8 @@ struct ResetHistoryView: View {
             selectedRange: store.selectedRange,
             metric: selectedMetric,
             locale: locale
-          )
+          ),
+          radar: ResetRadarPresentation(history: history, locale: locale)
         )
       } else if store.issue != nil && !store.isLoading {
         unavailableContent
@@ -30,12 +31,20 @@ struct ResetHistoryView: View {
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
   }
 
-  private func historyContent(_ presentation: ResetHistoryPresentation) -> some View {
+  private func historyContent(
+    _ presentation: ResetHistoryPresentation,
+    radar: ResetRadarPresentation?
+  ) -> some View {
     VStack(alignment: .leading, spacing: 18) {
       header
       HStack(spacing: 12) {
         ResetCountTile(title: "This week", count: presentation.weekCount)
         ResetCountTile(title: "This month", count: presentation.monthCount)
+      }
+      if let radar {
+        ResetRadarView(presentation: radar)
+      } else {
+        ResetRadarUnavailableView()
       }
       monthlyChart(presentation)
       historyIssue

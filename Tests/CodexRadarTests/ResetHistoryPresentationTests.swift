@@ -185,6 +185,31 @@ struct ResetHistoryPresentationTests {
   }
 
   @Test
+  func resetRadarIsIndependentAndAppearsBeforeTheMonthlyChart() throws {
+    let viewSource = try resetHistoryViewSource()
+    let countTiles = try #require(
+      viewSource.range(of: "ResetCountTile(title: \"This month\"")
+    )
+    let radar = try #require(
+      viewSource.range(of: "ResetRadarView(presentation: radar)")
+    )
+    let chart = try #require(
+      viewSource.range(of: "monthlyChart(presentation)")
+    )
+
+    #expect(countTiles.lowerBound < radar.lowerBound)
+    #expect(radar.lowerBound < chart.lowerBound)
+    #expect(
+      viewSource.contains(
+        "radar: ResetRadarPresentation(history: history, locale: locale)"
+      )
+    )
+    #expect(viewSource.contains("ResetRadarUnavailableView()"))
+    #expect(!viewSource.contains("ResetRadarPresentation(\n            history: history,\n            selectedRange:"))
+    #expect(!viewSource.contains("ResetRadarPresentation(\n            history: history,\n            metric:"))
+  }
+
+  @Test
   func resetChartHoverResolvesStableMonthIDsAndClearsOnExit() throws {
     let viewSource = try resetHistoryViewSource()
 
