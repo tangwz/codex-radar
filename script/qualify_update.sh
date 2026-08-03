@@ -189,7 +189,7 @@ else
   real_file "$built_info" "built Sparkle CLI Info.plist"
   assert_plist "$built_info" CFBundleShortVersionString "$EXPECTED_SPARKLE_VERSION" "built Sparkle CLI version must equal $EXPECTED_SPARKLE_VERSION"
   /usr/bin/file "$built_cli" | /usr/bin/grep -F 'Mach-O' >/dev/null || die "built Sparkle CLI must be Mach-O"
-  /bin/cp "$built_cli" "$cli"; /bin/chmod 755 "$cli"
+  cli="$built_cli"
 fi
 real_file "$cli" "verified Sparkle CLI"; [[ -x "$cli" ]] || die "verified Sparkle CLI must be executable"
 

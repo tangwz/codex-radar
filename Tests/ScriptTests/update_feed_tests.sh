@@ -2713,7 +2713,12 @@ set -euo pipefail
 
 printf '%s\n' "$@" >"$QUALIFY_TEST_RUNNER_ARGUMENTS"
 [[ "$#" -eq 9 ]]
-[[ "$(/usr/bin/basename "$1")" == sparkle-cli ]]
+runner_mode="${QUALIFY_TEST_RUNNER_MODE:-success}"
+if [[ "$runner_mode" == built-cli-framework ]]; then
+  [[ "$1" == */sparkle.app/Contents/MacOS/sparkle ]]
+else
+  [[ "$(/usr/bin/basename "$1")" == sparkle-cli ]]
+fi
 [[ "$1" != "$QUALIFY_TEST_BUNDLE_CLI" ]]
 [[ "$3" == --application ]]
 [[ "$4" == "$2" ]]
@@ -2724,8 +2729,12 @@ printf '%s\n' "$@" >"$QUALIFY_TEST_RUNNER_ARGUMENTS"
 [[ "$9" == --verbose ]]
 /usr/bin/curl --fail --silent "$7" >/dev/null
 
-case "${QUALIFY_TEST_RUNNER_MODE:-success}" in
+case "$runner_mode" in
   success)
+    /bin/cp "$QUALIFY_TEST_CANDIDATE_INFO" "$2/Contents/Info.plist"
+    ;;
+  built-cli-framework)
+    "$1"
     /bin/cp "$QUALIFY_TEST_CANDIDATE_INFO" "$2/Contents/Info.plist"
     ;;
   mutate-source)
@@ -2785,6 +2794,8 @@ DITTO
 
 qualification_fetch="$fixture_root/qualification-fetch"
 qualification_harness="$fixture_root/qualify-update-harness.sh"
+qualification_build_harness="$fixture_root/qualify-update-build-harness.sh"
+qualification_xcodebuild="$fixture_root/qualification-xcodebuild"
 qualification_tools_root="$fixture_root/qualification-tools"
 qualification_tools_archive="$fixture_root/Sparkle-2.9.4-test.tar.xz"
 /bin/mkdir -p "$qualification_tools_root/bin"
@@ -2797,11 +2808,54 @@ qualification_tools_sha="$(/usr/bin/shasum -a 256 "$qualification_tools_archive"
   printf '/bin/cp "$QUALIFY_TEST_CURRENT_FEED" "$2"\n'
 } >"$qualification_fetch"
 /bin/chmod 755 "$qualification_fetch"
+cat >"$qualification_xcodebuild" <<'XCODEBUILD'
+#!/usr/bin/env bash
+set -euo pipefail
+
+symroot=""
+for argument in "$@"; do
+  case "$argument" in
+    SYMROOT=*) symroot="${argument#SYMROOT=}" ;;
+  esac
+done
+[[ -n "$symroot" ]]
+
+app="$symroot/Release/sparkle.app"
+source_root="$symroot/fixture-source"
+framework="$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+cli="$app/Contents/MacOS/sparkle"
+/bin/mkdir -p "$source_root" "$(/usr/bin/dirname "$framework")" "$(/usr/bin/dirname "$cli")"
+cat >"$source_root/framework.c" <<'FRAMEWORK_SOURCE'
+int sparkle_dependency(void) { return 0; }
+FRAMEWORK_SOURCE
+cat >"$source_root/main.c" <<'CLI_SOURCE'
+int sparkle_dependency(void);
+int main(void) { return sparkle_dependency(); }
+CLI_SOURCE
+/usr/bin/clang -dynamiclib "$source_root/framework.c" \
+  -install_name '@rpath/Sparkle.framework/Versions/B/Sparkle' -o "$framework"
+/usr/bin/clang "$source_root/main.c" "$framework" \
+  -Wl,-rpath,@executable_path/../Frameworks -o "$cli"
+/usr/bin/python3 - "$app/Contents/Info.plist" <<'PYTHON'
+import plistlib
+import sys
+
+with open(sys.argv[1], 'wb') as handle:
+    plistlib.dump({'CFBundleShortVersionString': '2.9.4'}, handle)
+PYTHON
+XCODEBUILD
+/bin/chmod 755 "$qualification_xcodebuild"
 /usr/bin/sed \
   -e "s/^EXPECTED_TOOLS_SHA256=.*/EXPECTED_TOOLS_SHA256=\"$qualification_tools_sha\"/" \
   -e 's/^TEST_HARNESS=false/TEST_HARNESS=true/' \
   "$QUALIFY_SCRIPT" >"$qualification_harness"
 /bin/chmod 755 "$qualification_harness"
+/usr/bin/sed \
+  -e "s/^EXPECTED_TOOLS_SHA256=.*/EXPECTED_TOOLS_SHA256=\"$qualification_tools_sha\"/" \
+  -e 's/^TEST_HARNESS=false/TEST_HARNESS=true/' \
+  -e "s|/usr/bin/xcodebuild|$qualification_xcodebuild|" \
+  "$QUALIFY_SCRIPT" >"$qualification_build_harness"
+/bin/chmod 755 "$qualification_build_harness"
 
 run_qualification() {
   local bundle_path="${1:-$qualification_bundle}"
@@ -2861,6 +2915,26 @@ run_qualification_without_runner() {
     --tools-archive "$qualification_tools_archive"
 }
 
+run_qualification_with_built_cli() {
+  env \
+    QUALIFY_PYTHON_EXECUTABLE="$qualification_python" \
+    QUALIFY_RUNNER="$qualification_runner" \
+    QUALIFY_FETCH_EXECUTABLE="$qualification_fetch" \
+    QUALIFY_VERIFY_SCRIPT="$VERIFY_SCRIPT" \
+    QUALIFY_VERSION_CONFIG="$candidate_dir/version.env" \
+    QUALIFY_UPDATE_CONFIG="$candidate_dir/update.env" \
+    QUALIFY_SPARKLE_SOURCE="$SPARKLE_SOURCE" \
+    QUALIFY_TEST_PYTHON_LOG="$qualification_python_log" \
+    QUALIFY_TEST_RUNNER_ARGUMENTS="$qualification_runner_arguments" \
+    QUALIFY_TEST_BUNDLE_CLI="$qualification_bundle/bin/sparkle" \
+    QUALIFY_TEST_CANDIDATE_INFO="$candidate_info" \
+    QUALIFY_TEST_CURRENT_FEED="$previous_dir/appcast.xml" \
+    QUALIFY_TEST_DITTO="$qualification_ditto" \
+    QUALIFY_TEST_RUNNER_MODE=built-cli-framework \
+    "$qualification_build_harness" --bundle "$qualification_bundle" --previous-app "$previous_app" \
+    --tools-archive "$qualification_tools_archive"
+}
+
 assert_preflight_did_not_run_update() {
   [[ ! -s "$qualification_runner_arguments" ]] || fail "qualification invoked runner before rejecting input"
   [[ ! -s "$qualification_cli_log" ]] || fail "qualification invoked CLI before rejecting input"
@@ -2917,6 +2991,9 @@ run_qualification
   fail "qualification did not clean copied application"
 [[ "$previous_tree_manifest" == "$(app_tree_manifest "$previous_app")" ]] ||
   fail "qualification changed original previous application"
+
+run_qualification_with_built_cli ||
+  fail "qualification detached the built Sparkle CLI from its framework"
 
 replaced_source_app="$fixture_root/replaced-source/CodexRadar.app"
 /usr/bin/ditto "$previous_app" "$replaced_source_app"
