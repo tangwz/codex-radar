@@ -94,7 +94,8 @@ func resetHistoryMonthSummariesJSON(
   startYear: Int,
   startMonth: Int,
   count: Int,
-  timeZoneIdentifier: String
+  timeZoneIdentifier: String,
+  finalCounts: ResetHistoryCountsFixture? = nil
 ) -> String {
   var calendar = Calendar(identifier: .gregorian)
   calendar.timeZone = TimeZone(identifier: timeZoneIdentifier)!
@@ -104,10 +105,14 @@ func resetHistoryMonthSummariesJSON(
 
   return (0..<count).map { offset in
     let date = calendar.date(byAdding: .month, value: offset, to: start)!
+    let counts = offset == count - 1 ? finalCounts : nil
     return resetHistoryMonthSummaryJSON(
       year: calendar.component(.year, from: date),
       month: calendar.component(.month, from: date),
-      timeZoneIdentifier: timeZoneIdentifier
+      timeZoneIdentifier: timeZoneIdentifier,
+      count: counts?.hard,
+      bankedCount: counts?.banked ?? 3,
+      bothCount: counts?.both
     )
   }.joined(separator: ",")
 }
@@ -121,6 +126,7 @@ func resetHistoryJSON(
   timeZoneIdentifier: String = "Asia/Shanghai",
   generatedAt: String = "2026-07-19T09:00:00Z",
   currentMonthCount: Int? = nil,
+  currentMonthCounts: ResetHistoryCountsFixture? = nil,
   currentWeekCounts: ResetHistoryCountsFixture = ResetHistoryCountsFixture(
     hard: 2,
     banked: 3,
@@ -136,12 +142,6 @@ func resetHistoryJSON(
     generatedAt: generatedAtDate,
     timeZoneIdentifier: boundaryTimeZone
   )
-  let months = resetHistoryMonthSummariesJSON(
-    startYear: startYear,
-    startMonth: startMonth,
-    count: monthCount,
-    timeZoneIdentifier: boundaryTimeZone
-  )
   let derivedCurrentMonthCount: Int
   if monthCount > 0 {
     var calendar = Calendar(identifier: .gregorian)
@@ -155,6 +155,20 @@ func resetHistoryJSON(
     derivedCurrentMonthCount = 0
   }
   let resolvedCurrentMonthCount = currentMonthCount ?? derivedCurrentMonthCount
+  let resolvedCurrentMonthCounts =
+    currentMonthCounts
+    ?? ResetHistoryCountsFixture(
+      hard: resolvedCurrentMonthCount,
+      banked: 3,
+      both: min(2, resolvedCurrentMonthCount)
+    )
+  let months = resetHistoryMonthSummariesJSON(
+    startYear: startYear,
+    startMonth: startMonth,
+    count: monthCount,
+    timeZoneIdentifier: boundaryTimeZone,
+    finalCounts: currentMonthCounts == nil ? nil : resolvedCurrentMonthCounts
+  )
   let formatter = ISO8601DateFormatter()
   let resolvedRecent =
     recent ?? """
@@ -171,7 +185,7 @@ func resetHistoryJSON(
       "range":"\(range)",
       "current":{
         "week":{"from":"\(current.weekFrom)","to":"\(current.weekTo)","count":\(currentWeekCounts.hard),"counts":{"hard":\(currentWeekCounts.hard),"banked":\(currentWeekCounts.banked),"both":\(currentWeekCounts.both)}},
-        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(resolvedCurrentMonthCount),"counts":{"hard":\(resolvedCurrentMonthCount),"banked":3,"both":\(min(2, resolvedCurrentMonthCount))}}
+        "month":{"from":"\(current.monthFrom)","to":"\(current.monthTo)","count":\(resolvedCurrentMonthCounts.hard),"counts":{"hard":\(resolvedCurrentMonthCounts.hard),"banked":\(resolvedCurrentMonthCounts.banked),"both":\(resolvedCurrentMonthCounts.both)}}
       },
       "months":[\(months)]\(resolvedDays),
       "recent":[\(resolvedRecent)]
@@ -241,6 +255,11 @@ func resetHistoryV12JSON(
   generatedAt: String = "2026-07-19T09:00:00Z",
   timeZoneIdentifier: String = "Asia/Shanghai",
   days: [String]? = nil,
+  currentMonthCounts: ResetHistoryCountsFixture = ResetHistoryCountsFixture(
+    hard: 0,
+    banked: 0,
+    both: 0
+  ),
   currentWeekCounts: ResetHistoryCountsFixture = ResetHistoryCountsFixture(
     hard: 0,
     banked: 0,
@@ -267,6 +286,7 @@ func resetHistoryV12JSON(
     startMonth: calendar.component(.month, from: firstMonth),
     timeZoneIdentifier: timeZoneIdentifier,
     generatedAt: generatedAt,
+    currentMonthCounts: currentMonthCounts,
     currentWeekCounts: currentWeekCounts,
     days: resolvedDays.joined(separator: ","),
     recent: ""

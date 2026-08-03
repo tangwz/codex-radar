@@ -16,7 +16,7 @@ struct ResetRadarPresentationTests {
   @Test
   func mapsAllKindsAndCountsActiveDaysInsteadOfEvents() throws {
     let days = resetHistoryDayJSONs(
-      activeKinds: [0: .hard(5), 1: .banked(4), 2: .hardAndBanked(3)]
+      activeKinds: [0: .hard(2), 1: .banked(1), 2: .hardAndBanked(1)]
     )
     let history = try decodeResetHistory(resetHistoryV12JSON(days: days))
     let now = ISO8601DateFormatter().date(from: "2026-07-19T10:00:00Z")!
