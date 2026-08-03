@@ -85,6 +85,16 @@ struct AppLocalizationTests {
       ("Token usage cache could not be saved.", "无法保存 Token 用量缓存。"),
       ("Selected period", "所选周期"),
       ("Total %@, Input %@, Output %@", "总量 %@，输入 %@，输出 %@"),
+      ("Reset radar", "重置雷达"),
+      ("Last 30 days", "最近 30 天"),
+      ("%lld active days", "%lld 个活跃日"),
+      ("Hard reset", "硬重置"),
+      ("Banked reset", "Banked 重置"),
+      ("Hard + banked", "Hard + Banked"),
+      ("No reset", "无重置"),
+      ("Today · %@", "今天 · %@"),
+      ("Latest · %@", "最新 · %@"),
+      ("Reset radar unavailable", "重置雷达暂不可用"),
     ]
 
     for (key, simplifiedChinese) in translations {
