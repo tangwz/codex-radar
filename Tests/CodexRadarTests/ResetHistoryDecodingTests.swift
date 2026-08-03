@@ -14,15 +14,15 @@ struct ResetHistoryDecodingTests {
   @Test
   func decodesV12WithThirtyValidatedRadarDays() throws {
     let days = resetHistoryDayJSONs(
-      activeKinds: [0: .hard(2), 1: .banked(3), 2: .hardAndBanked(4)]
+      activeKinds: [0: .hard(2), 1: .banked(1), 2: .hardAndBanked(1)]
     )
     let history = try decodeHistory(resetHistoryV12JSON(days: days))
 
     #expect(history.schemaVersion == "1.2")
     #expect(history.radarDays?.count == 30)
     #expect(history.radarDays?[0].counts == ResetCounts(hard: 2, banked: 0, both: 0))
-    #expect(history.radarDays?[1].counts == ResetCounts(hard: 0, banked: 3, both: 0))
-    #expect(history.radarDays?[2].counts == ResetCounts(hard: 4, banked: 4, both: 4))
+    #expect(history.radarDays?[1].counts == ResetCounts(hard: 0, banked: 1, both: 0))
+    #expect(history.radarDays?[2].counts == ResetCounts(hard: 1, banked: 1, both: 1))
   }
 
   @Test
@@ -157,6 +157,47 @@ struct ResetHistoryDecodingTests {
     expectDataCorruptedFailure(
       resetHistoryV12JSON(
         currentWeekCounts: ResetHistoryCountsFixture(hard: 1, banked: 0, both: 0)
+      ),
+      forKey: "days"
+    )
+  }
+
+  @Test
+  func rejectsOverflowingRadarWeekTotals() {
+    let days = resetHistoryDayJSONs(
+      activeKinds: [
+        23: .hard(Int.max),
+        24: .hard(Int.max),
+      ]
+    )
+
+    expectDataCorruptedFailure(
+      resetHistoryV12JSON(days: days),
+      forKey: "days"
+    )
+  }
+
+  @Test
+  func rejectsRadarMonthSubtotalAboveMonthSummary() {
+    let days = resetHistoryDayJSONs(activeKinds: [15: .hard(8)])
+
+    expectDataCorruptedFailure(
+      resetHistoryV12JSON(
+        days: days,
+        currentMonthCounts: ResetHistoryCountsFixture(hard: 7, banked: 0, both: 0)
+      ),
+      forKey: "days"
+    )
+  }
+
+  @Test
+  func rejectsRadarMonthSubtotalThatDoesNotMatchFullyCoveredElapsedMonth() {
+    let days = resetHistoryDayJSONs(activeKinds: [15: .hard(2)])
+
+    expectDataCorruptedFailure(
+      resetHistoryV12JSON(
+        days: days,
+        currentMonthCounts: ResetHistoryCountsFixture(hard: 7, banked: 0, both: 0)
       ),
       forKey: "days"
     )

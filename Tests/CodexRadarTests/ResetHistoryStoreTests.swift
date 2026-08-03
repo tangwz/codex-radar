@@ -1753,6 +1753,7 @@ private func historyV12(
       resetHistoryV12JSON(
         generatedAt: generatedAtText,
         days: days,
+        currentMonthCounts: ResetHistoryCountsFixture(hard: 2, banked: 3, both: 2),
         currentWeekCounts: ResetHistoryCountsFixture(hard: 2, banked: 3, both: 2)
       ).utf8
     )

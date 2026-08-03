@@ -195,25 +195,81 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       previousEnd = day.to
     }
 
-    let currentWeekCounts = radarDays.reduce(
-      into: (hard: 0, banked: 0, both: 0)
-    ) { result, day in
-      guard day.from >= current.week.from, day.to <= current.week.to else { return }
-      result.hard += day.counts.hard
-      result.banked += day.counts.banked
-      result.both += day.counts.both
-    }
-    guard
-      currentWeekCounts.hard == current.week.counts.hard,
-      currentWeekCounts.banked == current.week.counts.banked,
-      currentWeekCounts.both == current.week.counts.both
-    else {
+    let currentWeekCounts = try aggregateRadarCounts(
+      radarDays.filter { day in
+        day.from >= current.week.from && day.to <= current.week.to
+      },
+      in: container
+    )
+    guard currentWeekCounts == current.week.counts else {
       throw invalidValue(
         forKey: .days,
         in: container,
         description: "Reset radar days must match the current week counts."
       )
     }
+
+    for month in months {
+      let coveredDays = radarDays.filter { day in
+        day.from >= month.from && day.to <= month.to
+      }
+      guard !coveredDays.isEmpty else { continue }
+
+      let coveredCounts = try aggregateRadarCounts(coveredDays, in: container)
+      guard counts(coveredCounts, doNotExceed: month.counts) else {
+        throw invalidValue(
+          forKey: .days,
+          in: container,
+          description: "Reset radar month totals cannot exceed the month summary."
+        )
+      }
+
+      let expectedCoveredEnd =
+        generatedAt >= month.from && generatedAt < month.to
+        ? radarDays.last?.to
+        : month.to
+      let coversCompleteObservedMonth =
+        coveredDays.first?.from == month.from
+        && coveredDays.last?.to == expectedCoveredEnd
+      guard !coversCompleteObservedMonth || coveredCounts == month.counts else {
+        throw invalidValue(
+          forKey: .days,
+          in: container,
+          description: "Fully covered reset radar months must match the month summary."
+        )
+      }
+    }
+  }
+
+  private func aggregateRadarCounts(
+    _ days: [ResetHistoryDay],
+    in container: KeyedDecodingContainer<CodingKeys>
+  ) throws -> ResetCounts {
+    var result = ResetCounts(hard: 0, banked: 0, both: 0)
+    for day in days {
+      let hard = result.hard.addingReportingOverflow(day.counts.hard)
+      let banked = result.banked.addingReportingOverflow(day.counts.banked)
+      let both = result.both.addingReportingOverflow(day.counts.both)
+      guard !hard.overflow, !banked.overflow, !both.overflow else {
+        throw invalidValue(
+          forKey: .days,
+          in: container,
+          description: "Reset radar count totals must fit in Int."
+        )
+      }
+      result = ResetCounts(
+        hard: hard.partialValue,
+        banked: banked.partialValue,
+        both: both.partialValue
+      )
+    }
+    return result
+  }
+
+  private func counts(_ lhs: ResetCounts, doNotExceed rhs: ResetCounts) -> Bool {
+    lhs.hard <= rhs.hard
+      && lhs.banked <= rhs.banked
+      && lhs.both <= rhs.both
   }
 
   private func naturalDayInterval(
