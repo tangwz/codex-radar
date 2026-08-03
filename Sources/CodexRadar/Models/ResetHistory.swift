@@ -49,6 +49,16 @@ struct ResetHistoryEvent: Decodable, Equatable, Identifiable, Sendable {
   }
 }
 
+struct ResetHistoryDay: Decodable, Equatable, Identifiable, Sendable {
+  let day: String
+  let from: Date
+  let to: Date
+  let count: Int
+  let counts: ResetCounts
+
+  var id: String { day }
+}
+
 struct ResetHistoryCurrent: Decodable, Equatable, Sendable {
   let week: ResetHistoryInterval
   let month: ResetHistoryInterval
@@ -61,6 +71,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
   let range: ResetHistoryRange
   let current: ResetHistoryCurrent
   let months: [ResetMonthSummary]
+  let radarDays: [ResetHistoryDay]?
   let recent: [ResetHistoryEvent]
 
   enum CodingKeys: String, CodingKey {
@@ -70,6 +81,7 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     case range
     case current
     case months
+    case days
     case recent
   }
 
@@ -83,11 +95,23 @@ struct ResetHistory: Decodable, Equatable, Sendable {
     months = try container.decode([ResetMonthSummary].self, forKey: .months)
     recent = try container.decode([ResetHistoryEvent].self, forKey: .recent)
 
-    guard schemaVersion == "1.1" else {
-      throw invalidValue(
+    switch schemaVersion {
+    case "1.1":
+      guard !container.contains(.days) else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .days,
+          in: container,
+          debugDescription: "History schema 1.1 cannot contain reset radar days."
+        )
+      }
+      radarDays = nil
+    case "1.2":
+      radarDays = try container.decode([ResetHistoryDay].self, forKey: .days)
+    default:
+      throw DecodingError.dataCorruptedError(
         forKey: .schemaVersion,
         in: container,
-        description: "Expected reset history schema version 1.1."
+        debugDescription: "Expected reset history schema 1.1 or 1.2."
       )
     }
     guard let decodedTimeZone = TimeZone(identifier: timeZone) else {
@@ -102,7 +126,90 @@ struct ResetHistory: Decodable, Equatable, Sendable {
       in: container
     )
     try validateMonths(timeZone: decodedTimeZone, in: container)
+    try validateRadarDays(timeZone: decodedTimeZone, in: container)
     try validateRecent(in: container)
+  }
+
+  private func validateRadarDays(
+    timeZone: TimeZone,
+    in container: KeyedDecodingContainer<CodingKeys>
+  ) throws {
+    guard let radarDays else { return }
+    guard radarDays.count == 30 else {
+      throw invalidValue(
+        forKey: .days,
+        in: container,
+        description: "Expected exactly 30 reset radar days."
+      )
+    }
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    let dayFormatter = DateFormatter()
+    dayFormatter.calendar = calendar
+    dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+    dayFormatter.timeZone = timeZone
+    dayFormatter.dateFormat = "yyyy-MM-dd"
+    dayFormatter.isLenient = false
+
+    let expectedLastStart = calendar.startOfDay(for: generatedAt)
+    guard
+      let expectedFirstStart = calendar.date(
+        byAdding: .day,
+        value: -(radarDays.count - 1),
+        to: expectedLastStart
+      ),
+      radarDays.first?.from == expectedFirstStart,
+      radarDays.last?.from == expectedLastStart
+    else {
+      throw invalidValue(
+        forKey: .days,
+        in: container,
+        description: "Reset radar days must cover generated_at and the preceding 29 local days."
+      )
+    }
+
+    var previousEnd: Date?
+    for day in radarDays {
+      do {
+        try day.counts.validate()
+      } catch {
+        throw invalidValue(
+          forKey: .days,
+          in: container,
+          description: "Reset radar counts must be nonnegative."
+        )
+      }
+      guard
+        day.count == day.counts.hard,
+        hasValidRadarClassification(day.counts),
+        let parsedDay = dayFormatter.date(from: day.day),
+        dayFormatter.string(from: parsedDay) == day.day,
+        parsedDay == day.from,
+        let expectedEnd = calendar.date(byAdding: .day, value: 1, to: parsedDay),
+        day.to == expectedEnd,
+        previousEnd == nil || previousEnd == day.from
+      else {
+        throw invalidValue(
+          forKey: .days,
+          in: container,
+          description:
+            "Reset radar days must be contiguous natural days with one valid classification."
+        )
+      }
+      previousEnd = day.to
+    }
+  }
+
+  private func hasValidRadarClassification(_ counts: ResetCounts) -> Bool {
+    switch (counts.hard, counts.banked, counts.both) {
+    case (0, 0, 0): true
+    case (let hard, 0, 0) where hard > 0: true
+    case (0, let banked, 0) where banked > 0: true
+    case (let hard, let banked, let both)
+    where hard > 0 && hard == banked && banked == both: true
+    default: false
+    }
   }
 
   private func validateMonths(

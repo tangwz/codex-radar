@@ -5,6 +5,131 @@ import Testing
 
 struct ResetHistoryDecodingTests {
   @Test
+  func decodesV11WithoutRadarCapability() throws {
+    let history = try decodeHistory(resetHistoryJSON())
+
+    #expect(history.radarDays == nil)
+  }
+
+  @Test
+  func decodesV12WithThirtyValidatedRadarDays() throws {
+    let days = resetHistoryDayJSONs(
+      activeKinds: [0: .hard(2), 1: .banked(3), 2: .hardAndBanked(4)]
+    )
+    let history = try decodeHistory(resetHistoryV12JSON(days: days))
+
+    #expect(history.schemaVersion == "1.2")
+    #expect(history.radarDays?.count == 30)
+    #expect(history.radarDays?[0].counts == ResetCounts(hard: 2, banked: 0, both: 0))
+    #expect(history.radarDays?[1].counts == ResetCounts(hard: 0, banked: 3, both: 0))
+    #expect(history.radarDays?[2].counts == ResetCounts(hard: 4, banked: 4, both: 4))
+  }
+
+  @Test
+  func rejectsMissingOrIncorrectRadarDayCountForV12() {
+    expectDecodingFailure(resetHistoryJSON(schemaVersion: "1.2"))
+    expectDecodingFailure(
+      resetHistoryV12JSON(days: resetHistoryDayJSONs(dayCount: 29)))
+    expectDecodingFailure(
+      resetHistoryV12JSON(days: resetHistoryDayJSONs(dayCount: 31)))
+  }
+
+  @Test
+  func rejectsDuplicateDescendingAndNoncontiguousRadarDays() {
+    let valid = resetHistoryDayJSONs()
+    var duplicate = valid
+    duplicate[1] = duplicate[0]
+    expectDecodingFailure(resetHistoryV12JSON(days: duplicate))
+    expectDecodingFailure(resetHistoryV12JSON(days: Array(valid.reversed())))
+
+    var skipped = resetHistoryDayJSONs(dayCount: 31)
+    skipped.remove(at: 1)
+    expectDecodingFailure(resetHistoryV12JSON(days: skipped))
+  }
+
+  @Test
+  func validatesNaturalRadarDayBoundariesAcrossDaylightSavingTime() throws {
+    let generatedAt = "2026-03-09T12:00:00Z"
+    let timeZone = "America/New_York"
+    let days = resetHistoryDayJSONs(
+      generatedAt: generatedAt,
+      timeZoneIdentifier: timeZone
+    )
+    let history = try decodeHistory(
+      resetHistoryV12JSON(
+        generatedAt: generatedAt,
+        timeZoneIdentifier: timeZone,
+        days: days
+      ))
+    let transition = try #require(history.radarDays?.first { $0.day == "2026-03-08" })
+    #expect(transition.to.timeIntervalSince(transition.from) == 23 * 60 * 60)
+
+    let malformed = days.map { day in
+      day.contains("\"day\":\"2026-03-08\"")
+        ? day.replacingOccurrences(
+          of: "\"from\":\"2026-03-08T05:00:00Z\"",
+          with: "\"from\":\"2026-03-08T06:00:00Z\"")
+        : day
+    }
+    expectDecodingFailure(
+      resetHistoryV12JSON(
+        generatedAt: generatedAt,
+        timeZoneIdentifier: timeZone,
+        days: malformed
+      ))
+  }
+
+  @Test
+  func rejectsRadarWindowThatDoesNotEndOnGeneratedAtLocalDay() {
+    expectDecodingFailure(
+      resetHistoryJSON(
+        schemaVersion: "1.2",
+        generatedAt: "2026-07-20T09:00:00Z",
+        days: resetHistoryDayJSONs().joined(separator: ",")
+      ))
+  }
+
+  @Test
+  func rejectsInvalidRadarCountsAndMixedClassification() {
+    let baseDate = ISO8601DateFormatter().date(from: "2026-06-20T00:00:00Z")!
+    let invalidRows = [
+      resetHistoryDayJSON(
+        date: baseDate,
+        timeZoneIdentifier: "Asia/Shanghai",
+        kind: .hard(-1)
+      ),
+      resetHistoryDayJSON(
+        date: baseDate,
+        timeZoneIdentifier: "Asia/Shanghai",
+        kind: .hard(1),
+        count: 0
+      ),
+      resetHistoryDayJSON(
+        date: baseDate,
+        timeZoneIdentifier: "Asia/Shanghai",
+        kind: .inactive
+      ).replacingOccurrences(
+        of: "\"count\":0,\"counts\":{\"hard\":0,\"banked\":0,\"both\":0}",
+        with: "\"count\":2,\"counts\":{\"hard\":2,\"banked\":1,\"both\":0}"
+      ),
+    ]
+
+    for invalidRow in invalidRows {
+      var days = resetHistoryDayJSONs()
+      days[0] = invalidRow
+      expectDecodingFailure(resetHistoryV12JSON(days: days))
+    }
+  }
+
+  @Test
+  func rejectsV11ResponseContainingRadarDays() {
+    expectDecodingFailure(
+      resetHistoryJSON(
+        days: resetHistoryDayJSONs().joined(separator: ",")
+      ))
+  }
+
+  @Test
   func decodesSixMonthRangeEndingInGeneratedAtMonth() throws {
     let history = try decodeHistory(resetHistoryJSON())
 
