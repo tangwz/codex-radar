@@ -28,10 +28,11 @@ struct ResetForecastServiceTests {
 
   @Test
   func decodesUpdatedForecastAndReturnsResponseETag() async throws {
+    let contract = try Data(contentsOf: successContractURL)
     let service = ResetForecastService(
       loader: HTTPDataLoader { request in
         (
-          Data(validCurrentJSON.utf8),
+          contract,
           response(
             status: 200,
             url: request.url!,
@@ -59,7 +60,20 @@ struct ResetForecastServiceTests {
       }
     )
 
-    #expect(try await service.fetch(etag: nil) == .notModified)
+    #expect(try await service.fetch(etag: #""revision-1""#) == .notModified)
+  }
+
+  @Test
+  func rejectsNotModifiedWithoutConditionalETag() async {
+    let service = ResetForecastService(
+      loader: HTTPDataLoader { request in
+        (Data(), response(status: 304, url: request.url!))
+      }
+    )
+
+    await #expect(throws: ResetForecastServiceError.invalidResponse) {
+      try await service.fetch(etag: nil)
+    }
   }
 
   @Test
@@ -132,17 +146,11 @@ private let notInitializedContractURL = URL(fileURLWithPath: #filePath)
   .deletingLastPathComponent()
   .appendingPathComponent("contracts/v1-current-not-initialized.json")
 
-private let validCurrentJSON = """
-{
-  "schema_version": "1.0",
-  "monitored_at": "2026-07-16T01:00:00Z",
-  "stale": false,
-  "status": "monitoring",
-  "recommended_action": "none",
-  "message": "Monitoring.",
-  "posts": []
-}
-"""
+private let successContractURL = URL(fileURLWithPath: #filePath)
+  .deletingLastPathComponent()
+  .deletingLastPathComponent()
+  .deletingLastPathComponent()
+  .appendingPathComponent("contracts/v1-current-success.json")
 
 private func response(
   status: Int,

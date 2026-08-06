@@ -103,6 +103,15 @@ enum LastResetAvailability: Equatable, Sendable {
 }
 
 struct ResetForecast: Decodable, Equatable, Sendable {
+  private static let currentSchemaVersion = "1.2"
+  private static let rollbackSchemaVersion = "1.1"
+  private static let allowedSourceHosts: Set<String> = [
+    "twitter.com",
+    "www.twitter.com",
+    "www.x.com",
+    "x.com",
+  ]
+
   let schemaVersion: String
   let monitoredAt: Date
   let stale: Bool
@@ -120,7 +129,7 @@ struct ResetForecast: Decodable, Equatable, Sendable {
   }
 
   static let placeholder = ResetForecast(
-    schemaVersion: "1.0",
+    schemaVersion: currentSchemaVersion,
     monitoredAt: .distantPast,
     stale: true,
     status: .monitoring,
@@ -162,6 +171,16 @@ struct ResetForecast: Decodable, Equatable, Sendable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+    guard
+      schemaVersion == Self.currentSchemaVersion
+        || schemaVersion == Self.rollbackSchemaVersion
+    else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .schemaVersion,
+        in: container,
+        debugDescription: "Unsupported current response schema version."
+      )
+    }
     monitoredAt = try container.decode(Date.self, forKey: .monitoredAt)
     stale = try container.decode(Bool.self, forKey: .stale)
     status = try container.decode(ResetStatus.self, forKey: .status)
@@ -170,15 +189,24 @@ struct ResetForecast: Decodable, Equatable, Sendable {
     signalID = try container.decodeIfPresent(String.self, forKey: .signalID)
     timing = try container.decodeIfPresent(ResetTiming.self, forKey: .timing)
     sourceURL = try container.decodeIfPresent(URL.self, forKey: .sourceURL)
-    posts = try container.decode([ResetSourcePost].self, forKey: .posts)
-    if container.contains(.lastResetAt) {
-      if let value = try container.decodeIfPresent(Date.self, forKey: .lastResetAt) {
-        lastReset = .resetAt(value)
-      } else {
-        lastReset = .none
+    if let sourceURL {
+      guard
+        sourceURL.scheme?.lowercased() == "https",
+        let host = sourceURL.host?.lowercased(),
+        Self.allowedSourceHosts.contains(host)
+      else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .sourceURL,
+          in: container,
+          debugDescription: "Reset source URL is not trusted."
+        )
       }
+    }
+    posts = try container.decode([ResetSourcePost].self, forKey: .posts)
+    if let value = try container.decode(Date?.self, forKey: .lastResetAt) {
+      lastReset = .resetAt(value)
     } else {
-      lastReset = .unavailable
+      lastReset = .none
     }
 
     guard posts.count <= 5 else {
