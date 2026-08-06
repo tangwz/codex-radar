@@ -55,6 +55,9 @@ struct ResetForecastService: Sendable {
     }
 
     if http.statusCode == 304 {
+      guard request.value(forHTTPHeaderField: "If-None-Match") != nil else {
+        throw ResetForecastServiceError.invalidResponse
+      }
       return .notModified
     }
     if http.statusCode == 503,

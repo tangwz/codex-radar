@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.2",
+  "monitored_at": "2026-07-28T12:00:00.000Z",
+  "stale": false,
+  "status": "monitoring",
+  "recommended_action": "none",
+  "message": "Monitoring Tibo for the next Codex reset.",
+  "posts": [],
+  "last_reset_at": null
+}

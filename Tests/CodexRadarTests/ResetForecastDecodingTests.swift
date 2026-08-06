@@ -9,7 +9,7 @@ struct ResetForecastDecodingTests {
     let forecast = try decode(
       """
       {
-        "schema_version": "1.0",
+        "schema_version": "1.2",
         "monitored_at": "2026-07-16T01:00:00.000Z",
         "stale": false,
         "status": "announced",
@@ -32,7 +32,8 @@ struct ResetForecastDecodingTests {
             "author_handle": "someone",
             "url": "https://x.com/someone/status/1949999999999999999"
           }
-        }]
+        }],
+        "last_reset_at": "2026-07-15T08:21:34Z"
       }
       """
     )
@@ -51,13 +52,14 @@ struct ResetForecastDecodingTests {
     let forecast = try decode(
       """
       {
-        "schema_version": "1.0",
+        "schema_version": "1.2",
         "monitored_at": "2026-07-16T01:00:00Z",
         "stale": false,
         "status": "monitoring",
         "recommended_action": "none",
         "message": "Monitoring Tibo for reset signals.",
-        "posts": []
+        "posts": [],
+        "last_reset_at": null
       }
       """
     )
@@ -90,20 +92,58 @@ struct ResetForecastDecodingTests {
   }
 
   @Test
-  func distinguishesMissingNullAndKnownLastReset() throws {
-    let missing = try decode(response())
-    let none = try decode(response(lastResetField: #", "last_reset_at": null"#))
-    let known = try decode(
-      response(lastResetField: #", "last_reset_at": "2026-07-19T08:21:34Z""#)
-    )
+  func decodesV12CurrentContractWithNullLastReset() throws {
+    let contract = try Data(contentsOf: successContractURL)
+    let forecast = try ResetForecast.decoder.decode(ResetForecast.self, from: contract)
 
-    #expect(missing.lastReset == .unavailable)
-    #expect(none.lastReset == .none)
+    #expect(forecast.schemaVersion == "1.2")
+    #expect(forecast.lastReset == .none)
+  }
+
+  @Test
+  func decodesV12CurrentWithKnownLastReset() throws {
+    let known = try decode(response(lastResetValue: #""2026-07-19T08:21:34Z""#))
+
+    #expect(known.schemaVersion == "1.2")
     guard case .resetAt(let resetAt) = known.lastReset else {
       Issue.record("Expected a known reset timestamp.")
       return
     }
     #expect(known.lastResetAt == resetAt)
+  }
+
+  @Test
+  func decodesV11RollbackCurrent() throws {
+    let forecast = try decode(response(schemaVersion: "1.1"))
+
+    #expect(forecast.schemaVersion == "1.1")
+    #expect(forecast.lastReset == .none)
+  }
+
+  @Test(arguments: ["1.0", "1.3", "2.0", "unexpected"])
+  func rejectsUnsupportedCurrentSchemaVersions(_ schemaVersion: String) {
+    #expect(throws: DecodingError.self) {
+      try decode(response(schemaVersion: schemaVersion))
+    }
+  }
+
+  @Test(arguments: ["1.1", "1.2"])
+  func rejectsSupportedCurrentWithoutLastReset(_ schemaVersion: String) {
+    #expect(throws: DecodingError.self) {
+      try decode(response(schemaVersion: schemaVersion, lastResetValue: nil))
+    }
+  }
+
+  @Test(arguments: [
+    "http://x.com/thsottiaux/status/1",
+    "file:///tmp/source",
+    "https://example.com/thsottiaux/status/1",
+    "https://x.com.example.com/thsottiaux/status/1",
+  ])
+  func rejectsUntrustedSourceURLs(_ sourceURL: String) {
+    #expect(throws: DecodingError.self) {
+      try decode(response(sourceURL: sourceURL))
+    }
   }
 
   @Test(arguments: [
@@ -158,24 +198,34 @@ struct ResetForecastDecodingTests {
 }
 
 private func response(
+  schemaVersion: String = "1.2",
   monitoredAt: String = "2026-07-16T01:00:00Z",
   status: String = "announced",
   action: String = "wait",
   timing: String? = nil,
+  sourceURL: String? = nil,
   posts: String = "[]",
-  lastResetField: String = ""
+  lastResetValue: String? = "null"
 ) -> String {
   let timingField = timing.map { ",\"timing\":\($0)" } ?? ""
+  let sourceURLField = sourceURL.map { ",\"source_url\":\"\($0)\"" } ?? ""
+  let lastResetField = lastResetValue.map { ",\"last_reset_at\":\($0)" } ?? ""
   return """
     {
-      "schema_version":"1.0",
+      "schema_version":"\(schemaVersion)",
       "monitored_at":"\(monitoredAt)",
       "stale":false,
       "status":"\(status)",
       "recommended_action":"\(action)",
       "message":"Status"
       \(timingField),
-      "posts":\(posts)\(lastResetField)
+      "posts":\(posts)\(sourceURLField)\(lastResetField)
     }
     """
 }
+
+private let successContractURL = URL(fileURLWithPath: #filePath)
+  .deletingLastPathComponent()
+  .deletingLastPathComponent()
+  .deletingLastPathComponent()
+  .appendingPathComponent("contracts/v1-current-success.json")
