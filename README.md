@@ -46,13 +46,13 @@ SHA-256 只能确认下载字节与该 Release 资产一致，不能证明开发
 
 ## 测试
 
-安装完整 Xcode 时直接运行：
+安装完整 Xcode 时，从仓库根目录运行唯一的完整 Swift 测试入口：
 
 ```bash
-swift test
+./script/test.sh
 ```
 
-仅安装当前 Command Line Tools 时，`Testing.framework` 可能不在默认搜索路径，需要为测试命令补充 framework 和 runtime 路径。
+入口无需参数，会以稳定的两阶段编排运行全部 Swift 测试并隔离 AppKit-facing suites。仅安装当前 Command Line Tools 时，`Testing.framework` 可能不在默认搜索路径，因此推荐使用完整 Xcode。
 
 ## 发布
 
