@@ -20,5 +20,15 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-      - name: Test public API integration
-        run: swift test --filter 'CodexResets|ResetForecast|ResetHistory|ResetNotification|ResetRadarPresentation|ConsumedResetSignal|DashboardStoreForecast'
+      - name: Test public API integration and affected presentation
+        shell: bash
+        run: |
+          set +e
+          swift test --filter 'CodexResets|ResetForecast|ResetHistory|ResetNotification|ResetRadar|ConsumedResetSignal|DashboardStoreForecast|MenuActionLayout|MenuBarTheme|SettingsLayout' > "$RUNNER_TEMP/codex-resets-tests.log" 2>&1
+          result=$?
+          grep -E 'Build complete|error:|warning:|recorded an issue|Expectation failed|Test run with|Suite .*failed|Process completed' "$RUNNER_TEMP/codex-resets-tests.log" || true
+          if [ "$result" -ne 0 ]; then
+            tail -n 60 "$RUNNER_TEMP/codex-resets-tests.log"
+          fi
+          echo "Test process exit code: $result"
+          exit "$result"

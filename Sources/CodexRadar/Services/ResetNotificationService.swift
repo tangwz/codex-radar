@@ -69,6 +69,7 @@ final class ResetNotificationService {
   private let deliverNotification: DeliverNotification
   private var inFlightSignalIDs: Set<String> = []
   private static let publicBaselineKey = "codexResetsV1.hasNotificationBaseline"
+  private static let publicBaselineDateKey = "codexResetsV1.notificationBaselineDate"
 
   init(
     center: UNUserNotificationCenter = .current(),
@@ -103,11 +104,22 @@ final class ResetNotificationService {
   func observe(_ forecast: ResetForecast) async {
     if forecast.schemaVersion == CodexResetsAPI.schema {
       guard !forecast.stale else { return }
-      // The former backend's baseline cannot identify the public API's events.
-      // Upgrade and first installation both silently consume the first fresh signal.
-      if !defaults.bool(forKey: Self.publicBaselineKey) {
+      // A watch can hide an older announcement. Preserve the initial snapshot
+      // boundary so that expiration does not turn that announcement into a new alert.
+      if !defaults.bool(forKey: Self.publicBaselineKey)
+        || (defaults.object(forKey: Self.publicBaselineDateKey) as? Date) == nil
+      {
         consumedSignalStore.establishBaseline(signalID: forecast.signalID)
+        defaults.set(forecast.monitoredAt, forKey: Self.publicBaselineDateKey)
         defaults.set(true, forKey: Self.publicBaselineKey)
+        return
+      }
+      if forecast.status == .announced,
+        let announcedAt = forecast.lastResetAt,
+        let baseline = defaults.object(forKey: Self.publicBaselineDateKey) as? Date,
+        announcedAt <= baseline
+      {
+        if let id = forecast.signalID { consumedSignalStore.consume(id) }
         return
       }
     }
