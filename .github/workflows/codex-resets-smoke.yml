@@ -3,6 +3,7 @@ name: Codex Resets contract probe
 on:
   push:
     branches: [codex/migrate-to-codex-resets-api]
+    paths: [.github/workflows/codex-resets-smoke.yml]
   workflow_dispatch:
 
 permissions:
@@ -13,11 +14,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect public API contract (no credentials)
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Capture public API contract (no credentials)
         shell: python
         run: |
-          import json, urllib.request
-          request = urllib.request.Request('https://codex-resets.com/api/openapi.json', headers={'User-Agent': 'CodexRadar-contract-verification'})
-          with urllib.request.urlopen(request, timeout=30) as response:
-              spec = json.load(response)
-          print(json.dumps(spec, ensure_ascii=False, indent=2))
+          import json, pathlib, urllib.request
+          target = pathlib.Path('.probe')
+          target.mkdir()
+          for name, path in [('docs.html', '/api/docs'), ('openapi.json', '/api/openapi.json'), ('status.json', '/api/v1/status'), ('resets.json', '/api/v1/resets?limit=100&order=desc')]:
+              request = urllib.request.Request('https://codex-resets.com' + path, headers={'User-Agent': 'CodexRadar-contract-verification'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = response.read(2000000)
+                  (target / name).write_bytes(body)
+                  (target / (name + '.headers.json')).write_text(json.dumps(dict(response.headers)))
+                  print(name, response.status, len(body), flush=True)
+                  if name == 'openapi.json':
+                      print(body.decode(), flush=True)
+      - name: Package source snapshot
+        run: tar --exclude=.git --exclude=.probe -czf ../codex-radar-source.tar.gz . && mv ../codex-radar-source.tar.gz .probe/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-radar-migration-input
+          path: .probe/
+          include-hidden-files: true
+          retention-days: 3
+  macos-baseline:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          ref: 6d4e5cb4af174a22b0ba190493a0de77a133b083
+      - run: ./script/test.sh
