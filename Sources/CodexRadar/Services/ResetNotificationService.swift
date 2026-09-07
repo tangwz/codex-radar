@@ -67,6 +67,7 @@ final class ResetNotificationService {
   private let defaults: UserDefaults
   private let consumedSignalStore: ConsumedResetSignalStore
   private let deliverNotification: DeliverNotification
+  private let now: @Sendable () -> Date
   private var inFlightSignalIDs: Set<String> = []
   private static let publicBaselineKey = "codexResetsV1.hasNotificationBaseline"
   private static let publicBaselineDateKey = "codexResetsV1.notificationBaselineDate"
@@ -75,23 +76,28 @@ final class ResetNotificationService {
     center: UNUserNotificationCenter = .current(),
     defaults: UserDefaults = .standard,
     consumedSignalStore: ConsumedResetSignalStore? = nil,
+    now: @escaping @Sendable () -> Date = Date.init,
     deliverNotification: DeliverNotification? = nil
   ) {
     self.center = center
     self.defaults = defaults
+    self.now = now
     self.consumedSignalStore = consumedSignalStore ?? ConsumedResetSignalStore(defaults: defaults)
-    self.deliverNotification = deliverNotification ?? { forecast, signalID in
-      await Self.sendNotification(for: forecast, signalID: signalID, center: center)
-    }
+    self.deliverNotification =
+      deliverNotification ?? { forecast, signalID in
+        await Self.sendNotification(for: forecast, signalID: signalID, center: center)
+      }
   }
 
   init(
     defaults: UserDefaults,
     consumedSignalStore: ConsumedResetSignalStore? = nil,
+    now: @escaping @Sendable () -> Date = Date.init,
     deliverNotification: @escaping DeliverNotification
   ) {
     center = nil
     self.defaults = defaults
+    self.now = now
     self.consumedSignalStore = consumedSignalStore ?? ConsumedResetSignalStore(defaults: defaults)
     self.deliverNotification = deliverNotification
   }
@@ -104,26 +110,26 @@ final class ResetNotificationService {
   func observe(_ forecast: ResetForecast) async {
     if forecast.schemaVersion == CodexResetsAPI.schema {
       guard !forecast.stale else { return }
-      // A watch can hide an older announcement. Preserve the initial snapshot
-      // boundary so that expiration does not turn that announcement into a new alert.
+      // CDN caches and active watches can hide older announcements. The cutoff
+      // is the installation's first observation, not the document's generation.
       if !defaults.bool(forKey: Self.publicBaselineKey)
         || (defaults.object(forKey: Self.publicBaselineDateKey) as? Date) == nil
       {
         consumedSignalStore.establishBaseline(signalID: forecast.signalID)
-        defaults.set(forecast.monitoredAt, forKey: Self.publicBaselineDateKey)
+        defaults.set(now(), forKey: Self.publicBaselineDateKey)
         defaults.set(true, forKey: Self.publicBaselineKey)
         return
       }
-      if forecast.status == .announced,
-        let announcedAt = forecast.lastResetAt,
+      if let observedAt = forecast.signalObservedAt,
         let baseline = defaults.object(forKey: Self.publicBaselineDateKey) as? Date,
-        announcedAt <= baseline
+        observedAt <= baseline
       {
         if let id = forecast.signalID { consumedSignalStore.consume(id) }
         return
       }
     }
-    let observationState = consumedSignalStore.stateForObservation(currentSignalID: forecast.signalID)
+    let observationState = consumedSignalStore.stateForObservation(
+      currentSignalID: forecast.signalID)
     let decision = ResetNotificationPolicy.decision(
       forecast: forecast, hasBaseline: observationState.hasBaseline,
       consumedSignalIDs: observationState.consumedSignalIDs
@@ -148,13 +154,16 @@ final class ResetNotificationService {
   ) async -> Bool {
     guard let presentation = ResetNotificationPresentation(forecast: forecast) else { return false }
     let settings = await center.notificationSettings()
-    guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return false }
+    guard
+      settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+    else { return false }
     let content = UNMutableNotificationContent()
     let locale = AppLanguage.selected.locale
     switch presentation.body {
     case .candidate:
       content.title = AppLocalization.string("Possible Codex reset detected")
-      content.body = forecast.schemaVersion == CodexResetsAPI.schema
+      content.body =
+        forecast.schemaVersion == CodexResetsAPI.schema
         ? CodexResetsCopy.text("forecastDisclaimer", locale: locale)
         : AppLocalization.string("A possible Codex reset signal was posted.")
     case .announcement:
@@ -162,12 +171,15 @@ final class ResetNotificationService {
       content.body = CodexResetsCopy.text("announcementDisclaimer", locale: locale)
     case .exact(let at):
       content.title = AppLocalization.string("Codex reset announced")
-      content.body = String(format: AppLocalization.string("A reset is expected by %@."), DisplayFormatting.absoluteDate(at, locale: locale))
+      content.body = String(
+        format: AppLocalization.string("A reset is expected by %@."),
+        DisplayFormatting.absoluteDate(at, locale: locale))
     case .estimated(let from, let to):
       content.title = AppLocalization.string("Codex reset announced")
       content.body = String(
         format: AppLocalization.string("A reset is expected between %@ and %@."),
-        DisplayFormatting.absoluteDate(from, locale: locale), DisplayFormatting.absoluteDate(to, locale: locale)
+        DisplayFormatting.absoluteDate(from, locale: locale),
+        DisplayFormatting.absoluteDate(to, locale: locale)
       )
     case .imminent:
       content.title = AppLocalization.string("Codex reset announced")
@@ -179,6 +191,9 @@ final class ResetNotificationService {
     content.sound = .default
     content.threadIdentifier = "codex-reset"
     let request = UNNotificationRequest(identifier: signalID, content: content, trigger: nil)
-    do { try await center.add(request); return true } catch { return false }
+    do {
+      try await center.add(request)
+      return true
+    } catch { return false }
   }
 }

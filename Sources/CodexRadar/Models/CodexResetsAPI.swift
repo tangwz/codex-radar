@@ -165,7 +165,10 @@ struct CodexResetsStatus: CodexResetsDocument {
       timing: nil, // expires_at and free-text forecast_window are NOT reset deadlines.
       sourceURL: source?.url,
       posts: posts,
-      lastReset: lastReset
+      lastReset: lastReset,
+      latestResetID: latest?.id,
+      totalAnnouncements: data.stats.total,
+      signalObservedAt: signalID == nil ? nil : evidenceDate
     )
   }
 }

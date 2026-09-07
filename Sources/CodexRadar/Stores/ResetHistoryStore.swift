@@ -19,7 +19,7 @@ final class ResetHistoryStore: ObservableObject {
   private let now: Now
   private let formatIssue: @MainActor @Sendable () -> String
   private var isDashboardActive = false
-  private var lastObservedResetAt: Date?
+  private var lastObservedRevision = ResetHistoryRevision(lastResetAt: nil)
   private var activeQuery: Query?
   private var carriedFreshness: FreshnessIntent = []
   private var pendingFreshness: FreshnessIntent = []
@@ -85,9 +85,9 @@ final class ResetHistoryStore: ObservableObject {
     self.formatIssue = formatIssue
   }
 
-  func dashboardDidAppear(timeZone: TimeZone, lastResetAt: Date?) {
+  func dashboardDidAppear(timeZone: TimeZone, historyRevision: ResetHistoryRevision) {
     isDashboardActive = true
-    lastObservedResetAt = lastResetAt
+    lastObservedRevision = historyRevision
     request(
       Query(
         timeZoneIdentifier: timeZone.identifier,
@@ -174,9 +174,9 @@ final class ResetHistoryStore: ObservableObject {
     )
   }
 
-  func lastResetDidChange(_ resetAt: Date?, timeZone: TimeZone) {
-    guard resetAt != lastObservedResetAt else { return }
-    lastObservedResetAt = resetAt
+  func historyRevisionDidChange(_ revision: ResetHistoryRevision, timeZone: TimeZone) {
+    guard revision != lastObservedRevision else { return }
+    lastObservedRevision = revision
     guard isDashboardActive else { return }
     let query =
       activeQuery

@@ -251,6 +251,15 @@ private struct MenuResetPredictionCard: View {
         .foregroundStyle(secondaryText)
         .fixedSize(horizontal: false, vertical: true)
 
+      if forecast.schemaVersion == CodexResetsAPI.schema {
+        Text(forecast.message)
+          .font(.caption)
+          .foregroundStyle(primaryText)
+          .lineLimit(6)
+          .fixedSize(horizontal: false, vertical: true)
+          .help(forecast.message)
+      }
+
       VStack(alignment: .leading, spacing: 3) {
         Text(CodexResetsCopy.text("lastAnnouncement", locale: locale))
           .font(.caption2)

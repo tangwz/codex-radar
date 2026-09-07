@@ -33,7 +33,7 @@ Monday-based weeks and 30 natural days, including daylight-saving transitions.
 Validated public responses are cached locally with bounded atomic disk writes.
 No account/session content is sent upstream. The HTTP client uses an ephemeral
 session without cookie or credential storage. It respects private max-age,
-Age, ETag/304, no-store, delta-seconds Retry-After and exponential retry delays.
+Age, ETag/304, no-store, Retry-After and exponential retry delays.
 
 IMPORTANT: the observed status response had max-age=14400 (four hours). The
 existing minute refresh loop is not a promise of minute-by-minute upstream
@@ -73,3 +73,10 @@ The AppKit test fixture owns its NSWindow through Swift ARC and explicitly sets
 isReleasedWhenClosed=false before close(). This avoids over-release during test
 teardown; the window visibility/accessibility assertions and standard test entry
 point are retained. No production window behavior or CI gate is bypassed.
+
+## 2026-09-08 后续修正
+
+- 通知基线以本机首次观察到有效快照的时间建立，避免上游缓存隐藏的启动前公告或预测在缓存更新后补发；基线和已消费信号跨重启保留。
+- 统计刷新同时比较最新公告 ID、公告时间和上游总数。预测展示与历史修订独立，同时间的不同公告、总数变化都可触发刷新，预测过期本身不会额外刷新历史。
+- 菜单卡片展示公共消息正文与预测窗口，保留第三方来源及预测说明；长正文可通过悬浮提示查看。
+- HTTP 缓存按 `Date`、`Age` 和请求耗时计算剩余寿命；304 缺省缓存策略时复用原始 `max-age`，不重复扣减上一响应的年龄。限流同时支持秒数和标准 HTTP 日期形式的 `Retry-After`，无效或已过去的值保留本地退避。

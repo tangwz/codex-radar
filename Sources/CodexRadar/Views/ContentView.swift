@@ -42,7 +42,7 @@ struct ContentView: View {
       store.startMonitoring()
       historyStore.dashboardDidAppear(
         timeZone: timeZone,
-        lastResetAt: store.forecast.lastResetAt
+        historyRevision: store.forecast.historyRevision
       )
     }
     .onDisappear {
@@ -54,8 +54,8 @@ struct ContentView: View {
         await store.refreshTokenUsage(timeZone: timeZone)
       }
     }
-    .onChange(of: store.forecast.lastResetAt) {
-      historyStore.lastResetDidChange(store.forecast.lastResetAt, timeZone: timeZone)
+    .onChange(of: store.forecast.historyRevision) {
+      historyStore.historyRevisionDidChange(store.forecast.historyRevision, timeZone: timeZone)
     }
   }
 

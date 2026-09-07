@@ -87,11 +87,12 @@ actor CodexResetsHTTPClient {
       let receivedAt = now()
       if http.statusCode == 429 || http.statusCode == 503 {
         if let header = http.value(forHTTPHeaderField: "Retry-After"),
-          let seconds = TimeInterval(header), seconds.isFinite, seconds >= 0
+          let retryDate = Self.retryDate(header, receivedAt: receivedAt)
         {
-          hostRetryAt = max(hostRetryAt, receivedAt.addingTimeInterval(seconds))
+          hostRetryAt = max(hostRetryAt, retryDate)
         }
       }
+      let age = Self.age(http, requestedAt: instant, receivedAt: receivedAt)
       let value: Value
       var entry: Entry
       if http.statusCode == 304 {
@@ -100,7 +101,7 @@ actor CodexResetsHTTPClient {
         }
         retained.etag = http.value(forHTTPHeaderField: "ETag") ?? retained.etag
         retained.lifetime = Self.lifetime(http, fallback: retained.lifetime)
-        retained.expiresAt = receivedAt.addingTimeInterval(retained.lifetime)
+        retained.expiresAt = receivedAt.addingTimeInterval(max(0, retained.lifetime - age))
         retained.checkedAt = receivedAt
         value = cached
         entry = retained
@@ -111,7 +112,7 @@ actor CodexResetsHTTPClient {
         let lifetime = Self.lifetime(http, fallback: 60)
         entry = Entry(
           data: data, etag: http.value(forHTTPHeaderField: "ETag"),
-          expiresAt: receivedAt.addingTimeInterval(lifetime), checkedAt: receivedAt,
+          expiresAt: receivedAt.addingTimeInterval(max(0, lifetime - age)), checkedAt: receivedAt,
           lifetime: lifetime
         )
       }
@@ -147,16 +148,46 @@ actor CodexResetsHTTPClient {
       .lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
   }
 
-  private static func lifetime(_ response: HTTPURLResponse, fallback: TimeInterval) -> TimeInterval {
+  private static func lifetime(_ response: HTTPURLResponse, fallback: TimeInterval) -> TimeInterval
+  {
     let parts = directives(response)
     if parts.contains("no-cache") || parts.contains("no-store") { return 0 }
     // This is a private client cache: do not substitute s-maxage for max-age.
     let maxAge = parts.first(where: { $0.hasPrefix("max-age=") })
       .flatMap { TimeInterval($0.dropFirst(8).replacingOccurrences(of: "\"", with: "")) }
-    let age = TimeInterval(response.value(forHTTPHeaderField: "Age") ?? "0") ?? 0
     let duration = maxAge ?? fallback
-    guard duration.isFinite, age.isFinite else { return 0 }
-    return max(0, duration - max(0, age))
+    return duration.isFinite ? max(0, duration) : 0
+  }
+
+  private static func age(
+    _ response: HTTPURLResponse, requestedAt: Date, receivedAt: Date
+  ) -> TimeInterval {
+    let date = response.value(forHTTPHeaderField: "Date").flatMap(httpDate)
+    let apparentAge = max(0, receivedAt.timeIntervalSince(date ?? receivedAt))
+    let ageValue = TimeInterval(response.value(forHTTPHeaderField: "Age") ?? "0") ?? 0
+    guard ageValue.isFinite else { return .infinity }
+    let responseDelay = max(0, receivedAt.timeIntervalSince(requestedAt))
+    return max(apparentAge, max(0, ageValue) + responseDelay)
+  }
+
+  private static func retryDate(_ header: String, receivedAt: Date) -> Date? {
+    let value = header.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+      let seconds = TimeInterval(value), seconds.isFinite
+    {
+      return receivedAt.addingTimeInterval(seconds)
+    }
+    return httpDate(value)
+  }
+
+  private static func httpDate(_ value: String) -> Date? {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+    formatter.isLenient = false
+    return formatter.date(from: value)
   }
 
   private func loadDiskIfNeeded() {
@@ -177,7 +208,8 @@ actor CodexResetsHTTPClient {
       let keep = entries.sorted { $0.value.checkedAt > $1.value.checkedAt }.prefix(64)
       entries = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
     }
-    guard let cacheURL, let bytes = try? JSONEncoder().encode(entries), bytes.count <= 12_000_000 else { return }
+    guard let cacheURL, let bytes = try? JSONEncoder().encode(entries), bytes.count <= 12_000_000
+    else { return }
     do {
       try FileManager.default.createDirectory(
         at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true
