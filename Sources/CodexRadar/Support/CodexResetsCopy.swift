@@ -10,6 +10,21 @@ enum CodexResetsCopy {
     case "regular": return chinese ? "普通重置" : "Regular"
     case "banked": return chinese ? "重置券" : "Banked"
     case "statistics": return chinese ? "重置公告统计" : "Announcement statistics"
+    case "monthSummary": return chinese ? "%@，%lld 条公告" : "%@, %lld announcements"
+    case "historyInfo": return chinese ? "关于公告统计" : "About announcement statistics"
+    case "loadingHistory": return chinese ? "正在加载公告统计" : "Loading announcement statistics"
+    case "historyUnavailable": return chinese ? "公告历史暂不可用" : "Announcement history unavailable"
+    case "type": return chinese ? "公告类型" : "Announcement type"
+    case "radarTitle": return chinese ? "公告雷达" : "Announcement radar"
+    case "noAnnouncement": return chinese ? "无公告记录" : "No recorded announcement"
+    case "regularAnnouncement": return chinese ? "普通重置公告" : "Regular announcement"
+    case "bankedAnnouncement": return chinese ? "重置券公告" : "Banked announcement"
+    case "mixedDay": return chinese ? "同日有两类公告" : "Both types on this day"
+    case "radarUnavailable": return chinese ? "公告雷达暂不可用" : "Announcement radar unavailable"
+    case "dataSource": return chinese ? "重置数据来源" : "Reset data source"
+    case "refreshNotice": return chinese
+      ? "直接读取 Codex Resets 第三方公共 API，无需自建后端或账户凭证。刷新遵循服务端缓存策略，并非即时通知；退出应用后不推送通知。"
+      : "Reads the Codex Resets third-party public API directly, without an owned backend or account credentials. Refresh follows server caching, not realtime delivery. No notifications while the app is quit."
     case "byMonth": return chinese ? "每月公告数量" : "Announcements by month"
     case "regularByMonth": return chinese ? "每月普通重置公告" : "Regular announcements by month"
     case "bankedByMonth": return chinese ? "每月重置券公告" : "Banked announcements by month"
@@ -27,8 +42,8 @@ enum CodexResetsCopy {
     case "waiting": return chinese ? "当前没有有效预测，最近公告仍可查看。" : "No active forecast. Previous announcements remain available."
     case "updated": return chinese ? "数据生成时间" : "Data generated"
     case "historyNote": return chinese
-      ? "按公告或首次观察时间统计，不是账户实际重置时间。周从周一开始，月和天按所选时区计算。双色日表示同一天存在两类公告。"
-      : "Counts use announcement/first-observed times, not account reset times. Weeks start Monday; months and days follow your time zone. Mixed days contain both announcement types."
+      ? "按公告或首次观察时间统计，不是账户实际重置时间。周从周一开始，月和天按所选时区计算。全部公告为两类公告数量之和；混合日表示同一天有两类公告，不表示同一次重置同时发生。"
+      : "Counts use announcement/first-observed times, not account reset times. Weeks start Monday; months and days follow your time zone. All announcements sums both types. Mixed days contain both types, not necessarily a single combined event."
     default: return key
     }
   }

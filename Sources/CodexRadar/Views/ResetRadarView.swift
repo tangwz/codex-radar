@@ -41,7 +41,7 @@ struct ResetRadarView: View {
   private var header: some View {
     HStack(alignment: .center, spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
-        Text("Reset radar")
+        Text(CodexResetsCopy.text("radarTitle", locale: locale))
           .font(.headline)
         Text("Last 30 days")
           .font(.caption)
@@ -125,15 +125,15 @@ struct ResetRadarView: View {
 
   private var legend: some View {
     HStack(spacing: 16) {
-      legendItem("Hard reset", color: ResetRadarPalette.hard)
-      legendItem("Banked reset", color: ResetRadarPalette.banked)
-      legendItem("Hard + banked", color: ResetRadarPalette.hardAndBanked)
+      legendItem(CodexResetsCopy.text("regularAnnouncement", locale: locale), color: ResetRadarPalette.hard)
+      legendItem(CodexResetsCopy.text("bankedAnnouncement", locale: locale), color: ResetRadarPalette.banked)
+      legendItem(CodexResetsCopy.text("mixedDay", locale: locale), color: ResetRadarPalette.hardAndBanked)
     }
     .font(.caption)
     .foregroundStyle(.secondary)
   }
 
-  private func legendItem(_ title: LocalizedStringKey, color: Color) -> some View {
+  private func legendItem(_ title: String, color: Color) -> some View {
     HStack(spacing: 5) {
       RoundedRectangle(cornerRadius: 3, style: .continuous)
         .fill(color)
@@ -172,13 +172,13 @@ struct ResetRadarView: View {
   private func kindLabel(for kind: ResetRadarPresentation.Kind) -> String {
     switch kind {
     case .inactive:
-      String(localized: "No reset", bundle: .main, locale: locale)
+      CodexResetsCopy.text("noAnnouncement", locale: locale)
     case .hard:
-      String(localized: "Hard reset", bundle: .main, locale: locale)
+      CodexResetsCopy.text("regularAnnouncement", locale: locale)
     case .banked:
-      String(localized: "Banked reset", bundle: .main, locale: locale)
+      CodexResetsCopy.text("bankedAnnouncement", locale: locale)
     case .hardAndBanked:
-      String(localized: "Hard + banked", bundle: .main, locale: locale)
+      CodexResetsCopy.text("mixedDay", locale: locale)
     }
   }
 
@@ -193,8 +193,10 @@ struct ResetRadarView: View {
 }
 
 struct ResetRadarUnavailableView: View {
+  @Environment(\.locale) private var locale
+
   var body: some View {
-    Label("Reset radar unavailable", systemImage: "square.grid.3x3.square")
+    Label(CodexResetsCopy.text("radarUnavailable", locale: locale), systemImage: "square.grid.3x3.square")
       .font(.callout)
       .foregroundStyle(.secondary)
       .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)

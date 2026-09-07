@@ -161,7 +161,7 @@ struct ResetHistoryPresentationTests {
     #expect(
       viewSource.contains(
         "@State private var selectedMetric: ResetHistoryMetric = .both"))
-    #expect(viewSource.contains("Picker(\"Reset type\", selection: $selectedMetric)"))
+    #expect(viewSource.contains("Picker(CodexResetsCopy.text(\"type\", locale: locale), selection: $selectedMetric)"))
     #expect(viewSource.contains("metric: selectedMetric"))
 
     let bothTag = try #require(viewSource.range(of: ".tag(ResetHistoryMetric.both)"))
@@ -175,9 +175,9 @@ struct ResetHistoryPresentationTests {
   func resetChartUsesMetricSpecificTitlesWithoutRecentDetails() throws {
     let viewSource = try resetHistoryViewSource()
 
-    #expect(viewSource.contains("Hard + banked resets by month"))
-    #expect(viewSource.contains("Hard resets by month"))
-    #expect(viewSource.contains("Banked resets by month"))
+    #expect(viewSource.contains("CodexResetsCopy.text(\"byMonth\", locale: locale)"))
+    #expect(viewSource.contains("CodexResetsCopy.text(\"regularByMonth\", locale: locale)"))
+    #expect(viewSource.contains("CodexResetsCopy.text(\"bankedByMonth\", locale: locale)"))
     #expect(!viewSource.contains("recentList("))
     #expect(!viewSource.contains("Text(\"Recent resets\")"))
     #expect(!viewSource.contains("Text(\"Latest 5\")"))
