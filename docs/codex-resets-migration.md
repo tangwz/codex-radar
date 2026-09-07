@@ -60,5 +60,16 @@ appcast, version, signing keys or release activation.
 Run `./script/test.sh` with full Xcode for the canonical suite. A focused migration
 suite runs on macOS CI. Record the exact tested commit and any unrelated AppKit
 failures in the PR. Visual/notification behavior still needs real-Mac release
-qualification. This document describes the target runtime semantics; outstanding
-UI wording and integration checks are tracked in the draft PR.
+qualification. Record the latest exact commit and results in the PR rather than
+assuming that a successful build also validates interactive behavior.
+
+The history picker, chart tooltips, accessibility labels and radar legend use
+bilingual announcement wording. All announcements is regular plus banked, not
+the old simultaneous-reset subset. Mixed days mean two types were recorded on
+one local day, not that account quota arrived simultaneously. Settings disclose
+the third-party source, server-controlled caching and lack of polling after quit.
+
+The AppKit test fixture owns its NSWindow through Swift ARC and explicitly sets
+isReleasedWhenClosed=false before close(). This avoids over-release during test
+teardown; the window visibility/accessibility assertions and standard test entry
+point are retained. No production window behavior or CI gate is bypassed.
