@@ -1,0 +1,109 @@
+name: Finalize Codex Resets migration
+
+on:
+  push:
+    branches: [codex/migrate-to-codex-resets-api]
+    paths: [.github/workflows/finalize-codex-resets.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    if: github.ref == 'refs/heads/codex/migrate-to-codex-resets-api'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Apply reviewed notification baseline fix
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib
+          def edit(path, expected, replacements):
+              p = Path(path)
+              original = p.read_bytes()
+              actual = hashlib.sha1(f'blob {len(original)}\0'.encode() + original).hexdigest()
+              assert actual == expected, (path, actual)
+              text = original.decode()
+              for old, new in replacements:
+                  assert text.count(old) == 1, (path, old)
+                  text = text.replace(old, new)
+              p.write_text(text)
+          edit('Sources/CodexRadar/Models/ResetForecast.swift', 'd1b50e8987cfd91c3a617e6465305a620ca8b042', [
+              ('  let lastReset: LastResetAvailability\n', '  let lastReset: LastResetAvailability\n  let baselineSignalIDs: Set<String>\n'),
+              ('    lastReset: LastResetAvailability = .unavailable\n', '    lastReset: LastResetAvailability = .unavailable,\n    baselineSignalIDs: Set<String> = []\n'),
+              ('    self.lastReset = lastReset\n', '    self.lastReset = lastReset\n    self.baselineSignalIDs = baselineSignalIDs\n'),
+              ('    posts = try container.decode([ResetSourcePost].self, forKey: .posts)\n', '    posts = try container.decode([ResetSourcePost].self, forKey: .posts)\n    baselineSignalIDs = []\n')
+          ])
+          edit('Sources/CodexRadar/Models/CodexResetsAPI.swift', 'fa744a00bedb1ec7dcb145690e02bcb95afab89a', [
+              ('      lastReset: lastReset\n', '      lastReset: lastReset,\n      baselineSignalIDs: Set([\n        latest.map { "codex-resets:reset:" + $0.id },\n        data.active_watch.flatMap { $0.observed_at <= now ? $0.signalID : nil }\n      ].compactMap { $0 })\n')
+          ])
+          edit('Sources/CodexRadar/Services/ResetNotificationService.swift', 'c6591c08dd10dd67a9c85575fdcfdf3a45caa2bc', [
+              ('      // Upgrade and first installation both silently consume the first fresh signal.\n', '      // Seed every already-visible event, including the announcement hidden\n      // behind a newer watch, so watch expiration cannot replay old history.\n'),
+              ('        consumedSignalStore.establishBaseline(signalID: forecast.signalID)\n        defaults.set(true, forKey: Self.publicBaselineKey)\n', '        consumedSignalStore.establishBaseline(signalID: forecast.signalID)\n        for signalID in forecast.baselineSignalIDs {\n          consumedSignalStore.consume(signalID)\n        }\n        defaults.set(true, forKey: Self.publicBaselineKey)\n')
+          ])
+          p = Path('README.md')
+          text = p.read_text()
+          start = text.index('## 功能\n')
+          end = text.index('\n## 运行\n', start)
+          text = text[:start] + '''## 功能
+
+          - 客户端直接读取 Codex Resets 公共 `/api/v1/status` 和 `/api/v1/resets`，不需要自建后端、代理、X 凭证或账户 Token。
+          - 最新重置公告与预测分别处理；预测的失效时间不作为实际重置倒计时，公告也不代表个人账户额度已经恢复。
+          - 完整读取历史分页后，在本地按用户时区汇总自然周、自然月和最近 30 天记录。
+          - 公共响应使用本地磁盘缓存和 ETag；遵守服务端 Cache-Control、Age 与 Retry-After。离线缓存会标为过期，不触发提醒。
+          - 首次安装或从旧后端迁移时建立通知基线，不补发已有公告；使用来源命名空间和事件 ID 去重。
+          - 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`，本地 token 统计及其缓存不变，不上传日志。
+          - 保留日/月/年用量、语言和外观设置，以及 Sparkle 2.9.4 签名更新链路。
+
+          数据源是第三方公告与预测服务，不是 OpenAI 账户额度接口。已观察到状态接口返回四小时的客户端缓存有效期，因此分钟级界面刷新不等于分钟级网络请求或即时通知。应用退出时不提供服务端推送。
+
+          接口语义、缓存行为与旧版过渡详见 `docs/codex-resets-migration.md`。以下 v0.1.4 是此前发布版本，本次迁移尚未发布；旧后端不能在旧客户端仍使用时直接关闭。
+          '''.replace('\n          ', '\n') + text[end:]
+          p.write_text(text)
+      - name: Commit only to the migration branch
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/codex/migrate-to-codex-resets-api
+          git diff --check
+          git rm .github/workflows/finalize-codex-resets.yml
+          git add Sources/CodexRadar/Models/ResetForecast.swift Sources/CodexRadar/Models/CodexResetsAPI.swift Sources/CodexRadar/Services/ResetNotificationService.swift README.md
+          git -c user.name='Codex' -c user.email='codex@users.noreply.github.com' commit -m 'fix: seed all public event IDs during provider migration'
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/codex/migrate-to-codex-resets-api
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  verify:
+    needs: finalize
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ needs.finalize.outputs.commit }}
+          persist-credentials: false
+      - name: Snapshot tested source
+        run: git archive --format=tar.gz -o "$RUNNER_TEMP/codex-resets-reviewed-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-resets-reviewed-source
+          path: ${{ runner.temp }}/codex-resets-reviewed-source.tar.gz
+          retention-days: 3
+      - name: Release build with complete concurrency checks
+        run: swift build -c release -Xswiftc -strict-concurrency=complete
+      - name: Non-AppKit test suites
+        run: swift test --no-parallel --skip 'MenuActionLayoutTests|MenuBarControllerTests|MenuBarPanelActionsTests|SettingsWindowBridgeTests'
+      - name: Canonical full suite
+        if: ${{ !cancelled() }}
+        run: ./script/test.sh
