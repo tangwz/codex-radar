@@ -1,0 +1,29 @@
+name: Codex Resets contract probe
+
+on:
+  push:
+    branches: [codex/migrate-to-codex-resets-api]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect public API contract (no credentials)
+        shell: python
+        run: |
+          import urllib.request
+          for path in ['/api/docs', '/api/v1/status', '/api/v1/resets?limit=2&order=desc']:
+              print('\n=== ' + path + ' ===', flush=True)
+              try:
+                  request = urllib.request.Request('https://codex-resets.com' + path, headers={'User-Agent': 'CodexRadar-contract-verification'})
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      print('HTTP', response.status, flush=True)
+                      print('HEADERS', dict(response.headers), flush=True)
+                      print(response.read(32000).decode('utf-8', errors='replace'), flush=True)
+              except Exception as error:
+                  print(type(error).__name__, str(error), flush=True)
