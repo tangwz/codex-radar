@@ -60,6 +60,9 @@ struct SettingsWindowBridgeTests {
       backing: .buffered,
       defer: false
     )
+    // The fixture owns this window through ARC, not an NSWindowController.
+    // Avoid NSWindow.close() releasing it a second time during teardown.
+    window.isReleasedWhenClosed = false
     defer { window.close() }
     let hostedContent = NSView(frame: window.contentView?.bounds ?? .zero)
     window.contentView = hostedContent
