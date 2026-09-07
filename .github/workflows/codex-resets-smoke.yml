@@ -20,15 +20,46 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-      - name: Test public API integration and affected presentation
+      - name: Snapshot exact tested source
+        run: git archive --format=tar.gz -o "$RUNNER_TEMP/codex-resets-source.tar.gz" HEAD
+      - name: Release build with complete concurrency checks
         shell: bash
         run: |
           set +e
-          swift test --filter 'CodexResets|ResetForecast|ResetHistory|ResetNotification|ResetRadar|ConsumedResetSignal|DashboardStoreForecast|MenuActionLayout|MenuBarTheme|SettingsLayout' > "$RUNNER_TEMP/codex-resets-tests.log" 2>&1
+          swift build -c release -Xswiftc -strict-concurrency=complete > "$RUNNER_TEMP/release-build.log" 2>&1
           result=$?
-          grep -E 'Build complete|error:|warning:|recorded an issue|Expectation failed|Test run with|Suite .*failed|Process completed' "$RUNNER_TEMP/codex-resets-tests.log" || true
-          if [ "$result" -ne 0 ]; then
-            tail -n 60 "$RUNNER_TEMP/codex-resets-tests.log"
-          fi
+          cat "$RUNNER_TEMP/release-build.log"
+          exit "$result"
+      - name: Complete non-AppKit regression suites
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set +e
+          swift test --no-parallel --skip 'MenuActionLayoutTests|MenuBarControllerTests|MenuBarPanelActionsTests|SettingsWindowBridgeTests' > "$RUNNER_TEMP/codex-resets-tests.log" 2>&1
+          result=$?
+          grep -E 'Build complete|error:|warning:|recorded an issue|Expectation failed|Test run with|Suite .*failed' "$RUNNER_TEMP/codex-resets-tests.log" || true
+          if [ "$result" -ne 0 ]; then tail -n 80 "$RUNNER_TEMP/codex-resets-tests.log"; fi
           echo "Test process exit code: $result"
           exit "$result"
+      - name: Canonical full suite (including AppKit)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set +e
+          ./script/test.sh > "$RUNNER_TEMP/canonical-tests.log" 2>&1
+          result=$?
+          grep -E 'Build complete|error:|warning:|recorded an issue|Expectation failed|Test run with|Suite .*failed' "$RUNNER_TEMP/canonical-tests.log" || true
+          if [ "$result" -ne 0 ]; then tail -n 80 "$RUNNER_TEMP/canonical-tests.log"; fi
+          echo "Canonical process exit code: $result"
+          exit "$result"
+      - name: Retain source snapshot and verification logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-resets-migration-verification
+          path: |
+            ${{ runner.temp }}/codex-resets-source.tar.gz
+            ${{ runner.temp }}/release-build.log
+            ${{ runner.temp }}/codex-resets-tests.log
+            ${{ runner.temp }}/canonical-tests.log
+          retention-days: 3
