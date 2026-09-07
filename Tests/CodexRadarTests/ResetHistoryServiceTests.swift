@@ -1,163 +1,105 @@
 import Foundation
 import Testing
-
 @testable import CodexRadar
 
 struct ResetHistoryServiceTests {
   @Test
-  func usesProductionHistoryEndpoint() {
-    let service = ResetHistoryService()
-
-    #expect(
-      service.historyURL.absoluteString
-        == "https://codex-radar-monitor.terencetang.workers.dev/v1/history"
-    )
+  func fetchesAllPagesAndAggregatesRegularAndBankedLocally() async throws {
+    let recorder = PublicAPIRequests()
+    let service = ResetHistoryService(loader: HTTPDataLoader { request in
+      await recorder.record(request)
+      let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+      #expect(query.contains(URLQueryItem(name: "limit", value: "100")))
+      #expect(!query.contains { $0.name == "time_zone" || $0.name == "range" })
+      if query.contains(where: { $0.name == "cursor" }) {
+        return (publicPage(records: [publicRecord(id: "second", kind: "regular")]), publicResponse(request))
+      }
+      return (publicPage(records: [publicRecord()], more: true, cursor: "page_2"), publicResponse(request))
+    }, now: { publicAPINow })
+    let history = try await service.fetch(timeZoneIdentifier: "Asia/Singapore", range: .sixMonths)
+    #expect(service.historyURL == CodexResetsAPI.historyURL)
+    #expect(history.months.count == 6)
+    #expect(history.current.week.count == 2)
+    #expect(history.current.month.counts.hard == 1)
+    #expect(history.current.month.counts.banked == 1)
+    #expect(history.current.month.counts.both == 0)
+    #expect(history.radarDays?.count == 30)
+    #expect(history.recent.count == 2)
+    let totals = ResetHistoryPresentation(history: history, selectedRange: .sixMonths, metric: .both, locale: Locale(identifier: "en"))
+    #expect(totals.monthCount == 2)
+    #expect(ResetRadarPresentation(history: history, locale: Locale(identifier: "en"), now: publicAPINow)?.days.last?.kind == .hardAndBanked)
+    #expect(await recorder.requests.count == 2)
   }
 
-  @Test(arguments: [
-    (ResetHistoryRange.threeMonths, "3m"),
-    (ResetHistoryRange.sixMonths, nil),
-    (.twelveMonths, "12m"),
-    (.all, "all"),
-  ])
-  func sendsNormalizedRange(
-    _ range: ResetHistoryRange,
-    _ expectedQueryValue: String?
-  ) async throws {
-    let recorder = HistoryRequestRecorder()
-    let service = ResetHistoryService(
-      loader: HTTPDataLoader { request in
-        await recorder.record(request)
-        return (
-          Data(historyServiceJSON(range: range).utf8),
-          historyResponse(status: 200, url: request.url!)
-        )
+  @Test
+  func repeatedOrMissingCursorFailsInsteadOfReturningPartialStatistics() async {
+    for cursor in ["loop", nil] as [String?] {
+      let service = ResetHistoryService(loader: HTTPDataLoader { request in
+        (publicPage(records: [publicRecord()], more: true, cursor: cursor), publicResponse(request))
+      })
+      await #expect(throws: ResetHistoryServiceError.invalidResponse) {
+        try await service.fetch(timeZoneIdentifier: "UTC", range: .all)
       }
-    )
-
-    _ = try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", range: range)
-    let request = try #require(await recorder.request)
-    let components = try #require(URLComponents(url: request.url!, resolvingAgainstBaseURL: false))
-
-    #expect(request.url?.path == "/v1/history")
-    #expect(
-      components.queryItems?.first(where: { $0.name == "time_zone" })?.value == "Asia/Shanghai"
-    )
-    #expect(
-      components.queryItems?.first(where: { $0.name == "range" })?.value == expectedQueryValue)
-    #expect(components.queryItems?.contains(where: { $0.name == "year" }) == false)
-    #expect(request.timeoutInterval == 15)
-    #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
-  }
-
-  @Test(arguments: [
-    (400, ResetHistoryServiceError.invalidRequest),
-    (503, .unavailable),
-    (500, .invalidResponse),
-  ])
-  func mapsHTTPFailures(_ status: Int, _ expectedError: ResetHistoryServiceError) async {
-    let service = ResetHistoryService(
-      loader: HTTPDataLoader { request in
-        (Data(), historyResponse(status: status, url: request.url!))
-      }
-    )
-
-    await #expect(throws: expectedError) {
-      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
     }
   }
 
   @Test
-  func rejectsMismatchedResponseTimeZoneOrRange() async {
-    let mismatchedTimeZone = ResetHistoryService(
-      loader: HTTPDataLoader { request in
-        (
-          Data(historyServiceJSON(timeZone: "UTC", range: .sixMonths).utf8),
-          historyResponse(status: 200, url: request.url!)
-        )
-      }
-    )
-    let mismatchedRange = ResetHistoryService(
-      loader: HTTPDataLoader { request in
-        (
-          Data(historyServiceJSON(range: .twelveMonths).utf8),
-          historyResponse(status: 200, url: request.url!)
-        )
-      }
-    )
-
-    await #expect(throws: ResetHistoryServiceError.invalidResponse) {
-      try await mismatchedTimeZone.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
-    }
-    await #expect(throws: ResetHistoryServiceError.invalidResponse) {
-      try await mismatchedRange.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
+  func laterPageFailureDoesNotCommitPartialHistory() async {
+    let service = ResetHistoryService(loader: HTTPDataLoader { request in
+      if request.url!.query!.contains("cursor=") { return (Data(), publicResponse(request, status: 503)) }
+      return (publicPage(records: [publicRecord()], more: true, cursor: "next"), publicResponse(request))
+    })
+    await #expect(throws: ResetHistoryServiceError.unavailable) {
+      try await service.fetch(timeZoneIdentifier: "UTC", range: .sixMonths)
     }
   }
 
   @Test
-  func rejectsInvalidRequestTimeZoneBeforeLoading() async {
-    let service = ResetHistoryService(
-      loader: HTTPDataLoader { _ in
-        Issue.record("The loader should not be called for an invalid request.")
-        return (Data(), URLResponse())
-      }
-    )
+  func deduplicatesIdenticalOpaqueIDsAcrossPages() async throws {
+    let service = ResetHistoryService(loader: HTTPDataLoader { request in
+      let last = request.url!.query!.contains("cursor=")
+      return (publicPage(records: [publicRecord()], more: !last, cursor: last ? nil : "next"), publicResponse(request))
+    }, now: { publicAPINow })
+    let history = try await service.fetch(timeZoneIdentifier: "UTC", range: .all)
+    #expect(history.current.month.count == 1)
+    #expect(history.recent.first?.id == "observed-a")
+  }
 
+  @Test
+  func usesNaturalLocalMonthAndMondayWeekBoundaries() async throws {
+    let service = ResetHistoryService(loader: HTTPDataLoader { request in
+      (publicPage(records: [
+        publicRecord(id: "previous", at: "2026-08-31T15:59:59Z"),
+        publicRecord(id: "current", kind: "regular", at: "2026-08-31T16:00:00Z"),
+        publicRecord(id: "sunday", at: "2026-09-06T15:59:59Z"),
+        publicRecord(id: "monday", at: "2026-09-06T16:00:00Z"),
+      ]), publicResponse(request))
+    }, now: { publicAPINow })
+    let history = try await service.fetch(timeZoneIdentifier: "Asia/Singapore", range: .twelveMonths)
+    #expect(history.months.count == 12)
+    #expect(history.current.month.count == 3)
+    #expect(history.current.week.count == 1)
+  }
+
+  @Test
+  func representsDSTDaysAsNaturalDaysNot86400Seconds() async throws {
+    let date = ISO8601DateFormatter().date(from: "2026-03-10T12:00:00Z")!
+    let service = ResetHistoryService(loader: HTTPDataLoader { request in
+      (publicPage(), publicResponse(request))
+    }, now: { date })
+    let history = try await service.fetch(timeZoneIdentifier: "America/Los_Angeles", range: .all)
+    let dst = try #require(history.radarDays?.first { $0.day == "2026-03-08" })
+    #expect(dst.to.timeIntervalSince(dst.from) == 23 * 3600)
+  }
+
+  @Test
+  func rejectsInvalidTimeZoneBeforeLoading() async {
+    let service = ResetHistoryService(loader: HTTPDataLoader { _ in
+      Issue.record("Invalid zone must not call network")
+      throw URLError(.badURL)
+    })
     await #expect(throws: ResetHistoryServiceError.invalidRequest) {
       try await service.fetch(timeZoneIdentifier: "Invalid/Zone", range: .sixMonths)
     }
   }
-
-  @Test
-  func mapsPlainURLResponseToInvalidResponse() async {
-    let service = ResetHistoryService(
-      loader: HTTPDataLoader { request in
-        (
-          Data(),
-          URLResponse(
-            url: request.url!, mimeType: nil, expectedContentLength: 0, textEncodingName: nil)
-        )
-      }
-    )
-
-    await #expect(throws: ResetHistoryServiceError.invalidResponse) {
-      try await service.fetch(timeZoneIdentifier: "Asia/Shanghai", range: .sixMonths)
-    }
-  }
-}
-
-private actor HistoryRequestRecorder {
-  private(set) var request: URLRequest?
-
-  func record(_ request: URLRequest) {
-    self.request = request
-  }
-}
-
-private func historyResponse(status: Int, url: URL) -> HTTPURLResponse {
-  HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
-}
-
-private func historyServiceJSON(
-  timeZone: String = "Asia/Shanghai",
-  range: ResetHistoryRange = .sixMonths
-) -> String {
-  let monthCount = range.fixedMonthCount ?? 6
-  let startYear = range == .twelveMonths ? 2025 : 2026
-  let startMonth: Int
-  switch range {
-  case .threeMonths:
-    startMonth = 5
-  case .twelveMonths:
-    startMonth = 8
-  case .sixMonths, .all:
-    startMonth = 2
-  }
-  return resetHistoryJSON(
-    range: range.rawValue,
-    startYear: startYear,
-    startMonth: startMonth,
-    monthCount: monthCount,
-    timeZoneIdentifier: timeZone
-  )
 }

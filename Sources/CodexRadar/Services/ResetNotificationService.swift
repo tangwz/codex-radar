@@ -13,16 +13,12 @@ enum ResetNotificationPolicy {
     hasBaseline: Bool,
     consumedSignalIDs: Set<String>
   ) -> ResetNotificationDecision {
-    guard hasBaseline else {
-      return .establishBaseline(forecast.signalID)
-    }
+    guard hasBaseline else { return .establishBaseline(forecast.signalID) }
     guard !forecast.stale,
       [.candidate, .announced, .completed].contains(forecast.status),
       let signalID = forecast.signalID,
       !consumedSignalIDs.contains(signalID)
-    else {
-      return .ignore
-    }
+    else { return .ignore }
     return .notify(signalID)
   }
 }
@@ -30,6 +26,7 @@ enum ResetNotificationPolicy {
 struct ResetNotificationPresentation: Equatable {
   enum Body: Equatable {
     case candidate
+    case announcement
     case exact(Date)
     case estimated(Date, Date)
     case imminent
@@ -40,13 +37,14 @@ struct ResetNotificationPresentation: Equatable {
 
   init?(forecast: ResetForecast) {
     guard !forecast.stale else { return nil }
-
     switch forecast.status {
-    case .candidate:
-      body = .candidate
-    case .completed:
-      body = .completed
+    case .candidate: body = .candidate
+    case .completed: body = .completed
     case .announced:
+      if forecast.schemaVersion == CodexResetsAPI.schema {
+        body = .announcement
+        return
+      }
       switch forecast.timing?.kind {
       case .exact:
         guard let at = forecast.timing?.at else { return nil }
@@ -54,11 +52,9 @@ struct ResetNotificationPresentation: Equatable {
       case .estimated:
         guard let from = forecast.timing?.from, let to = forecast.timing?.to else { return nil }
         body = .estimated(from, to)
-      case .imminent, nil:
-        body = .imminent
+      case .imminent, nil: body = .imminent
       }
-    case .monitoring:
-      return nil
+    case .monitoring: return nil
     }
   }
 }
@@ -68,9 +64,11 @@ final class ResetNotificationService {
   typealias DeliverNotification = @MainActor (ResetForecast, String) async -> Bool
 
   private let center: UNUserNotificationCenter?
+  private let defaults: UserDefaults
   private let consumedSignalStore: ConsumedResetSignalStore
   private let deliverNotification: DeliverNotification
   private var inFlightSignalIDs: Set<String> = []
+  private static let publicBaselineKey = "codexResetsV1.hasNotificationBaseline"
 
   init(
     center: UNUserNotificationCenter = .current(),
@@ -79,13 +77,10 @@ final class ResetNotificationService {
     deliverNotification: DeliverNotification? = nil
   ) {
     self.center = center
+    self.defaults = defaults
     self.consumedSignalStore = consumedSignalStore ?? ConsumedResetSignalStore(defaults: defaults)
     self.deliverNotification = deliverNotification ?? { forecast, signalID in
-      await Self.sendNotification(
-        for: forecast,
-        signalID: signalID,
-        center: center
-      )
+      await Self.sendNotification(for: forecast, signalID: signalID, center: center)
     }
   }
 
@@ -95,6 +90,7 @@ final class ResetNotificationService {
     deliverNotification: @escaping DeliverNotification
   ) {
     center = nil
+    self.defaults = defaults
     self.consumedSignalStore = consumedSignalStore ?? ConsumedResetSignalStore(defaults: defaults)
     self.deliverNotification = deliverNotification
   }
@@ -105,16 +101,21 @@ final class ResetNotificationService {
   }
 
   func observe(_ forecast: ResetForecast) async {
-    let observationState = consumedSignalStore.stateForObservation(
-      currentSignalID: forecast.signalID
-    )
-
+    if forecast.schemaVersion == CodexResetsAPI.schema {
+      guard !forecast.stale else { return }
+      // The former backend's baseline cannot identify the public API's events.
+      // Upgrade and first installation both silently consume the first fresh signal.
+      if !defaults.bool(forKey: Self.publicBaselineKey) {
+        consumedSignalStore.establishBaseline(signalID: forecast.signalID)
+        defaults.set(true, forKey: Self.publicBaselineKey)
+        return
+      }
+    }
+    let observationState = consumedSignalStore.stateForObservation(currentSignalID: forecast.signalID)
     let decision = ResetNotificationPolicy.decision(
-      forecast: forecast,
-      hasBaseline: observationState.hasBaseline,
+      forecast: forecast, hasBaseline: observationState.hasBaseline,
       consumedSignalIDs: observationState.consumedSignalIDs
     )
-
     switch decision {
     case .establishBaseline(let signalID):
       consumedSignalStore.establishBaseline(signalID: signalID)
@@ -133,34 +134,28 @@ final class ResetNotificationService {
     signalID: String,
     center: UNUserNotificationCenter
   ) async -> Bool {
-    guard let presentation = ResetNotificationPresentation(forecast: forecast) else {
-      return false
-    }
+    guard let presentation = ResetNotificationPresentation(forecast: forecast) else { return false }
     let settings = await center.notificationSettings()
-    guard settings.authorizationStatus == .authorized
-      || settings.authorizationStatus == .provisional
-    else {
-      return false
-    }
-
+    guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return false }
     let content = UNMutableNotificationContent()
     let locale = AppLanguage.selected.locale
     switch presentation.body {
     case .candidate:
       content.title = AppLocalization.string("Possible Codex reset detected")
-      content.body = AppLocalization.string("A possible Codex reset signal was posted.")
+      content.body = forecast.schemaVersion == CodexResetsAPI.schema
+        ? CodexResetsCopy.text("forecastDisclaimer", locale: locale)
+        : AppLocalization.string("A possible Codex reset signal was posted.")
+    case .announcement:
+      content.title = AppLocalization.string("Codex reset announced")
+      content.body = CodexResetsCopy.text("announcementDisclaimer", locale: locale)
     case .exact(let at):
       content.title = AppLocalization.string("Codex reset announced")
-      content.body = String(
-        format: AppLocalization.string("A reset is expected by %@."),
-        DisplayFormatting.absoluteDate(at, locale: locale)
-      )
+      content.body = String(format: AppLocalization.string("A reset is expected by %@."), DisplayFormatting.absoluteDate(at, locale: locale))
     case .estimated(let from, let to):
       content.title = AppLocalization.string("Codex reset announced")
       content.body = String(
         format: AppLocalization.string("A reset is expected between %@ and %@."),
-        DisplayFormatting.absoluteDate(from, locale: locale),
-        DisplayFormatting.absoluteDate(to, locale: locale)
+        DisplayFormatting.absoluteDate(from, locale: locale), DisplayFormatting.absoluteDate(to, locale: locale)
       )
     case .imminent:
       content.title = AppLocalization.string("Codex reset announced")
@@ -171,17 +166,7 @@ final class ResetNotificationService {
     }
     content.sound = .default
     content.threadIdentifier = "codex-reset"
-
-    let request = UNNotificationRequest(
-      identifier: signalID,
-      content: content,
-      trigger: nil
-    )
-    do {
-      try await center.add(request)
-      return true
-    } catch {
-      return false
-    }
+    let request = UNNotificationRequest(identifier: signalID, content: content, trigger: nil)
+    do { try await center.add(request); return true } catch { return false }
   }
 }
