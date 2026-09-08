@@ -4,7 +4,7 @@ import Foundation
 @MainActor
 final class ResetHistoryStore: ObservableObject {
   typealias FetchHistory =
-    @Sendable (String, ResetHistoryRange) async throws -> ResetHistory
+    @Sendable (String, ResetHistoryRange, Bool) async throws -> ResetHistory
   typealias WaitUntil = @Sendable (Date) async throws -> Void
   typealias Now = @Sendable () -> Date
 
@@ -61,7 +61,7 @@ final class ResetHistoryStore: ObservableObject {
     }
   ) {
     fetchHistory = {
-      try await service.fetch(timeZoneIdentifier: $0, range: $1)
+      try await service.fetch(timeZoneIdentifier: $0, range: $1, revalidate: $2)
     }
     self.waitUntil = waitUntil
     self.now = now
@@ -242,10 +242,13 @@ final class ResetHistoryStore: ObservableObject {
       : query.targetRange
     isLoading = true
     let fetchHistory = fetchHistory
+    // A new status revision is evidence that the independently cached history
+    // may be outdated. Revalidate with its ETag, still honoring retry cooldowns.
+    let revalidate = transferredFreshness.contains(.reset)
 
     loadTask = Task { [weak self] in
       do {
-        let result = try await fetchHistory(query.timeZoneIdentifier, query.fetchRange)
+        let result = try await fetchHistory(query.timeZoneIdentifier, query.fetchRange, revalidate)
         guard
           !Task.isCancelled,
           let self,

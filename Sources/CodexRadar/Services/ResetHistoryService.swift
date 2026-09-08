@@ -36,7 +36,9 @@ struct ResetHistoryService: Sendable {
     client = CodexResetsHTTPClient(loader: loader, now: now, cacheURL: cacheURL)
   }
 
-  func fetch(timeZoneIdentifier: String, range: ResetHistoryRange) async throws -> ResetHistory {
+  func fetch(
+    timeZoneIdentifier: String, range: ResetHistoryRange, revalidate: Bool = false
+  ) async throws -> ResetHistory {
     guard let zone = TimeZone(identifier: timeZoneIdentifier),
       var components = URLComponents(url: historyURL, resolvingAgainstBaseURL: false)
     else { throw ResetHistoryServiceError.invalidRequest }
@@ -54,7 +56,8 @@ struct ResetHistoryService: Sendable {
         ]
         if let cursor { components.queryItems?.append(URLQueryItem(name: "cursor", value: cursor)) }
         guard let url = components.url else { throw ResetHistoryServiceError.invalidRequest }
-        let page = try await client.load(url, as: CodexResetsPage.self).value
+        let page = try await client.load(url, as: CodexResetsPage.self, revalidate: revalidate)
+          .value
         for record in page.data {
           if let previous = records[record.id], previous != record {
             throw CodexResetsError.incompleteHistory

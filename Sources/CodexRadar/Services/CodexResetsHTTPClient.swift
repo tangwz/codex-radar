@@ -42,7 +42,7 @@ actor CodexResetsHTTPClient {
   }
 
   func load<Value: CodexResetsDocument>(
-    _ url: URL, as type: Value.Type, allowStale: Bool = false
+    _ url: URL, as type: Value.Type, allowStale: Bool = false, revalidate: Bool = false
   ) async throws -> Snapshot<Value> {
     try Task.checkCancellation()
     loadDiskIfNeeded()
@@ -57,7 +57,7 @@ actor CodexResetsHTTPClient {
       entries.removeValue(forKey: key)
       previous = nil
     }
-    if let previous, let cached,
+    if !revalidate, let previous, let cached,
       previous.checkedAt <= instant, previous.expiresAt > instant,
       retryAt[key] == nil
     {

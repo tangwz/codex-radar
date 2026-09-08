@@ -6,6 +6,51 @@ import Testing
 @Suite(.serialized)
 struct ResetHistoryStoreTests {
   @MainActor
+  @Test
+  func announcementRevisionRevalidatesFreshPublicHistoryCache() async throws {
+    let recorder = PublicAPIRequests()
+    let service = ResetHistoryService(
+      loader: HTTPDataLoader { request in
+        await recorder.record(request)
+        let initial = await recorder.requests.count == 1
+        if !initial {
+          #expect(request.value(forHTTPHeaderField: "If-None-Match") == "history-1")
+        }
+        let records =
+          initial
+          ? [publicRecord(id: "regular", kind: "regular")]
+          : [publicRecord(id: "regular", kind: "regular"), publicRecord(id: "banked")]
+        return (
+          publicPage(records: records),
+          publicResponse(
+            request,
+            headers: [
+              "Cache-Control": "max-age=14400", "ETag": initial ? "history-1" : "history-2",
+            ])
+        )
+      }, now: { publicAPINow }
+    )
+    let store = ResetHistoryStore(
+      service: service, waitUntil: { _ in try await Task.sleep(for: .seconds(3600)) },
+      now: { publicAPINow }
+    )
+    defer { store.dashboardDidDisappear() }
+    let zone = TimeZone(identifier: "UTC")!
+    let first = ResetHistoryRevision(
+      lastResetAt: publicAPINow, latestResetID: "regular", totalAnnouncements: 1)
+    store.dashboardDidAppear(timeZone: zone, historyRevision: first)
+    await expectStoreIdle(store)
+    #expect(store.history?.current.month.count == 1)
+
+    let next = ResetHistoryRevision(
+      lastResetAt: publicAPINow, latestResetID: "banked", totalAnnouncements: 2)
+    store.historyRevisionDidChange(next, timeZone: zone)
+    await expectStoreIdle(store)
+    #expect(store.history?.current.month.count == 2)
+    #expect(await recorder.requests.count == 2)
+  }
+
+  @MainActor
   @Test(arguments: [("banked", 1), ("regular", 2)])
   func publicAnnouncementsAtSameTimeRefreshStatisticsWhileWatchIsActive(
     latestID: String, total: Int
@@ -644,7 +689,7 @@ struct ResetHistoryStoreTests {
     let waiter = NonCooperativeHistoryWaiter()
     let store = ResetHistoryStore(
       fetchHistory: {
-        try await fetcher.fetch(timeZoneIdentifier: $0, range: $1)
+        try await fetcher.fetch(timeZoneIdentifier: $0, range: $1, revalidate: $2)
       },
       waitUntil: {
         try await waiter.wait(until: $0)
@@ -805,6 +850,7 @@ struct ResetHistoryStoreTests {
     await expectCallCount(3, fetcher: context.fetcher)
 
     #expect(await context.fetcher.requests.map(\.range) == [.sixMonths, .sixMonths, .sixMonths])
+    #expect(await context.fetcher.revalidations == [false, false, true])
     #expect(context.store.selectedRange == .threeMonths)
 
     await context.fetcher.completeNext(
@@ -843,6 +889,7 @@ struct ResetHistoryStoreTests {
     #expect(
       await context.fetcher.requests.map(\.range)
         == [.sixMonths, .twelveMonths, .twelveMonths])
+    #expect(await context.fetcher.revalidations == [false, false, true])
     #expect(context.store.selectedRange == .twelveMonths)
 
     await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
@@ -881,6 +928,7 @@ struct ResetHistoryStoreTests {
     #expect(
       await context.fetcher.requests.map(\.range)
         == [.sixMonths, .twelveMonths, .sixMonths])
+    #expect(await context.fetcher.revalidations == [false, false, true])
     #expect(context.store.selectedRange == .threeMonths)
     #expect(context.store.isLoading)
 
@@ -1537,7 +1585,7 @@ private func makeContext(
   let waiter = ControlledHistoryWaiter()
   let store = ResetHistoryStore(
     fetchHistory: {
-      try await fetcher.fetch(timeZoneIdentifier: $0, range: $1)
+      try await fetcher.fetch(timeZoneIdentifier: $0, range: $1, revalidate: $2)
     },
     waitUntil: {
       try await waiter.wait(until: $0)
@@ -1630,15 +1678,18 @@ private actor ControlledHistoryFetcher {
 
   private var continuations: [CheckedContinuation<Outcome, Never>] = []
   private(set) var requests: [HistoryRequest] = []
+  private(set) var revalidations: [Bool] = []
 
   var callCount: Int { requests.count }
 
   func fetch(
     timeZoneIdentifier: String,
-    range: ResetHistoryRange
+    range: ResetHistoryRange,
+    revalidate: Bool
   ) async throws -> ResetHistory {
     requests.append(
       HistoryRequest(timeZoneIdentifier: timeZoneIdentifier, range: range))
+    revalidations.append(revalidate)
     let outcome = await withCheckedContinuation { continuation in
       continuations.append(continuation)
     }

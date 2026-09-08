@@ -120,7 +120,7 @@ struct CodexResetsHTTPClientTests {
     }
     clock.advance(599)
     await #expect(throws: CodexResetsError.coolingDown) {
-      try await client.load(CodexResetsAPI.historyURL, as: CodexResetsPage.self)
+      try await client.load(CodexResetsAPI.historyURL, as: CodexResetsPage.self, revalidate: true)
     }
     #expect(await recorder.requests.count == 1)
     clock.advance(1)
