@@ -20,6 +20,7 @@ final class ResetHistoryStore: ObservableObject {
   private let formatIssue: @MainActor @Sendable () -> String
   private var isDashboardActive = false
   private var lastObservedRevision = ResetHistoryRevision(lastResetAt: nil)
+  private var loadedRevision: ResetHistoryRevision?
   private var activeQuery: Query?
   private var carriedFreshness: FreshnessIntent = []
   private var pendingFreshness: FreshnessIntent = []
@@ -242,9 +243,11 @@ final class ResetHistoryStore: ObservableObject {
       : query.targetRange
     isLoading = true
     let fetchHistory = fetchHistory
-    // A new status revision is evidence that the independently cached history
-    // may be outdated. Revalidate with its ETag, still honoring retry cooldowns.
-    let revalidate = transferredFreshness.contains(.reset)
+    // Associate the revision with a completed snapshot so hidden observations
+    // and canceled requests still require revalidation when the dashboard reopens.
+    let requestRevision = lastObservedRevision
+    let revisionChanged = loadedRevision.map { $0 != requestRevision } ?? false
+    let revalidate = transferredFreshness.contains(.reset) || revisionChanged
 
     loadTask = Task { [weak self] in
       do {
@@ -258,6 +261,7 @@ final class ResetHistoryStore: ObservableObject {
         let committed = result.range.covers(activeQuery.targetRange)
         if committed {
           self.history = result
+          self.loadedRevision = requestRevision
           self.selectedRange = activeQuery.targetRange
           self.issue = nil
           self.scheduleBoundaryRefresh(after: result)

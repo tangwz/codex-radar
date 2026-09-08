@@ -6,8 +6,8 @@ import Testing
 @Suite(.serialized)
 struct ResetHistoryStoreTests {
   @MainActor
-  @Test
-  func announcementRevisionRevalidatesFreshPublicHistoryCache() async throws {
+  @Test(arguments: ["active", "hidden-observation", "reopen-only"])
+  func announcementRevisionRevalidatesFreshPublicHistoryCache(_ observation: String) async throws {
     let recorder = PublicAPIRequests()
     let service = ResetHistoryService(
       loader: HTTPDataLoader { request in
@@ -44,10 +44,41 @@ struct ResetHistoryStoreTests {
 
     let next = ResetHistoryRevision(
       lastResetAt: publicAPINow, latestResetID: "banked", totalAnnouncements: 2)
-    store.historyRevisionDidChange(next, timeZone: zone)
+    if observation != "active" { store.dashboardDidDisappear() }
+    if observation != "reopen-only" {
+      store.historyRevisionDidChange(next, timeZone: zone)
+    }
+    if observation != "active" {
+      store.dashboardDidAppear(timeZone: zone, historyRevision: next)
+    }
     await expectStoreIdle(store)
     #expect(store.history?.current.month.count == 2)
     #expect(await recorder.requests.count == 2)
+  }
+
+  @MainActor
+  @Test
+  func canceledRevalidationIsRetriedWhenDashboardReopens() async {
+    let context = makeContext()
+    let initial = ResetHistoryRevision(
+      lastResetAt: nil, latestResetID: "initial", totalAnnouncements: 1)
+    let next = ResetHistoryRevision(lastResetAt: nil, latestResetID: "next", totalAnnouncements: 2)
+    context.store.dashboardDidAppear(timeZone: context.zone, historyRevision: initial)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    context.store.historyRevisionDidChange(next, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.dashboardDidDisappear()
+    context.store.dashboardDidAppear(timeZone: context.zone, historyRevision: next)
+    await expectCallCount(3, fetcher: context.fetcher)
+    #expect(await context.fetcher.revalidations == [false, true, true])
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    context.store.dashboardDidDisappear()
   }
 
   @MainActor
