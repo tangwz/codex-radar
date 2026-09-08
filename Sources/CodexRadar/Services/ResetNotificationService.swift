@@ -130,6 +130,13 @@ final class ResetNotificationService {
     }
     let observationState = consumedSignalStore.stateForObservation(
       currentSignalID: forecast.signalID)
+    if forecast.schemaVersion == CodexResetsAPI.schema,
+      forecast.status == .candidate, let latestResetID = forecast.latestResetID
+    {
+      // A newer watch supersedes the accompanying announcement. Its local
+      // expiration must not turn that already-observed announcement into an alert.
+      consumedSignalStore.consume("codex-resets:reset:" + latestResetID)
+    }
     let decision = ResetNotificationPolicy.decision(
       forecast: forecast, hasBaseline: observationState.hasBaseline,
       consumedSignalIDs: observationState.consumedSignalIDs

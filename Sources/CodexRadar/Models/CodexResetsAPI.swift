@@ -187,6 +187,7 @@ struct CodexResetsPage: CodexResetsDocument {
     guard data.count <= 100 else { throw CodexResetsError.invalidResponse }
     for record in data { try record.validate() }
     if pagination.has_more {
+      // OpenAPI constrains opaque cursors to this alphabet; do not decode them.
       guard !data.isEmpty, let cursor = pagination.next_cursor,
         !cursor.isEmpty, cursor.count <= 1024,
         cursor.unicodeScalars.allSatisfy({

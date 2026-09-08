@@ -5,6 +5,115 @@ import Testing
 
 @MainActor
 struct CodexResetsNotificationTests {
+  @Test(arguments: [false, true], [false, true])
+  func observedAnnouncementDoesNotNotifyAfterNewerWatchExpires(
+    restartBeforeExpiry: Bool, watchDeliverySucceeds: Bool
+  ) async throws {
+    let suite = "CodexResetsNotificationTests." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let firstObservation = publicAPINow.addingTimeInterval(-7200)
+    var deliveries: [String] = []
+    let deliver: ResetNotificationService.DeliverNotification = { _, id in
+      deliveries.append(id)
+      return id.contains(":watch:") ? watchDeliverySucceeds : true
+    }
+    let service = ResetNotificationService(
+      defaults: defaults, now: { firstObservation }, deliverNotification: deliver
+    )
+    let initial = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self, from: publicStatus()
+    )
+    await service.observe(initial.forecast(now: firstObservation, stale: false))
+    let document = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self,
+      from: publicStatus(record: publicRecord(), watch: publicWatch())
+    )
+    let active = document.forecast(now: publicAPINow, stale: false)
+    await service.observe(active)
+    await service.observe(active)
+    let watchAttempts = Array(
+      repeating: "codex-resets:watch:https://x.com/example/status/123",
+      count: watchDeliverySucceeds ? 1 : 2
+    )
+    #expect(deliveries == watchAttempts)
+
+    let observer =
+      restartBeforeExpiry
+      ? ResetNotificationService(
+        defaults: defaults, now: { firstObservation }, deliverNotification: deliver
+      ) : service
+    let expired = document.forecast(now: publicAPINow.addingTimeInterval(3601), stale: false)
+    #expect(expired.status == .announced)
+    await observer.observe(expired)
+    #expect(deliveries == watchAttempts)
+
+    let next = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self,
+      from: publicStatus(
+        record: publicRecord(id: "later-announcement", at: "2026-09-07T09:01:00Z"),
+        watch: publicWatch()
+      )
+    ).forecast(now: publicAPINow.addingTimeInterval(3720), stale: false)
+    await observer.observe(next)
+    #expect(deliveries == watchAttempts + ["codex-resets:reset:later-announcement"])
+  }
+
+  @Test
+  func alreadyConsumedWatchStillConsumesItsAccompanyingAnnouncement() async throws {
+    let suite = "CodexResetsNotificationTests." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let firstObservation = publicAPINow.addingTimeInterval(-7200)
+    var deliveries: [String] = []
+    let service = ResetNotificationService(defaults: defaults, now: { firstObservation }) { _, id in
+      deliveries.append(id)
+      return true
+    }
+    let initial = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self, from: publicStatus()
+    )
+    await service.observe(initial.forecast(now: firstObservation, stale: false))
+    let watch = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self, from: publicStatus(watch: publicWatch())
+    )
+    await service.observe(watch.forecast(now: publicAPINow, stale: false))
+    let document = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self,
+      from: publicStatus(record: publicRecord(), watch: publicWatch())
+    )
+    await service.observe(document.forecast(now: publicAPINow, stale: false))
+    await service.observe(
+      document.forecast(now: publicAPINow.addingTimeInterval(3601), stale: false))
+    #expect(deliveries == ["codex-resets:watch:https://x.com/example/status/123"])
+  }
+
+  @Test
+  func staleWatchDoesNotConsumeItsAccompanyingAnnouncement() async throws {
+    let suite = "CodexResetsNotificationTests." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let firstObservation = publicAPINow.addingTimeInterval(-7200)
+    var deliveries: [String] = []
+    let service = ResetNotificationService(defaults: defaults, now: { firstObservation }) { _, id in
+      deliveries.append(id)
+      return true
+    }
+    let initial = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self, from: publicStatus()
+    )
+    await service.observe(initial.forecast(now: firstObservation, stale: false))
+    let document = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self,
+      from: publicStatus(record: publicRecord(), watch: publicWatch())
+    )
+    await service.observe(document.forecast(now: publicAPINow, stale: true))
+    #expect(deliveries.isEmpty)
+    await service.observe(
+      document.forecast(now: publicAPINow.addingTimeInterval(3601), stale: false))
+    #expect(deliveries == ["codex-resets:reset:observed-a"])
+  }
+
   @Test
   func cachedInitialSnapshotDoesNotNotifyAnnouncementsFromBeforeFirstObservation() async throws {
     let suite = "CodexResetsNotificationTests." + UUID().uuidString
