@@ -8,174 +8,65 @@ struct ResetForecastCard: View {
     ResetForecastPresentation(forecast: forecast)
   }
 
-  private var badgeKey: String {
-    if presentation.stale { return "SOURCE UNAVAILABLE" }
-    return switch presentation.status {
-    case .monitoring: "MONITORING"
-    case .candidate: "WATCHING"
-    case .announced: "RESET ANNOUNCED"
-    case .completed: "RESET COMPLETED"
-    }
-  }
-
-  private var statusColor: Color {
-    if presentation.stale { return .orange }
-    return switch presentation.status {
-    case .monitoring: .secondary
-    case .candidate: .yellow
-    case .announced: .red
-    case .completed: .green
-    }
+  private var detailKey: String {
+    if forecast.stale { return "unavailable" }
+    return forecast.status == .candidate ? "forecastDisclaimer"
+      : forecast.status == .announced ? "announcementDisclaimer" : "waiting"
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
       HStack {
-        Label("NEXT CODEX RESET", systemImage: "scope")
+        Label(CodexResetsCopy.text("title", locale: locale), systemImage: "scope")
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
-          .tracking(1.2)
-
         Spacer()
-
-        Text(LocalizedStringKey(badgeKey))
-          .font(.caption2.weight(.bold))
-          .padding(.horizontal, 10)
-          .padding(.vertical, 5)
-          .background(statusColor.opacity(0.16))
-          .foregroundStyle(statusColor)
-          .clipShape(Capsule())
-      }
-
-      timeContent
-
-      Text(
-        presentation.recentResetText(
-          isInitialLoad: false,
-          locale: locale
-        )
-      )
-        .font(.body)
-        .foregroundStyle(.secondary)
-        .lineLimit(3)
-        .accessibilityLabel(Text("Last reset"))
-        .accessibilityValue(
-          Text(
-            presentation.recentResetText(
-              isInitialLoad: false,
-              locale: locale
-            )
-          )
-        )
-
-      if let sourceURL = presentation.sourceURL {
-        Divider()
-
-        HStack {
-          Label("Signal source", systemImage: "link")
-            .font(.subheadline.weight(.medium))
-          Spacer()
-          Link(destination: sourceURL) {
-            HStack(spacing: 5) {
-              Text("Tibo on X")
-              Image(systemName: "arrow.up.right")
-            }
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(.tint)
+        if forecast.stale {
+          Label("Source unavailable", systemImage: "exclamationmark.triangle")
+            .font(.caption)
+            .foregroundStyle(.orange)
         }
       }
+      Text(CodexResetsCopy.text(detailKey, locale: locale))
+        .font(.title3)
+        .fixedSize(horizontal: false, vertical: true)
+      if forecast.schemaVersion == CodexResetsAPI.schema {
+        Text(forecast.message)
+          .font(.body)
+          .lineLimit(6)
+          .textSelection(.enabled)
+      }
+      VStack(alignment: .leading, spacing: 4) {
+        Text(CodexResetsCopy.text("lastAnnouncement", locale: locale))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Text(presentation.recentResetText(isInitialLoad: false, locale: locale))
+          .font(.body)
+      }
+      if let sourceURL = presentation.sourceURL {
+        Divider()
+        Link(destination: sourceURL) {
+          Label(CodexResetsCopy.text("source", locale: locale), systemImage: "arrow.up.right")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+      }
+      Text(CodexResetsCopy.text("attribution", locale: locale))
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      if forecast.monitoredAt != .distantPast {
+        Text(CodexResetsCopy.text("updated", locale: locale) + ": "
+          + DisplayFormatting.absoluteDate(forecast.monitoredAt, locale: locale))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(24)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .strokeBorder(
-          LinearGradient(
-            colors: [.accentColor.opacity(0.65), .purple.opacity(0.18), .clear],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-          ),
-          lineWidth: 1.5
-        )
-    }
-    .shadow(color: .accentColor.opacity(0.08), radius: 18, y: 8)
-  }
-
-  @ViewBuilder
-  private var timeContent: some View {
-    switch presentation.timeDisplay {
-    case .exact(let at):
-      TimelineView(.periodic(from: .now, by: 60)) { context in
-        VStack(alignment: .leading, spacing: 6) {
-          Text(DisplayFormatting.countdown(to: at, from: context.date, locale: locale))
-            .font(.system(size: 46, weight: .semibold, design: .rounded))
-            .monospacedDigit()
-          Text(
-            String(
-              format: String(localized: "Expected at %@", bundle: .main, locale: locale),
-              DisplayFormatting.absoluteDate(at, locale: locale)
-            )
-          )
-          .font(.title3)
-          .foregroundStyle(.secondary)
-        }
-      }
-    case .estimated(let from, let to):
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Estimated reset window")
-          .font(.system(size: 34, weight: .semibold, design: .rounded))
-        Text(
-          String(
-            format: String(
-              localized: "Between %@ and %@",
-              bundle: .main,
-              locale: locale
-            ),
-            DisplayFormatting.absoluteDate(from, locale: locale),
-            DisplayFormatting.absoluteDate(to, locale: locale)
-          )
-        )
-        .font(.title3)
-        .foregroundStyle(.secondary)
-      }
-    case .imminent:
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Reset expected soon")
-          .font(.system(size: 40, weight: .semibold, design: .rounded))
-        Text("No precise reset time is available")
-          .font(.title3)
-          .foregroundStyle(.secondary)
-      }
-    case .none:
-      VStack(alignment: .leading, spacing: 6) {
-        Text(LocalizedStringKey(emptyStateTitleKey))
-          .font(.system(size: 40, weight: .semibold, design: .rounded))
-        Text(LocalizedStringKey(emptyStateDetailKey))
-          .font(.title3)
-          .foregroundStyle(.secondary)
-      }
+        .strokeBorder(Color.accentColor.opacity(0.4), lineWidth: 1)
     }
   }
-
-  private var emptyStateTitleKey: String {
-    if presentation.stale { return "Source unavailable" }
-    return switch presentation.status {
-    case .monitoring: "No reset signal"
-    case .candidate: "Possible reset signal"
-    case .announced: "Reset announced"
-    case .completed: "Ready to use"
-    }
-  }
-
-  private var emptyStateDetailKey: String {
-    if presentation.stale { return "Showing the last verified reset state" }
-    return switch presentation.status {
-    case .monitoring: "Waiting for Tibo's next reset signal"
-    case .candidate: "Watching for a confirmed reset announcement"
-    case .announced: "A reset is expected soon"
-    case .completed: "The announced reset has completed"
-    }
-  }
-
 }

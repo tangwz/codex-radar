@@ -101,6 +101,7 @@ private struct SettingsSidebarView: View {
 }
 
 private struct SettingsPageView: View {
+  @Environment(\.locale) private var locale
   @AppStorage(AppLanguage.defaultsKey) private var language = AppLanguage.system.rawValue
   @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
 
@@ -117,6 +118,15 @@ private struct SettingsPageView: View {
         Text("Light").tag(AppAppearance.light.rawValue)
         Text("Dark").tag(AppAppearance.dark.rawValue)
       }
+
+      LabeledContent(CodexResetsCopy.text("dataSource", locale: locale)) {
+        Text("Codex Resets")
+          .foregroundStyle(.secondary)
+      }
+      Text(CodexResetsCopy.text("refreshNotice", locale: locale))
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
 
       LabeledContent("Reset alerts") {
         Text("Menu bar badge and notifications")

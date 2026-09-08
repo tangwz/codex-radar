@@ -1,166 +1,117 @@
 import Foundation
 import Testing
-
 @testable import CodexRadar
 
 struct ResetForecastServiceTests {
   @Test
-  func usesCurrentEndpointTimeoutAndConditionalETag() async throws {
-    let recorder = RequestRecorder()
-    let service = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        await recorder.record(request)
-        return (Data(), response(status: 304, url: request.url!))
-      }
-    )
-
-    _ = try await service.fetch(etag: #""signal-1""#)
-    let request = try #require(await recorder.request)
-
-    #expect(
-      service.currentURL.absoluteString
-        == "https://codex-radar-monitor.terencetang.workers.dev/v1/current"
-    )
+  func usesPublicEndpointWithoutCredentialsOrUnmatchedValidator() async throws {
+    let recorder = PublicAPIRequests()
+    let service = ResetForecastService(loader: HTTPDataLoader { request in
+      await recorder.record(request)
+      return (publicStatus(), publicResponse(request))
+    }, now: { publicAPINow })
+    _ = try await service.fetch(etag: "old-backend-validator")
+    let request = try #require(await recorder.requests.first)
+    #expect(service.currentURL == CodexResetsAPI.statusURL)
     #expect(request.timeoutInterval == 15)
     #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
-    #expect(request.value(forHTTPHeaderField: "If-None-Match") == #""signal-1""#)
+    #expect(request.value(forHTTPHeaderField: "If-None-Match") == nil)
+    #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
+    #expect(!request.httpShouldHandleCookies)
   }
 
   @Test
-  func decodesUpdatedForecastAndReturnsResponseETag() async throws {
-    let contract = try Data(contentsOf: successContractURL)
-    let service = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (
-          contract,
-          response(
-            status: 200,
-            url: request.url!,
-            headers: ["ETag": #""revision-2""#]
-          )
-        )
+  func revalidatesOnlyItsCachedBodyAndReprojectsExpiredWatchAfter304() async throws {
+    let recorder = PublicAPIRequests()
+    let clock = PublicAPIClock()
+    let service = ResetForecastService(loader: HTTPDataLoader { request in
+      await recorder.record(request)
+      if await recorder.requests.count == 1 {
+        return (publicStatus(watch: publicWatch()), publicResponse(request, headers: ["ETag": "watch-1", "Cache-Control": "max-age=0"]))
       }
-    )
-
-    let result = try await service.fetch(etag: nil)
-
-    guard case .updated(let forecast, let etag) = result else {
-      Issue.record("Expected an updated forecast.")
-      return
-    }
-    #expect(forecast.status == .monitoring)
-    #expect(etag == #""revision-2""#)
+      #expect(request.value(forHTTPHeaderField: "If-None-Match") == "watch-1")
+      return (Data(), publicResponse(request, status: 304, headers: ["Cache-Control": "max-age=0"]))
+    }, now: { clock.now() })
+    guard case .updated(let first, _) = try await service.fetch(etag: nil) else { Issue.record("Expected status"); return }
+    #expect(first.status == .candidate)
+    clock.advance(3601)
+    guard case .updated(let next, _) = try await service.fetch(etag: "watch-1") else { Issue.record("Expected reprojected status"); return }
+    #expect(next.status == .monitoring)
+    #expect(next.signalID == nil)
   }
 
   @Test
-  func treatsNotModifiedAsSuccessWithoutDecodingBody() async throws {
-    let service = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (Data("not-json".utf8), response(status: 304, url: request.url!))
-      }
-    )
-
-    #expect(try await service.fetch(etag: #""revision-1""#) == .notModified)
+  func honorsClientMaxAgeAndAgeAndStillExpiresForecastLocally() async throws {
+    let recorder = PublicAPIRequests()
+    let clock = PublicAPIClock()
+    let service = ResetForecastService(loader: HTTPDataLoader { request in
+      await recorder.record(request)
+      return (publicStatus(watch: publicWatch()), publicResponse(request, headers: ["Cache-Control": "max-age=14400, s-maxage=60", "Age": "50"]))
+    }, now: { clock.now() })
+    _ = try await service.fetch(etag: nil)
+    clock.advance(3601)
+    guard case .updated(let value, _) = try await service.fetch(etag: nil) else { Issue.record("Expected status"); return }
+    #expect(value.status == .monitoring)
+    #expect(await recorder.requests.count == 1)
+    clock.advance(11000)
+    _ = try await service.fetch(etag: nil)
+    #expect(await recorder.requests.count == 2)
   }
 
   @Test
-  func rejectsNotModifiedWithoutConditionalETag() async {
-    let service = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (Data(), response(status: 304, url: request.url!))
+  func keepsLastGoodStatusAsStaleAndHonorsRetryAfter() async throws {
+    let recorder = PublicAPIRequests()
+    let clock = PublicAPIClock()
+    let service = ResetForecastService(loader: HTTPDataLoader { request in
+      await recorder.record(request)
+      if await recorder.requests.count == 1 {
+        return (publicStatus(record: publicRecord()), publicResponse(request, headers: ["Cache-Control": "max-age=0"]))
       }
-    )
-
-    await #expect(throws: ResetForecastServiceError.invalidResponse) {
-      try await service.fetch(etag: nil)
-    }
+      return (Data(), publicResponse(request, status: 429, headers: ["Retry-After": "600"]))
+    }, now: { clock.now() })
+    _ = try await service.fetch(etag: nil)
+    guard case .updated(let retained, _) = try await service.fetch(etag: nil) else { Issue.record("Expected cached status"); return }
+    #expect(retained.stale)
+    #expect(!ResetForecastPresentation(forecast: retained).hasResetAlert)
+    #expect(retained.lastResetAt != nil)
+    clock.advance(60)
+    _ = try await service.fetch(etag: nil)
+    #expect(await recorder.requests.count == 2)
   }
 
   @Test
-  func mapsNotInitializedResponseToDedicatedError() async throws {
-    let contract = try Data(contentsOf: notInitializedContractURL)
-    let service = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (
-          contract,
-          response(status: 503, url: request.url!)
-        )
-      }
-    )
-
-    await #expect(throws: ResetForecastServiceError.notInitialized) {
-      try await service.fetch(etag: nil)
-    }
-    #expect(
-      ResetForecastServiceError.notInitialized.errorDescription
-        == "Reset status is not available yet."
-    )
+  func rejects304WithoutCachedBody() async {
+    let service = ResetForecastService(loader: HTTPDataLoader { request in
+      (Data(), publicResponse(request, status: 304))
+    })
+    await #expect(throws: ResetForecastServiceError.invalidResponse) { try await service.fetch(etag: "foreign") }
   }
 
   @Test
-  func rejectsOtherHTTPAndNonHTTPResponses() async {
-    let httpService = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (Data(), response(status: 500, url: request.url!))
-      }
-    )
-    let nonHTTPService = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (Data(), URLResponse(url: request.url!, mimeType: nil, expectedContentLength: 0, textEncodingName: nil))
-      }
-    )
-
-    await #expect(throws: ResetForecastServiceError.invalidResponse) {
-      try await httpService.fetch(etag: nil)
-    }
-    await #expect(throws: ResetForecastServiceError.invalidResponse) {
-      try await nonHTTPService.fetch(etag: nil)
-    }
+  func rejectsUnknownVersionsAndMalformedJSON() async {
+    let unknown = ResetForecastService(loader: HTTPDataLoader { request in
+      (publicStatus(version: "v2"), publicResponse(request))
+    })
+    await #expect(throws: ResetForecastServiceError.invalidResponse) { try await unknown.fetch(etag: nil) }
+    let broken = ResetForecastService(loader: HTTPDataLoader { request in
+      (Data("broken".utf8), publicResponse(request))
+    })
+    await #expect(throws: DecodingError.self) { try await broken.fetch(etag: nil) }
   }
 
   @Test
-  func propagatesJSONDecodingErrors() async {
-    let service = ResetForecastService(
-      loader: HTTPDataLoader { request in
-        (Data("not-json".utf8), response(status: 200, url: request.url!))
-      }
-    )
-
-    await #expect(throws: DecodingError.self) {
-      try await service.fetch(etag: nil)
-    }
+  func persistentCacheSurvivesRestartButDoesNotPretendOfflineDataIsFresh() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = directory.appendingPathComponent("public.json")
+    let first = ResetForecastService(loader: HTTPDataLoader { request in
+      (publicStatus(record: publicRecord()), publicResponse(request, headers: ["Cache-Control": "max-age=0"]))
+    }, now: { publicAPINow }, cacheURL: cache)
+    _ = try await first.fetch(etag: nil)
+    let offline = ResetForecastService(loader: HTTPDataLoader { _ in throw URLError(.notConnectedToInternet) }, now: { publicAPINow }, cacheURL: cache)
+    guard case .updated(let value, _) = try await offline.fetch(etag: nil) else { Issue.record("Expected cache"); return }
+    #expect(value.stale)
+    #expect(value.lastResetAt != nil)
   }
-}
-
-private actor RequestRecorder {
-  private(set) var request: URLRequest?
-
-  func record(_ request: URLRequest) {
-    self.request = request
-  }
-}
-
-private let notInitializedContractURL = URL(fileURLWithPath: #filePath)
-  .deletingLastPathComponent()
-  .deletingLastPathComponent()
-  .deletingLastPathComponent()
-  .appendingPathComponent("contracts/v1-current-not-initialized.json")
-
-private let successContractURL = URL(fileURLWithPath: #filePath)
-  .deletingLastPathComponent()
-  .deletingLastPathComponent()
-  .deletingLastPathComponent()
-  .appendingPathComponent("contracts/v1-current-success.json")
-
-private func response(
-  status: Int,
-  url: URL,
-  headers: [String: String]? = nil
-) -> HTTPURLResponse {
-  HTTPURLResponse(
-    url: url,
-    statusCode: status,
-    httpVersion: "HTTP/1.1",
-    headerFields: headers
-  )!
 }

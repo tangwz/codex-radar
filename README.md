@@ -1,19 +1,23 @@
 # Codex Radar
 
-一个以 menu bar 为主的 macOS 14+ SwiftUI 应用，用于观察 Codex 重置信号和本地 token 消耗。
+一个以 menu bar 为主的 macOS 14+ SwiftUI 应用，用于观察 Codex 重置公告、预测和本地 token 消耗。
 
 ## 功能
 
-- 每分钟读取公开的 `/v1/current`，展示 Tibo 的 reset 状态、时间和原始 X 证据。
-- 从 `/v1/current` 展示服务端确认的最近一次重置时间；旧协议缺字段、明确无历史与暂时不可用使用不同状态。
-- Dashboard 打开时读取 `/v1/history`，按用户时区展示本周、本月、所选历史范围的月度统计和最近五次重置。
-- 数据非 stale 且 reset 状态为 candidate、announced 或 completed 时显示菜单栏红点；红点表示当前服务端状态，不表示未读。
-- 对首次观察到的 candidate、announced 或 completed signal ID 最多发送一次 macOS 通知；首次安装或升级只建立 baseline，不补发已有信号。
-- 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`，使用版本化本地缓存复用未变化文件的解析结果。
+- 客户端直接读取 Codex Resets 公共 `/api/v1/status` 和 `/api/v1/resets`，不需要自建后端、代理、X 凭证或账户 Token。
+- 最新公告与预测分别处理；预测过期时间不作为实际重置倒计时，公告也不代表个人账户额度已经恢复。
+- 完整读取历史分页后，在本地按用户时区汇总自然周、自然月和最近 30 天记录。
+- 公共响应使用磁盘缓存和 ETag，遵守 Cache-Control、Age 与 Retry-After。请求失败时可显示已缓存状态并标记过期，不触发提醒。
+- 首次安装或从旧后端迁移时建立独立通知基线，不补发旧公告，包括被预测遮挡的已有公告；后续按来源和事件 ID 去重。
+- 只读扫描 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl`，使用版本化本地缓存复用未变化文件的解析结果；不上传本地日志。
 - 按日、月、年展示 total、input 和 output；当前周期指标与趋势图同步切换，柱状图通过鼠标悬浮展示明细。
 - 参考 CodexBar 的累计快照、interleaved counter 与稳定 session identity 处理；统计为本地日志推算值，不依赖 CodexBar 运行时。
 - 支持跟随系统、English 和简体中文。
 - 支持 Light/Dark Mode，并使用 Sparkle 2.9.4 提供签名自动更新。
+
+数据来自第三方 Codex Resets，不是 OpenAI 账户额度接口。实测状态响应曾返回四小时的客户端缓存有效期，因此分钟级界面刷新不等于分钟级网络请求或即时通知。`generated_at` 也不能证明上游采集器持续健康。应用退出时不提供服务端推送。
+
+历史请求失败时保留已打开 Dashboard 的历史快照；重新启动且历史缓存过期、网络不可用时，不把不完整或过期分页伪装成最新历史。详细语义见 [`docs/codex-resets-migration.md`](docs/codex-resets-migration.md)。
 
 ## 运行
 
@@ -25,8 +29,9 @@
 
 ## 下载与首次安装
 
-当前公开版本是 [CodexRadar v0.1.4](https://github.com/tangwz/codex-radar/releases/tag/v0.1.4)。下载版本固定的
-Universal ZIP <https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip>
+当前公开版本是 [CodexRadar v0.1.4](https://github.com/tangwz/codex-radar/releases/tag/v0.1.4)。下面的资产仍是此前发布版本；本分支的公共 API 迁移尚未发布。旧客户端仍依赖旧接口，迁移上线前不要直接关闭旧后端。
+
+下载版本固定的 Universal ZIP <https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip>
 和对应的 SHA-256 文件 <https://github.com/tangwz/codex-radar/releases/download/v0.1.4/CodexRadar-v0.1.4-macos-universal.zip.sha256>，然后校验：
 
 ```bash

@@ -47,34 +47,37 @@ struct ResetHistoryView: View {
         ResetRadarUnavailableView()
       }
       monthlyChart(presentation)
+      Text(CodexResetsCopy.text("attribution", locale: locale))
+        .font(.caption)
+        .foregroundStyle(.secondary)
       historyIssue
     }
   }
 
   private var header: some View {
     HStack(spacing: 8) {
-      Text("Reset statistics")
+      Text(CodexResetsCopy.text("statistics", locale: locale))
         .font(.title2.weight(.semibold))
 
       if store.pendingRange != nil {
         ProgressView()
           .controlSize(.small)
-          .accessibilityLabel(Text("Loading reset statistics"))
+          .accessibilityLabel(Text(CodexResetsCopy.text("loadingHistory", locale: locale)))
       }
 
       Spacer()
 
-      Picker("Reset type", selection: $selectedMetric) {
-        Text("Both")
+      Picker(CodexResetsCopy.text("type", locale: locale), selection: $selectedMetric) {
+        Text(CodexResetsCopy.text("all", locale: locale))
           .tag(ResetHistoryMetric.both)
-        Text("Hard")
+        Text(CodexResetsCopy.text("regular", locale: locale))
           .tag(ResetHistoryMetric.hard)
-        Text("Banked")
+        Text(CodexResetsCopy.text("banked", locale: locale))
           .tag(ResetHistoryMetric.banked)
       }
       .pickerStyle(.segmented)
       .labelsHidden()
-      .frame(width: 270)
+      .frame(width: 340)
       .onChange(of: selectedMetric) {
         hoveredMonthID = nil
       }
@@ -99,10 +102,10 @@ struct ResetHistoryView: View {
           Image(systemName: "info.circle")
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text("About monthly reset statistics"))
-        .help("About monthly reset statistics")
+        .accessibilityLabel(Text(CodexResetsCopy.text("historyInfo", locale: locale)))
+        .help(CodexResetsCopy.text("historyInfo", locale: locale))
         .popover(isPresented: $isShowingMonthInfo) {
-          Text("Months follow natural boundaries in your selected time zone.")
+          Text(CodexResetsCopy.text("historyNote", locale: locale))
             .padding()
             .frame(width: 280)
         }
@@ -253,21 +256,17 @@ struct ResetHistoryView: View {
     }
   }
 
-  private func chartTitle(_ metric: ResetHistoryMetric) -> LocalizedStringKey {
+  private func chartTitle(_ metric: ResetHistoryMetric) -> String {
     switch metric {
-    case .both: "Hard + banked resets by month"
-    case .hard: "Hard resets by month"
-    case .banked: "Banked resets by month"
+    case .both: CodexResetsCopy.text("byMonth", locale: locale)
+    case .hard: CodexResetsCopy.text("regularByMonth", locale: locale)
+    case .banked: CodexResetsCopy.text("bankedByMonth", locale: locale)
     }
   }
 
   private func monthSummary(_ month: ResetHistoryPresentation.Month) -> String {
     String(
-      format: String(
-        localized: "%@, %lld resets",
-        bundle: .main,
-        locale: locale
-      ),
+      format: CodexResetsCopy.text("monthSummary", locale: locale),
       locale: locale,
       month.label,
       Int64(month.count)
@@ -281,11 +280,11 @@ struct ResetHistoryView: View {
     let localizedMetric: String =
       switch metric {
       case .both:
-        String(localized: "Both", bundle: .main, locale: locale)
+        CodexResetsCopy.text("all", locale: locale)
       case .hard:
-        String(localized: "Hard", bundle: .main, locale: locale)
+        CodexResetsCopy.text("regular", locale: locale)
       case .banked:
-        String(localized: "Banked", bundle: .main, locale: locale)
+        CodexResetsCopy.text("banked", locale: locale)
       }
     return "\(localizedMetric): \(monthSummary(month))"
   }
@@ -309,13 +308,13 @@ struct ResetHistoryView: View {
   }
 
   private var loadingContent: some View {
-    ProgressView("Loading reset statistics")
+    ProgressView(CodexResetsCopy.text("loadingHistory", locale: locale))
       .frame(maxWidth: .infinity, minHeight: 180)
   }
 
   private var unavailableContent: some View {
     ContentUnavailableView {
-      Label("Reset history unavailable", systemImage: "chart.bar.xaxis")
+      Label(CodexResetsCopy.text("historyUnavailable", locale: locale), systemImage: "chart.bar.xaxis")
     } description: {
       if let issue = store.issue {
         Text(issue)

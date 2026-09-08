@@ -6,6 +6,170 @@ import Testing
 @Suite(.serialized)
 struct ResetHistoryStoreTests {
   @MainActor
+  @Test(arguments: ["active", "hidden-observation", "reopen-only"])
+  func announcementRevisionRevalidatesFreshPublicHistoryCache(_ observation: String) async throws {
+    let recorder = PublicAPIRequests()
+    let service = ResetHistoryService(
+      loader: HTTPDataLoader { request in
+        await recorder.record(request)
+        let initial = await recorder.requests.count == 1
+        if !initial {
+          #expect(request.value(forHTTPHeaderField: "If-None-Match") == "history-1")
+        }
+        let records =
+          initial
+          ? [publicRecord(id: "regular", kind: "regular")]
+          : [publicRecord(id: "regular", kind: "regular"), publicRecord(id: "banked")]
+        return (
+          publicPage(records: records),
+          publicResponse(
+            request,
+            headers: [
+              "Cache-Control": "max-age=14400", "ETag": initial ? "history-1" : "history-2",
+            ])
+        )
+      }, now: { publicAPINow }
+    )
+    let store = ResetHistoryStore(
+      service: service, waitUntil: { _ in try await Task.sleep(for: .seconds(3600)) },
+      now: { publicAPINow }
+    )
+    defer { store.dashboardDidDisappear() }
+    let zone = TimeZone(identifier: "UTC")!
+    let first = ResetHistoryRevision(
+      lastResetAt: publicAPINow, latestResetID: "regular", totalAnnouncements: 1)
+    store.dashboardDidAppear(timeZone: zone, historyRevision: first)
+    await expectStoreIdle(store)
+    #expect(store.history?.current.month.count == 1)
+
+    let next = ResetHistoryRevision(
+      lastResetAt: publicAPINow, latestResetID: "banked", totalAnnouncements: 2)
+    if observation != "active" { store.dashboardDidDisappear() }
+    if observation != "reopen-only" {
+      store.historyRevisionDidChange(next, timeZone: zone)
+    }
+    if observation != "active" {
+      store.dashboardDidAppear(timeZone: zone, historyRevision: next)
+    }
+    await expectStoreIdle(store)
+    #expect(store.history?.current.month.count == 2)
+    #expect(await recorder.requests.count == 2)
+  }
+
+  @MainActor
+  @Test
+  func firstHistoryLoadRevalidatesPersistedPagesAfterAppRestart() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = directory.appendingPathComponent("history.json")
+    let recorder = PublicAPIRequests()
+    let loader = HTTPDataLoader { request in
+      await recorder.record(request)
+      let initial = await recorder.requests.count == 1
+      if !initial {
+        #expect(request.value(forHTTPHeaderField: "If-None-Match") == "history-1")
+      }
+      let records =
+        initial
+        ? [publicRecord(id: "regular", kind: "regular")]
+        : [publicRecord(id: "regular", kind: "regular"), publicRecord(id: "banked")]
+      return (
+        publicPage(records: records),
+        publicResponse(
+          request,
+          headers: [
+            "Cache-Control": "max-age=14400", "ETag": initial ? "history-1" : "history-2",
+          ])
+      )
+    }
+    let previous = ResetHistoryService(loader: loader, now: { publicAPINow }, cacheURL: cache)
+    _ = try await previous.fetch(timeZoneIdentifier: "UTC", range: .sixMonths)
+
+    let restarted = ResetHistoryService(loader: loader, now: { publicAPINow }, cacheURL: cache)
+    let store = ResetHistoryStore(
+      service: restarted, waitUntil: { _ in try await Task.sleep(for: .seconds(3600)) },
+      now: { publicAPINow }
+    )
+    defer { store.dashboardDidDisappear() }
+    store.dashboardDidAppear(
+      timeZone: TimeZone(identifier: "UTC")!,
+      historyRevision: ResetHistoryRevision(
+        lastResetAt: publicAPINow, latestResetID: "banked", totalAnnouncements: 2)
+    )
+    await expectStoreIdle(store)
+    #expect(store.history?.current.month.count == 2)
+    #expect(await recorder.requests.count == 2)
+  }
+
+  @MainActor
+  @Test
+  func canceledRevalidationIsRetriedWhenDashboardReopens() async {
+    let context = makeContext()
+    let initial = ResetHistoryRevision(
+      lastResetAt: nil, latestResetID: "initial", totalAnnouncements: 1)
+    let next = ResetHistoryRevision(lastResetAt: nil, latestResetID: "next", totalAnnouncements: 2)
+    context.store.dashboardDidAppear(timeZone: context.zone, historyRevision: initial)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    context.store.historyRevisionDidChange(next, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.dashboardDidDisappear()
+    context.store.dashboardDidAppear(timeZone: context.zone, historyRevision: next)
+    await expectCallCount(3, fetcher: context.fetcher)
+    #expect(await context.fetcher.revalidations == [true, true, true])
+
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+    context.store.dashboardDidDisappear()
+  }
+
+  @MainActor
+  @Test(arguments: [("banked", 1), ("regular", 2)])
+  func publicAnnouncementsAtSameTimeRefreshStatisticsWhileWatchIsActive(
+    latestID: String, total: Int
+  ) async throws {
+    let context = makeContext(now: { publicAPINow })
+    defer { context.store.dashboardDidDisappear() }
+    let initial = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self,
+      from: publicStatus(
+        record: publicRecord(id: "regular", kind: "regular"), watch: publicWatch(), total: 1)
+    ).forecast(now: publicAPINow, stale: false)
+    let updated = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsStatus.self,
+      from: publicStatus(record: publicRecord(id: latestID), watch: publicWatch(), total: total)
+    ).forecast(now: publicAPINow, stale: false)
+    #expect(initial.signalID == updated.signalID)
+    #expect(initial.lastResetAt == updated.lastResetAt)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: initial.historyRevision)
+    await expectCallCount(1, fetcher: context.fetcher)
+    await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
+    await expectStoreIdle(context.store)
+
+    context.store.historyRevisionDidChange(updated.historyRevision, timeZone: context.zone)
+    await expectCallCount(2, fetcher: context.fetcher)
+    context.store.historyRevisionDidChange(updated.historyRevision, timeZone: context.zone)
+    let announcements = try APIJSONCoding.makeDecoder().decode(
+      CodexResetsPage.self,
+      from: publicPage(records: [
+        publicRecord(id: "regular", kind: "regular"), publicRecord(id: "banked"),
+      ])
+    )
+    let refreshed = try ResetHistory(
+      codexResets: announcements.data, now: publicAPINow, timeZone: context.zone, range: .sixMonths
+    )
+    await context.fetcher.completeNext(with: .success(refreshed))
+    await expectStoreIdle(context.store)
+    await settle()
+    #expect(context.store.history?.current.month.count == 2)
+    #expect(await context.fetcher.callCount == 2)
+  }
+
+  @MainActor
   @Test
   func v11HistoryKeepsStatisticsWithUnavailableRadarCapability() async throws {
     let context = makeContext()
@@ -30,7 +194,8 @@ struct ResetHistoryStoreTests {
     let context = makeContext()
     let snapshot = historyV12()
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(snapshot))
     await expectStoreIdle(context.store)
@@ -57,7 +222,8 @@ struct ResetHistoryStoreTests {
     let context = makeContext()
     let snapshot = historyV12()
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(snapshot))
     await expectStoreIdle(context.store)
@@ -84,7 +250,8 @@ struct ResetHistoryStoreTests {
     let context = makeContext(now: { generatedAt })
     let snapshot = historyV12(generatedAt: generatedAt)
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(snapshot))
     await expectStoreIdle(context.store)
@@ -120,7 +287,8 @@ struct ResetHistoryStoreTests {
     await settle()
     #expect(await context.fetcher.callCount == 0)
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
 
     #expect(
@@ -141,11 +309,13 @@ struct ResetHistoryStoreTests {
   func ordinaryIdenticalRequestsCoalesceWithoutTrailingReload() async {
     let context = makeContext()
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     context.store.refresh(timeZone: context.zone)
     context.store.refresh(timeZone: context.zone)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
 
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await expectStoreIdle(context.store)
@@ -160,7 +330,8 @@ struct ResetHistoryStoreTests {
   func initialRequestRetargetsCoveredSelectionsWithoutRestarting() async {
     let context = makeContext()
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
 
     context.store.selectRange(.threeMonths, timeZone: context.zone)
@@ -594,7 +765,7 @@ struct ResetHistoryStoreTests {
     let waiter = NonCooperativeHistoryWaiter()
     let store = ResetHistoryStore(
       fetchHistory: {
-        try await fetcher.fetch(timeZoneIdentifier: $0, range: $1)
+        try await fetcher.fetch(timeZoneIdentifier: $0, range: $1, revalidate: $2)
       },
       waitUntil: {
         try await waiter.wait(until: $0)
@@ -609,7 +780,8 @@ struct ResetHistoryStoreTests {
     let expectedShanghaiBoundary = try #require(
       ResetHistoryRefreshSchedule.nextBoundary(after: now, timeZone: shanghai))
 
-    store.dashboardDidAppear(timeZone: shanghai, lastResetAt: nil)
+    store.dashboardDidAppear(
+      timeZone: shanghai, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: fetcher)
     await fetcher.completeNext(
       with: .success(history(range: .sixMonths, generatedAt: now)))
@@ -723,7 +895,8 @@ struct ResetHistoryStoreTests {
   func resetChangesDuringLoadStartOneTrailingNormalizedReload() async {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: initialReset))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await expectStoreIdle(context.store)
@@ -731,16 +904,16 @@ struct ResetHistoryStoreTests {
 
     context.store.refresh(timeZone: context.zone)
     await expectCallCount(2, fetcher: context.fetcher)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_100),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_100)),
       timeZone: context.zone
     )
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_200),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_200)),
       timeZone: context.zone
     )
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_300),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_300)),
       timeZone: context.zone
     )
 
@@ -753,6 +926,7 @@ struct ResetHistoryStoreTests {
     await expectCallCount(3, fetcher: context.fetcher)
 
     #expect(await context.fetcher.requests.map(\.range) == [.sixMonths, .sixMonths, .sixMonths])
+    #expect(await context.fetcher.revalidations == [true, false, true])
     #expect(context.store.selectedRange == .threeMonths)
 
     await context.fetcher.completeNext(
@@ -772,15 +946,16 @@ struct ResetHistoryStoreTests {
   func resetDuringExpansionTrailsTheExpansionTarget() async {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: initialReset))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await expectStoreIdle(context.store)
 
     context.store.selectRange(.twelveMonths, timeZone: context.zone)
     await expectCallCount(2, fetcher: context.fetcher)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_100),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_100)),
       timeZone: context.zone
     )
 
@@ -790,6 +965,7 @@ struct ResetHistoryStoreTests {
     #expect(
       await context.fetcher.requests.map(\.range)
         == [.sixMonths, .twelveMonths, .twelveMonths])
+    #expect(await context.fetcher.revalidations == [true, false, true])
     #expect(context.store.selectedRange == .twelveMonths)
 
     await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
@@ -802,23 +978,24 @@ struct ResetHistoryStoreTests {
   func resetIntentSurvivesCancelingExpansionForCoveredSelection() async {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: initialReset))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await expectStoreIdle(context.store)
 
     context.store.selectRange(.twelveMonths, timeZone: context.zone)
     await expectCallCount(2, fetcher: context.fetcher)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_100),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_100)),
       timeZone: context.zone
     )
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_200),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_200)),
       timeZone: context.zone
     )
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_300),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_300)),
       timeZone: context.zone
     )
     context.store.selectRange(.threeMonths, timeZone: context.zone)
@@ -827,6 +1004,7 @@ struct ResetHistoryStoreTests {
     #expect(
       await context.fetcher.requests.map(\.range)
         == [.sixMonths, .twelveMonths, .sixMonths])
+    #expect(await context.fetcher.revalidations == [true, false, true])
     #expect(context.store.selectedRange == .threeMonths)
     #expect(context.store.isLoading)
 
@@ -847,15 +1025,16 @@ struct ResetHistoryStoreTests {
   func resetIntentTransfersAcrossReplacementWithoutLaterReset() async {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: initialReset))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await expectStoreIdle(context.store)
 
     context.store.selectRange(.twelveMonths, timeZone: context.zone)
     await expectCallCount(2, fetcher: context.fetcher)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_100),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_100)),
       timeZone: context.zone
     )
     context.store.selectRange(.all, timeZone: context.zone)
@@ -896,8 +1075,8 @@ struct ResetHistoryStoreTests {
     await expectStoreIdle(context.store)
 
     context.store.selectRange(.threeMonths, timeZone: context.zone)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_150),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_150)),
       timeZone: context.zone
     )
     await expectCallCount(3, fetcher: context.fetcher)
@@ -931,7 +1110,8 @@ struct ResetHistoryStoreTests {
     let context = makeContext()
     let initialReset = Date(timeIntervalSince1970: 1_700_000_000)
     let finalGeneratedAt = Date(timeIntervalSince1970: 1_700_000_500)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: initialReset)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: initialReset))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(
       with: .success(
@@ -941,8 +1121,8 @@ struct ResetHistoryStoreTests {
 
     context.store.selectRange(.twelveMonths, timeZone: context.zone)
     await expectCallCount(2, fetcher: context.fetcher)
-    context.store.lastResetDidChange(
-      Date(timeIntervalSince1970: 1_700_000_100),
+    context.store.historyRevisionDidChange(
+      ResetHistoryRevision(lastResetAt: Date(timeIntervalSince1970: 1_700_000_100)),
       timeZone: context.zone
     )
     context.store.selectRange(.threeMonths, timeZone: context.zone)
@@ -1029,7 +1209,8 @@ struct ResetHistoryStoreTests {
         timeZone: context.zone
       ))
 
-    context.store.dashboardDidAppear(timeZone: utc, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: utc, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(
       with: .success(
@@ -1045,7 +1226,8 @@ struct ResetHistoryStoreTests {
     await context.waiter.fireNext()
     await expectCallCount(2, fetcher: context.fetcher)
     context.store.dashboardDidDisappear()
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(3, fetcher: context.fetcher)
 
     await context.fetcher.completeNext(
@@ -1295,7 +1477,8 @@ struct ResetHistoryStoreTests {
     let context = makeContext()
     let initialGeneratedAt = Date(timeIntervalSince1970: 1_700_000_000)
     let finalGeneratedAt = Date(timeIntervalSince1970: 1_700_000_500)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(
       with: .success(
@@ -1405,7 +1588,8 @@ struct ResetHistoryStoreTests {
   func staleResponseAfterBoundaryDoesNotCreateImmediateReloadLoop() async throws {
     let context = makeContext()
     let staleHistory = history(range: .sixMonths)
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(staleHistory))
     await expectStoreIdle(context.store)
@@ -1436,7 +1620,8 @@ struct ResetHistoryStoreTests {
     let context = makeContext(now: { commitNow })
     let staleHistory = history(range: .sixMonths, generatedAt: generatedAt)
 
-    context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+    context.store.dashboardDidAppear(
+      timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
     await expectCallCount(1, fetcher: context.fetcher)
     await context.fetcher.completeNext(with: .success(staleHistory))
     await expectStoreIdle(context.store)
@@ -1476,7 +1661,7 @@ private func makeContext(
   let waiter = ControlledHistoryWaiter()
   let store = ResetHistoryStore(
     fetchHistory: {
-      try await fetcher.fetch(timeZoneIdentifier: $0, range: $1)
+      try await fetcher.fetch(timeZoneIdentifier: $0, range: $1, revalidate: $2)
     },
     waitUntil: {
       try await waiter.wait(until: $0)
@@ -1494,7 +1679,8 @@ private func makeContext(
 
 @MainActor
 private func loadInitialHistory(_ context: HistoryStoreTestContext) async {
-  context.store.dashboardDidAppear(timeZone: context.zone, lastResetAt: nil)
+  context.store.dashboardDidAppear(
+    timeZone: context.zone, historyRevision: ResetHistoryRevision(lastResetAt: nil))
   await expectCallCount(1, fetcher: context.fetcher)
   await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
   await expectStoreIdle(context.store)
@@ -1568,15 +1754,18 @@ private actor ControlledHistoryFetcher {
 
   private var continuations: [CheckedContinuation<Outcome, Never>] = []
   private(set) var requests: [HistoryRequest] = []
+  private(set) var revalidations: [Bool] = []
 
   var callCount: Int { requests.count }
 
   func fetch(
     timeZoneIdentifier: String,
-    range: ResetHistoryRange
+    range: ResetHistoryRange,
+    revalidate: Bool
   ) async throws -> ResetHistory {
     requests.append(
       HistoryRequest(timeZoneIdentifier: timeZoneIdentifier, range: range))
+    revalidations.append(revalidate)
     let outcome = await withCheckedContinuation { continuation in
       continuations.append(continuation)
     }

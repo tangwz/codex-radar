@@ -4,7 +4,7 @@ import Foundation
 @MainActor
 final class ResetHistoryStore: ObservableObject {
   typealias FetchHistory =
-    @Sendable (String, ResetHistoryRange) async throws -> ResetHistory
+    @Sendable (String, ResetHistoryRange, Bool) async throws -> ResetHistory
   typealias WaitUntil = @Sendable (Date) async throws -> Void
   typealias Now = @Sendable () -> Date
 
@@ -19,7 +19,8 @@ final class ResetHistoryStore: ObservableObject {
   private let now: Now
   private let formatIssue: @MainActor @Sendable () -> String
   private var isDashboardActive = false
-  private var lastObservedResetAt: Date?
+  private var lastObservedRevision = ResetHistoryRevision(lastResetAt: nil)
+  private var loadedRevision: ResetHistoryRevision?
   private var activeQuery: Query?
   private var carriedFreshness: FreshnessIntent = []
   private var pendingFreshness: FreshnessIntent = []
@@ -61,7 +62,7 @@ final class ResetHistoryStore: ObservableObject {
     }
   ) {
     fetchHistory = {
-      try await service.fetch(timeZoneIdentifier: $0, range: $1)
+      try await service.fetch(timeZoneIdentifier: $0, range: $1, revalidate: $2)
     }
     self.waitUntil = waitUntil
     self.now = now
@@ -85,9 +86,9 @@ final class ResetHistoryStore: ObservableObject {
     self.formatIssue = formatIssue
   }
 
-  func dashboardDidAppear(timeZone: TimeZone, lastResetAt: Date?) {
+  func dashboardDidAppear(timeZone: TimeZone, historyRevision: ResetHistoryRevision) {
     isDashboardActive = true
-    lastObservedResetAt = lastResetAt
+    lastObservedRevision = historyRevision
     request(
       Query(
         timeZoneIdentifier: timeZone.identifier,
@@ -174,9 +175,9 @@ final class ResetHistoryStore: ObservableObject {
     )
   }
 
-  func lastResetDidChange(_ resetAt: Date?, timeZone: TimeZone) {
-    guard resetAt != lastObservedResetAt else { return }
-    lastObservedResetAt = resetAt
+  func historyRevisionDidChange(_ revision: ResetHistoryRevision, timeZone: TimeZone) {
+    guard revision != lastObservedRevision else { return }
+    lastObservedRevision = revision
     guard isDashboardActive else { return }
     let query =
       activeQuery
@@ -242,10 +243,15 @@ final class ResetHistoryStore: ObservableObject {
       : query.targetRange
     isLoading = true
     let fetchHistory = fetchHistory
+    // Associate the revision with a completed snapshot so hidden observations
+    // and canceled requests still require revalidation when the dashboard reopens.
+    let requestRevision = lastObservedRevision
+    let revisionChanged = loadedRevision.map { $0 != requestRevision } ?? true
+    let revalidate = transferredFreshness.contains(.reset) || revisionChanged
 
     loadTask = Task { [weak self] in
       do {
-        let result = try await fetchHistory(query.timeZoneIdentifier, query.fetchRange)
+        let result = try await fetchHistory(query.timeZoneIdentifier, query.fetchRange, revalidate)
         guard
           !Task.isCancelled,
           let self,
@@ -255,6 +261,7 @@ final class ResetHistoryStore: ObservableObject {
         let committed = result.range.covers(activeQuery.targetRange)
         if committed {
           self.history = result
+          self.loadedRevision = requestRevision
           self.selectedRange = activeQuery.targetRange
           self.issue = nil
           self.scheduleBoundaryRefresh(after: result)

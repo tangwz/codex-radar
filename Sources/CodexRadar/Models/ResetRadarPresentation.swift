@@ -27,48 +27,32 @@ struct ResetRadarPresentation: Equatable, Sendable {
   let endLabel: String
   let endMarker: EndMarker
 
-  init?(
-    history: ResetHistory,
-    locale: Locale,
-    now: Date = Date()
-  ) {
+  init?(history: ResetHistory, locale: Locale, now: Date = Date()) {
     guard let radarDays = history.radarDays else { return nil }
     guard let timeZone = TimeZone(identifier: history.timeZone) else { return nil }
-
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = timeZone
-    let fullDateStyle = Date.FormatStyle(
-      date: .long,
-      time: .omitted,
-      locale: locale,
-      timeZone: timeZone
-    )
-    let shortDateStyle = Date.FormatStyle(
-      date: .omitted,
-      time: .omitted,
-      locale: locale,
-      timeZone: timeZone
-    )
-    .month(.abbreviated)
-    .day()
-
+    let fullDateStyle = Date.FormatStyle(date: .long, time: .omitted, locale: locale, timeZone: timeZone)
+    let shortDateStyle = Date.FormatStyle(date: .omitted, time: .omitted, locale: locale, timeZone: timeZone)
+      .month(.abbreviated).day()
     var mappedDays: [Day] = []
     mappedDays.reserveCapacity(radarDays.count)
     for (index, day) in radarDays.enumerated() {
-      guard let kind = Self.kind(for: day.counts) else { return nil }
+      let kind: Kind
+      if history.usesPublicAnnouncements, day.counts.hard > 0, day.counts.banked > 0 {
+        // Two different announcements on one local day are a valid mixed day.
+        kind = .hardAndBanked
+      } else {
+        guard let value = Self.kind(for: day.counts) else { return nil }
+        kind = value
+      }
       let isLast = index == radarDays.index(before: radarDays.endIndex)
-      mappedDays.append(
-        Day(
-          id: day.id,
-          date: day.from,
-          dateLabel: day.from.formatted(fullDateStyle),
-          kind: kind,
-          isToday: isLast && calendar.isDate(day.from, inSameDayAs: now)
-        )
-      )
+      mappedDays.append(Day(
+        id: day.id, date: day.from, dateLabel: day.from.formatted(fullDateStyle), kind: kind,
+        isToday: isLast && calendar.isDate(day.from, inSameDayAs: now)
+      ))
     }
     guard let first = mappedDays.first, let last = mappedDays.last else { return nil }
-
     days = mappedDays
     activeDayCount = mappedDays.count { $0.kind != .inactive }
     startLabel = first.date.formatted(shortDateStyle)

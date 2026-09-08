@@ -33,7 +33,9 @@ struct ResetForecastPresentation: Equatable {
       case .resetAt(let value): .resetAt(value)
       }
 
-    guard !forecast.stale, forecast.status == .announced else {
+    guard !forecast.stale, forecast.status == .announced,
+      forecast.schemaVersion != CodexResetsAPI.schema
+    else {
       timeDisplay = .none
       return
     }

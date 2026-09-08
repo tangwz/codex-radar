@@ -102,6 +102,18 @@ enum LastResetAvailability: Equatable, Sendable {
   case resetAt(Date)
 }
 
+struct ResetHistoryRevision: Equatable, Sendable {
+  let lastResetAt: Date?
+  let latestResetID: String?
+  let totalAnnouncements: Int?
+
+  init(lastResetAt: Date?, latestResetID: String? = nil, totalAnnouncements: Int? = nil) {
+    self.lastResetAt = lastResetAt
+    self.latestResetID = latestResetID
+    self.totalAnnouncements = totalAnnouncements
+  }
+}
+
 struct ResetForecast: Decodable, Equatable, Sendable {
   private static let currentSchemaVersion = "1.2"
   private static let rollbackSchemaVersion = "1.1"
@@ -123,6 +135,9 @@ struct ResetForecast: Decodable, Equatable, Sendable {
   let sourceURL: URL?
   let posts: [ResetSourcePost]
   let lastReset: LastResetAvailability
+  let latestResetID: String?
+  let totalAnnouncements: Int?
+  let signalObservedAt: Date?
 
   static var decoder: JSONDecoder {
     APIJSONCoding.makeDecoder()
@@ -153,7 +168,10 @@ struct ResetForecast: Decodable, Equatable, Sendable {
     timing: ResetTiming?,
     sourceURL: URL?,
     posts: [ResetSourcePost],
-    lastReset: LastResetAvailability = .unavailable
+    lastReset: LastResetAvailability = .unavailable,
+    latestResetID: String? = nil,
+    totalAnnouncements: Int? = nil,
+    signalObservedAt: Date? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.monitoredAt = monitoredAt
@@ -166,11 +184,17 @@ struct ResetForecast: Decodable, Equatable, Sendable {
     self.sourceURL = sourceURL
     self.posts = posts
     self.lastReset = lastReset
+    self.latestResetID = latestResetID
+    self.totalAnnouncements = totalAnnouncements
+    self.signalObservedAt = signalObservedAt
   }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+    latestResetID = nil
+    totalAnnouncements = nil
+    signalObservedAt = nil
     guard
       schemaVersion == Self.currentSchemaVersion
         || schemaVersion == Self.rollbackSchemaVersion
@@ -235,5 +259,11 @@ struct ResetForecast: Decodable, Equatable, Sendable {
   var lastResetAt: Date? {
     guard case .resetAt(let value) = lastReset else { return nil }
     return value
+  }
+
+  var historyRevision: ResetHistoryRevision {
+    ResetHistoryRevision(
+      lastResetAt: lastResetAt, latestResetID: latestResetID, totalAnnouncements: totalAnnouncements
+    )
   }
 }

@@ -6,10 +6,8 @@ enum ResetForecastServiceError: LocalizedError, Equatable {
 
   var errorDescription: String? {
     switch self {
-    case .invalidResponse:
-      "The reset service returned an invalid response."
-    case .notInitialized:
-      "Reset status is not available yet."
+    case .invalidResponse: "The reset service returned an invalid response."
+    case .notInitialized: "Reset status is not available yet."
     }
   }
 }
@@ -17,9 +15,14 @@ enum ResetForecastServiceError: LocalizedError, Equatable {
 struct HTTPDataLoader: Sendable {
   let load: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
-  static let live = HTTPDataLoader { request in
-    try await URLSession.shared.data(for: request)
-  }
+  static let live: HTTPDataLoader = {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpCookieStorage = nil
+    configuration.urlCredentialStorage = nil
+    configuration.httpShouldSetCookies = false
+    let session = URLSession(configuration: configuration)
+    return HTTPDataLoader { request in try await session.data(for: request) }
+  }()
 }
 
 enum ResetForecastFetchResult: Equatable, Sendable {
@@ -29,59 +32,36 @@ enum ResetForecastFetchResult: Equatable, Sendable {
 
 struct ResetForecastService: Sendable {
   let currentURL: URL
-  let loader: HTTPDataLoader
+  private let client: CodexResetsHTTPClient
+  private let now: @Sendable () -> Date
+
+  init(currentURL: URL = CodexResetsAPI.statusURL) {
+    self.currentURL = currentURL
+    client = .live
+    now = { Date() }
+  }
 
   init(
-    currentURL: URL = URL(
-      string: "https://codex-radar-monitor.terencetang.workers.dev/v1/current"
-    )!,
-    loader: HTTPDataLoader = .live
+    currentURL: URL = CodexResetsAPI.statusURL,
+    loader: HTTPDataLoader,
+    now: @escaping @Sendable () -> Date = { Date() },
+    cacheURL: URL? = nil
   ) {
     self.currentURL = currentURL
-    self.loader = loader
+    self.now = now
+    client = CodexResetsHTTPClient(loader: loader, now: now, cacheURL: cacheURL)
   }
 
   func fetch(etag: String?) async throws -> ResetForecastFetchResult {
-    var request = URLRequest(url: currentURL)
-    request.timeoutInterval = 15
-    request.cachePolicy = .reloadIgnoringLocalCacheData
-    if let etag {
-      request.setValue(etag, forHTTPHeaderField: "If-None-Match")
-    }
-
-    let (data, response) = try await loader.load(request)
-    guard let http = response as? HTTPURLResponse else {
+    do {
+      // The HTTP client owns each ETag together with its body. The old store's
+      // validator alone is deliberately not trusted, including across restarts.
+      let snapshot = try await client.load(currentURL, as: CodexResetsStatus.self, allowStale: true)
+      return .updated(
+        snapshot.value.forecast(now: now(), stale: snapshot.stale), etag: snapshot.etag
+      )
+    } catch is CodexResetsError {
       throw ResetForecastServiceError.invalidResponse
     }
-
-    if http.statusCode == 304 {
-      guard request.value(forHTTPHeaderField: "If-None-Match") != nil else {
-        throw ResetForecastServiceError.invalidResponse
-      }
-      return .notModified
-    }
-    if http.statusCode == 503,
-      let error = try? JSONDecoder().decode(CurrentErrorEnvelope.self, from: data),
-      error.error.code == "not_initialized"
-    {
-      throw ResetForecastServiceError.notInitialized
-    }
-    guard (200..<300).contains(http.statusCode) else {
-      throw ResetForecastServiceError.invalidResponse
-    }
-
-    return .updated(
-      try ResetForecast.decoder.decode(ResetForecast.self, from: data),
-      etag: http.value(forHTTPHeaderField: "ETag")
-    )
   }
-
-}
-
-private struct CurrentErrorEnvelope: Decodable {
-  struct APIError: Decodable {
-    let code: String
-  }
-
-  let error: APIError
 }

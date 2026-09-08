@@ -11,12 +11,9 @@ enum ResetHistoryMetric: String, CaseIterable, Identifiable {
 extension ResetCounts {
   func count(for metric: ResetHistoryMetric) -> Int {
     switch metric {
-    case .both:
-      both
-    case .hard:
-      hard
-    case .banked:
-      banked
+    case .both: both
+    case .hard: hard
+    case .banked: banked
     }
   }
 }
@@ -50,38 +47,31 @@ struct ResetHistoryPresentation {
     }
     let monthStyle =
       selectedRange == .all
-      ? Date.FormatStyle(
-        date: .omitted,
-        time: .omitted,
-        locale: locale,
-        timeZone: timeZone
-      ).month(.abbreviated).year(.twoDigits)
-      : Date.FormatStyle(
-        date: .omitted,
-        time: .omitted,
-        locale: locale,
-        timeZone: timeZone
-      ).month(.abbreviated)
+      ? Date.FormatStyle(date: .omitted, time: .omitted, locale: locale, timeZone: timeZone)
+        .month(.abbreviated).year(.twoDigits)
+      : Date.FormatStyle(date: .omitted, time: .omitted, locale: locale, timeZone: timeZone)
+        .month(.abbreviated)
     let rangeStyle = Date.FormatStyle(
-      date: .omitted,
-      time: .omitted,
-      locale: locale,
-      timeZone: timeZone
+      date: .omitted, time: .omitted, locale: locale, timeZone: timeZone
     ).month(.abbreviated).year()
 
+    // The public API has mutually exclusive regular/banked records. Its first
+    // metric is their total, NOT the old backend's simultaneous-reset subset.
+    func count(_ counts: ResetCounts) -> Int {
+      if history.usesPublicAnnouncements, metric == .both {
+        return counts.hard + counts.banked
+      }
+      return counts.count(for: metric)
+    }
     self.selectedRange = selectedRange
     self.metric = metric
     rangeDescription = [visibleSummaries.first, visibleSummaries.last]
       .compactMap { $0?.from.formatted(rangeStyle) }
       .joined(separator: " – ")
-    weekCount = history.current.week.counts.count(for: metric)
-    monthCount = history.current.month.counts.count(for: metric)
+    weekCount = count(history.current.week.counts)
+    monthCount = count(history.current.month.counts)
     months = visibleSummaries.map { summary in
-      Month(
-        id: summary.id,
-        label: summary.from.formatted(monthStyle),
-        count: summary.counts.count(for: metric)
-      )
+      Month(id: summary.id, label: summary.from.formatted(monthStyle), count: count(summary.counts))
     }
   }
 }
