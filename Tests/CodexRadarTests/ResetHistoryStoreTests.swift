@@ -58,6 +58,51 @@ struct ResetHistoryStoreTests {
 
   @MainActor
   @Test
+  func firstHistoryLoadRevalidatesPersistedPagesAfterAppRestart() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = directory.appendingPathComponent("history.json")
+    let recorder = PublicAPIRequests()
+    let loader = HTTPDataLoader { request in
+      await recorder.record(request)
+      let initial = await recorder.requests.count == 1
+      if !initial {
+        #expect(request.value(forHTTPHeaderField: "If-None-Match") == "history-1")
+      }
+      let records =
+        initial
+        ? [publicRecord(id: "regular", kind: "regular")]
+        : [publicRecord(id: "regular", kind: "regular"), publicRecord(id: "banked")]
+      return (
+        publicPage(records: records),
+        publicResponse(
+          request,
+          headers: [
+            "Cache-Control": "max-age=14400", "ETag": initial ? "history-1" : "history-2",
+          ])
+      )
+    }
+    let previous = ResetHistoryService(loader: loader, now: { publicAPINow }, cacheURL: cache)
+    _ = try await previous.fetch(timeZoneIdentifier: "UTC", range: .sixMonths)
+
+    let restarted = ResetHistoryService(loader: loader, now: { publicAPINow }, cacheURL: cache)
+    let store = ResetHistoryStore(
+      service: restarted, waitUntil: { _ in try await Task.sleep(for: .seconds(3600)) },
+      now: { publicAPINow }
+    )
+    defer { store.dashboardDidDisappear() }
+    store.dashboardDidAppear(
+      timeZone: TimeZone(identifier: "UTC")!,
+      historyRevision: ResetHistoryRevision(
+        lastResetAt: publicAPINow, latestResetID: "banked", totalAnnouncements: 2)
+    )
+    await expectStoreIdle(store)
+    #expect(store.history?.current.month.count == 2)
+    #expect(await recorder.requests.count == 2)
+  }
+
+  @MainActor
+  @Test
   func canceledRevalidationIsRetriedWhenDashboardReopens() async {
     let context = makeContext()
     let initial = ResetHistoryRevision(
@@ -73,7 +118,7 @@ struct ResetHistoryStoreTests {
     context.store.dashboardDidDisappear()
     context.store.dashboardDidAppear(timeZone: context.zone, historyRevision: next)
     await expectCallCount(3, fetcher: context.fetcher)
-    #expect(await context.fetcher.revalidations == [false, true, true])
+    #expect(await context.fetcher.revalidations == [true, true, true])
 
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
     await context.fetcher.completeNext(with: .success(history(range: .sixMonths)))
@@ -881,7 +926,7 @@ struct ResetHistoryStoreTests {
     await expectCallCount(3, fetcher: context.fetcher)
 
     #expect(await context.fetcher.requests.map(\.range) == [.sixMonths, .sixMonths, .sixMonths])
-    #expect(await context.fetcher.revalidations == [false, false, true])
+    #expect(await context.fetcher.revalidations == [true, false, true])
     #expect(context.store.selectedRange == .threeMonths)
 
     await context.fetcher.completeNext(
@@ -920,7 +965,7 @@ struct ResetHistoryStoreTests {
     #expect(
       await context.fetcher.requests.map(\.range)
         == [.sixMonths, .twelveMonths, .twelveMonths])
-    #expect(await context.fetcher.revalidations == [false, false, true])
+    #expect(await context.fetcher.revalidations == [true, false, true])
     #expect(context.store.selectedRange == .twelveMonths)
 
     await context.fetcher.completeNext(with: .success(history(range: .twelveMonths)))
@@ -959,7 +1004,7 @@ struct ResetHistoryStoreTests {
     #expect(
       await context.fetcher.requests.map(\.range)
         == [.sixMonths, .twelveMonths, .sixMonths])
-    #expect(await context.fetcher.revalidations == [false, false, true])
+    #expect(await context.fetcher.revalidations == [true, false, true])
     #expect(context.store.selectedRange == .threeMonths)
     #expect(context.store.isLoading)
 

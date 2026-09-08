@@ -246,7 +246,7 @@ final class ResetHistoryStore: ObservableObject {
     // Associate the revision with a completed snapshot so hidden observations
     // and canceled requests still require revalidation when the dashboard reopens.
     let requestRevision = lastObservedRevision
-    let revisionChanged = loadedRevision.map { $0 != requestRevision } ?? false
+    let revisionChanged = loadedRevision.map { $0 != requestRevision } ?? true
     let revalidate = transferredFreshness.contains(.reset) || revisionChanged
 
     loadTask = Task { [weak self] in
